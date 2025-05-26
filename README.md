@@ -1,4 +1,4 @@
-# my-zsh-theme-env
+# envira
 A script to fast build my zsh theme environment
 
 It supports the following distributions:

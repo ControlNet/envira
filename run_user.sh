@@ -7,10 +7,11 @@ python3 -m pip install --user pipx
 python3 -m pipx ensurepath
 
 # install bat
-wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.7.1/bat-v0.7.1-x86_64-unknown-linux-musl.tar.gz
+wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.25.0/bat-v0.25.0-x86_64-unknown-linux-musl.tar.gz
 tar -xvzf bat.zip -C ~/.local/bin
-cd ~/.local/bin && mv bat-v0.7.1-x86_64-unknown-linux-musl/bat . && rm -r bat-v0.7.1-x86_64-unknown-linux-musl
-cd ~ && rm bat.zip
+mv ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl/bat ~/.local/bin/bat
+rm -r bat-v0.25.0-x86_64-unknown-linux-musl
+rm bat.zip
 
 # install nvm
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash

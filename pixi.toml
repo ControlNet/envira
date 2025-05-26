@@ -1,0 +1,28 @@
+[project]
+authors = ["ControlNet <smczx@hotmail.com>"]
+channels = ["conda-forge"]
+name = "envira"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+dev = "python -m envira"
+test = "python -m unittest discover test"
+
+# Build tasks using pyinstaller
+build = "pyinstaller --onedir --distpath dist --workpath build --specpath build --console --noconfirm --noupx --name cli cli.py"
+build-prod = "pyinstaller --onefile --distpath dist --workpath build --specpath build --console --strip --exclude-module pytest --exclude-module tk --name cli cli.py"
+# Clean build artifacts
+clean = "rm -rf dist build"
+
+# Additional build tasks
+build-check = "pyinstaller --version"
+package = "cd dist && tar -czf ../software-installer.tar.gz *"
+
+[dependencies]
+python = ">=3.13.3,<3.14"
+rich = ">=14.0.0,<15"
+distro = ">=1.9.0,<2"
+
+[build-dependencies]
+pyinstaller = ">=6.13.0,<7"
