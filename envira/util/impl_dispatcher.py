@@ -129,8 +129,9 @@ class _ImplRegistry:
                                 return result
                             else:
                                 return Success(result)
-                except Exception:
-                    # Continue to next implementation
+                except Exception as e:
+                    # Add exception to errors and continue to next implementation
+                    errors.append(e)
                     continue
             
             # Try fallback implementations
@@ -150,12 +151,17 @@ class _ImplRegistry:
                                 return result
                             else:
                                 return Success(result)
-                except Exception:
-                    # Continue to next implementation
+                except Exception as e:
+                    # Add exception to errors and continue to next implementation
+                    errors.append(e)
                     continue
             
             # All implementations failed
-            return Failure(Exception("\n".join(errors)))
+            if errors:
+                error_messages = "\n".join(str(error) for error in errors)
+                return Failure(Exception(f"All implementations failed:\n{error_messages}"))
+            else:
+                return Failure(Exception("All implementations failed"))
         
         # Set wrapper metadata
         wrapper.__name__ = func_name
