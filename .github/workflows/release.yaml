@@ -102,6 +102,8 @@ jobs:
   release-web:
     needs: build-executable
     uses: ./.github/workflows/release_web.yaml
+    secrets:
+      DEPLOY_PRIVATE: ${{ secrets.DEPLOY_PRIVATE }}
 
   release:
     needs: [build-executable, publish]
