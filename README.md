@@ -17,8 +17,11 @@ What tools will be installed:
 
 ## How to use it
 ```shell
+# lagacy scripts
 curl -fsSL https://boot.controlnet.space/ | bash  # if you have sudo permission
 curl -fsSL https://boot.controlnet.space/user | bash  # if you don't have sudo permission
+# new scripts (still in development)
+curl -fsSL https://boot.controlnet.space/envira | bash && ~/.local/bin/envira
 ```
 
 ### For docker
