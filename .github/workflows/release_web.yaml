@@ -18,17 +18,20 @@ jobs:
       run: |
         mkdir -p ~/dist
         mkdir -p ~/dist/user
+        mkdir -p ~/dist/envira
+        mv files ~/dist/files
 
     - name: Download executable artifact
       uses: actions/download-artifact@v4
       with:
         name: executable
-        path: ~/dist
+        path: ~/dist/files
 
     - name: Clean files
       run: |
         mv run.sh ~/dist/index.html
         mv run_user.sh ~/dist/user/index.html
+        mv envira.sh ~/dist/envira/index.html
         echo "boot.controlnet.space" > ~/dist/CNAME
 
     - name: Init git and commit

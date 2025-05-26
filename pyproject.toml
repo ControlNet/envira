@@ -34,7 +34,7 @@ Issues = "https://github.com/ControlNet/envira/issues"
 envira = "envira.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["envira*"]
+include = ["envira", "envira.*"]
 exclude = ["tests*", "test*"]
 
 [tool.setuptools_scm]
