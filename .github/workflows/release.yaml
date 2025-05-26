@@ -144,6 +144,11 @@ jobs:
       - name: Wait for PyPI to update
         run: sleep 60
 
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.13
+
       - name: Verify installation from PyPI
         run: |
           pip install envira

@@ -22,6 +22,8 @@ curl -fsSL https://boot.controlnet.space/ | bash  # if you have sudo permission
 curl -fsSL https://boot.controlnet.space/user | bash  # if you don't have sudo permission
 # new scripts (still in development)
 curl -fsSL https://boot.controlnet.space/envira | bash && ~/.local/bin/envira
+# or you can install via pipx
+pipx install envira && envira
 ```
 
 ### For docker
@@ -93,28 +95,6 @@ RUN echo "changeps1: false" >> /root/.condarc
 25. Installs several utilities (lsd, git-delta, duf, dust, fd, ripgrep, gping, procs, xh, uv, speedtest-cli, gdown, zoxide, micro, scc, viu, pm2) and sets up aliases for some of them.
 26. Installs several system monitoring tools (bottom, nvitop, bpytop, bandwhich).
 
-# Envira - Software Environment Management Tool
-
-A software environment management tool for console applications.
-
-## Installation
-
-### From PyPI
-```bash
-pipx install envira
-```
-
-### From Binary
-
-TBD
-
-## Usage
-
-After installation, you can use the `envira` command:
-
-```bash
-envira
-```
 
 ## License
 
