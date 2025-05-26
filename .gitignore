@@ -374,3 +374,5 @@ $RECYCLE.BIN/
 *.egg-info
 .cursorignore
 pixi.lock
+envira/_version.py
+pybuild

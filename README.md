@@ -89,3 +89,114 @@ RUN echo "changeps1: false" >> /root/.condarc
 24. Installs ZeroTier, a global P2P VPN.
 25. Installs several utilities (lsd, git-delta, duf, dust, fd, ripgrep, gping, procs, xh, uv, speedtest-cli, gdown, zoxide, micro, scc, viu, pm2) and sets up aliases for some of them.
 26. Installs several system monitoring tools (bottom, nvitop, bpytop, bandwhich).
+
+# Envira - Software Environment Management Tool
+
+A software environment management tool for console applications.
+
+## Installation
+
+### From PyPI
+```bash
+pip install envira
+```
+
+### From Source
+```bash
+git clone https://github.com/ControlNet/my-zsh-theme-env.git
+cd my-zsh-theme-env
+pixi install
+```
+
+## Usage
+
+After installation, you can use the `envira` command:
+
+```bash
+envira
+```
+
+Or run directly with Python:
+```bash
+python -m envira
+```
+
+## Development
+
+This project uses [Pixi](https://pixi.sh/) for dependency management and [pyproject.toml](https://packaging.python.org/en/latest/specifications/declaring-project-metadata/) for packaging.
+
+### Setup Development Environment
+
+```bash
+# Install pixi if you haven't already
+curl -fsSL https://pixi.sh/install.sh | bash
+
+# Install dependencies
+pixi install
+
+# Run the application
+pixi run dev
+
+# Run tests
+pixi run test
+
+# Build standalone executable
+pixi run build
+```
+
+### Project Structure
+
+- **Single Configuration**: All project configuration is in `pyproject.toml`
+  - Python packaging metadata
+  - Dependencies
+  - Pixi development environment
+  - Build tools configuration
+
+### Release Process
+
+The project uses automated releases with dynamic versioning based on Git tags:
+
+1. **Create a Git tag** with semantic versioning:
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+2. **Create a GitHub Release** from the tag - this will automatically:
+   - Run tests
+   - Build the package with version from git tag
+   - Publish to PyPI using trusted publishing
+
+3. **Manual Release** (optional):
+   - Go to GitHub Actions → Release to PyPI → Run workflow
+   - Choose to publish to Test PyPI first for testing
+
+### Version Management
+
+- **Automatic**: Version is determined by Git tags using `setuptools_scm`
+- **Format**: Uses semantic versioning (e.g., `1.0.0`, `1.0.1`, `2.0.0`)
+- **Development**: Local development shows version as `1.0.0.dev0+gitsha`
+
+### Available Pixi Tasks
+
+```bash
+pixi run dev          # Run the application in development mode
+pixi run test         # Run the test suite
+pixi run build        # Build standalone executable (PyInstaller)
+pixi run build-prod   # Build optimized standalone executable
+pixi run clean        # Clean build artifacts
+pixi run package      # Create distribution package
+```
+
+## Configuration
+
+The project uses a unified `pyproject.toml` configuration:
+
+- **Python packaging**: Standard PEP 621 metadata
+- **Dependencies**: Runtime dependencies for the application
+- **Build tools**: setuptools_scm for dynamic versioning
+- **Pixi environment**: Development dependencies and tasks
+
+## License
+
+Apache License 2.0 - see [LICENSE](LICENSE) file for details.

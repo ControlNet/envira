@@ -1,0 +1,167 @@
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
+  workflow_dispatch:
+    inputs:
+      test_pypi:
+        description: 'Upload to Test PyPI instead of PyPI'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.3
+        with:
+          pixi-version: v0.47.0
+          cache: true
+          manifest-path: pyproject.toml
+
+      - name: Run tests
+        run: pixi run test
+
+  build-python:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.3
+        with:
+          pixi-version: v0.47.0
+          cache: true
+          manifest-path: pyproject.toml
+
+      - name: Fetch all tags for setuptools_scm
+        run: git fetch --prune --unshallow --tags
+
+      - name: Build Python package
+        run: pixi run python -m build
+
+      - name: Check Python package
+        run: pixi run twine check dist/*
+
+      - name: Upload Python package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+
+  build-executable:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.3
+        with:
+          pixi-version: v0.47.0
+          cache: true
+          manifest-path: pyproject.toml
+
+      - name: Build standalone executable
+        run: pixi run build-prod
+
+      - name: List built files
+        run: ls -la dist/
+
+      - name: Rename executable
+        run: mv dist/cli dist/envira
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: executable
+          path: dist/envira
+
+  publish:
+    needs: build-python
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.test_pypi == 'true' && 'testpypi' || 'pypi' }}
+      url: ${{ github.event.inputs.test_pypi == 'true' && 'https://test.pypi.org/p/envira' || 'https://pypi.org/p/envira' }}
+    permissions:
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+      - name: Download Python package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+
+      - name: Publish to Test PyPI
+        if: github.event.inputs.test_pypi == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          verbose: true
+
+      - name: Publish to PyPI
+        if: github.event.inputs.test_pypi != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+
+  release:
+    needs: [build-executable, publish]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_pypi != 'true'
+    permissions:
+      contents: write  # IMPORTANT: this permission is mandatory for creating releases
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download executable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: executable
+          path: ./
+
+      - name: Get tag name
+        id: tag
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+          name: Release ${{ steps.tag.outputs.TAG_NAME }}
+          draft: false
+          prerelease: false
+          files: ./envira
+          body: |
+            ## Changes in ${{ steps.tag.outputs.TAG_NAME }}
+            
+            ### Installation
+            
+            **From PyPI:**
+            ```bash
+            pip install envira
+            ```
+            
+            **Standalone Executable:**
+            Download the `envira` file below and make it executable:
+            ```bash
+            chmod +x envira
+            ./envira
+            ```
+
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_pypi != 'true'
+    steps:
+      - name: Wait for PyPI to update
+        run: sleep 60
+
+      - name: Verify installation from PyPI
+        run: |
+          pip install envira
+          python -c "import envira; print('Package installed successfully')"
