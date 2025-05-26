@@ -113,7 +113,7 @@ elif cat /etc/issue | grep -qiE "Manjaro"; then
 
 # if arch
 elif cat /etc/os-release | grep -qiE "Arch"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch neofetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
+    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
     # install yay
     git clone https://aur.archlinux.org/yay.git
     cd yay
@@ -126,7 +126,7 @@ elif cat /etc/os-release | grep -qiE "Arch"; then
 
 # if endeavour os
 elif cat /etc/os-release | grep -qiE "EndeavourOS"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch neofetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
+    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
 
     # install gitkraken
     # considering endeavour os cannot use officila docker install script, so we install it here
