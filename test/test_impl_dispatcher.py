@@ -2,14 +2,12 @@ import unittest
 import os
 import sys
 from unittest.mock import patch
-from typing import Dict, List
 
 # Add the parent directory to sys.path so we can import envira
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from envira.util.impl_dispatcher import on, impl, _registry, _current_os_id, _ImplRegistry, Implementation
-from envira.software.base import Software
-from envira.util.result import Success, Failure, Skip
+from envira.util.result import Success, Failure
 
 
 class TestImplDispatcher(unittest.TestCase):
@@ -297,7 +295,15 @@ class TestImplDispatcher(unittest.TestCase):
                 return Success("success")
             
             # Check that both OS entries have the correct implementation type
-            implementations = _registry._registry.get('test_func', [])
+            # Find the full function name in the registry
+            func_name = None
+            for name in _registry._registry.keys():
+                if name.endswith('test_func'):
+                    func_name = name
+                    break
+            
+            self.assertIsNotNone(func_name, "Could not find test_func in registry")
+            implementations = _registry._registry.get(func_name, [])
             ubuntu_impls = [impl for impl in implementations if 'ubuntu' in impl.os_list]
             linuxmint_impls = [impl for impl in implementations if 'linuxmint' in impl.os_list]
             
@@ -399,8 +405,8 @@ class TestRegistryInternals(unittest.TestCase):
         
         wrapper = self.registry.register(test_func, ["ubuntu"], "preferred")
         
-        self.assertIn("test_func", self.registry._registry)
-        implementations = self.registry._registry["test_func"]
+        self.assertIn("test_impl_dispatcher.TestRegistryInternals.test_registry_registration.<locals>.test_func", self.registry._registry)
+        implementations = self.registry._registry["test_impl_dispatcher.TestRegistryInternals.test_registry_registration.<locals>.test_func"]
         self.assertEqual(len(implementations), 1)
         self.assertEqual(implementations[0].os_list, ["ubuntu"])
         self.assertEqual(implementations[0].impl_type, "preferred")
@@ -417,7 +423,7 @@ class TestRegistryInternals(unittest.TestCase):
         self.assertIs(wrapper1, wrapper2)
         
         # But should have registered both implementations
-        implementations = self.registry._registry["test_func"]
+        implementations = self.registry._registry["test_impl_dispatcher.TestRegistryInternals.test_wrapper_caching.<locals>.test_func"]
         self.assertEqual(len(implementations), 2)
 
 
