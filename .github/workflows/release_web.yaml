@@ -1,27 +1,32 @@
-name: build
+name: Release Web
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
+  workflow_call:
 
 jobs:
-  build:
+  release-web:
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
 
+    - name: Prepare folder
+      run: |
+        mkdir -p ~/dist
+        mkdir -p ~/dist/user
+
+    - name: Download executable artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: executable
+        path: ~/dist
+
     - name: Clean files
       run: |
-        rm -R assets
-        rm -R .github
-        rm -R files
-        mv run.sh index.html
-        mkdir user
-        mv run_user.sh user/index.html
+        mv run.sh ~/dist/index.html
+        mv run_user.sh ~/dist/user/index.html
+        echo "boot.controlnet.space" > ~/dist/CNAME
 
     - name: Init git and commit
       env:
@@ -33,12 +38,13 @@ jobs:
         ssh-keyscan github.com >> ~/.ssh/known_hosts
         git config --global user.email "smczx@hotmail.com"
         git config --global user.name "ControlNet"
-        rm -rf .git
+        cd ~/dist
         git init
         git add -A
         git commit -m "update"
-        git remote add origin-ssh git@github.com:ControlNet/my-zsh-theme-env.git
+        git remote add origin-ssh git@github.com:ControlNet/envira.git
 
     - name: Push
       run: |
         git push origin-ssh HEAD:dist -f
+      working-directory: /home/runner/dist/

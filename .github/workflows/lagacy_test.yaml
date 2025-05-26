@@ -1,0 +1,30 @@
+name: Lagacy Test
+on:
+  workflow_call:
+  pull_request:
+    paths-ignore:
+      - "**"
+      - "!run.sh"
+      - "!run_user.sh"
+        
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, fedora, manjaro, arch]
+        mode: [sudo, user]
+    name: ${{ matrix.os }} ${{ matrix.mode }} test
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build docker image
+        run: docker build -f .github/integration-test/Dockerfile-${{ matrix.os }}-${{ matrix.mode }} -t test_os .
+      
+      - name: Run docker container
+        run: docker run --rm --privileged=true test_os

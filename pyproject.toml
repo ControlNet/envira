@@ -52,6 +52,7 @@ dev = "python -m envira"
 test = "python -m unittest discover test"
 build = "pyinstaller --onedir --distpath dist --workpath pybuild --specpath pybuild --console --noconfirm --noupx --name envira cli.py"
 build-prod = "pyinstaller --onefile --distpath dist --workpath pybuild --specpath pybuild --console --strip --exclude-module pytest --exclude-module tk --name envira cli.py"
+build-package = "python -m build && twine check dist/*"
 clean = "rm -rf dist pybuild build"
 
 [tool.pixi.dependencies]
@@ -65,3 +66,4 @@ twine = "*"
 setuptools = "*"
 setuptools-scm = "*"
 wheel = "*"
+python-build = "*"

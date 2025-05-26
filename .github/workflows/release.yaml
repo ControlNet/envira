@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       test_pypi:
@@ -14,18 +16,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    uses: ./.github/workflows/test.yaml
 
-      - uses: prefix-dev/setup-pixi@v0.8.3
-        with:
-          pixi-version: v0.47.0
-          cache: true
-          manifest-path: pyproject.toml
-
-      - name: Run tests
-        run: pixi run test
+  lagacy-test:
+    uses: ./.github/workflows/lagacy_test.yaml
 
   build-python:
     needs: test
@@ -43,10 +37,7 @@ jobs:
         run: git fetch --prune --unshallow --tags
 
       - name: Build Python package
-        run: pixi run python -m build
-
-      - name: Check Python package
-        run: pixi run twine check dist/*
+        run: pixi run build-package
 
       - name: Upload Python package artifacts
         uses: actions/upload-artifact@v4
@@ -72,9 +63,6 @@ jobs:
       - name: List built files
         run: ls -la dist/
 
-      - name: Rename executable
-        run: mv dist/cli dist/envira
-
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
@@ -82,6 +70,8 @@ jobs:
           path: dist/envira
 
   publish:
+    # skip if pushed from main branch, only trigger on tag push and workflow_dispatch
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     needs: build-python
     runs-on: ubuntu-latest
     environment:
@@ -108,6 +98,10 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
+
+  release-web:
+    needs: build-executable
+    uses: ./.github/workflows/release_web.yaml
 
   release:
     needs: [build-executable, publish]
@@ -137,20 +131,7 @@ jobs:
           prerelease: false
           files: ./envira
           body: |
-            ## Changes in ${{ steps.tag.outputs.TAG_NAME }}
-            
-            ### Installation
-            
-            **From PyPI:**
-            ```bash
-            pip install envira
-            ```
-            
-            **Standalone Executable:**
-            Download the `envira` file below and make it executable:
-            ```bash
-            chmod +x envira
-            ./envira
+            ## [${{ steps.tag.outputs.TAG_NAME }}] Envira Release
             ```
 
   verify:

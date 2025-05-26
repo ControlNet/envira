@@ -2,7 +2,6 @@
 Main Software Installer orchestrator class
 """
 
-import sys
 from typing import Set, List
 
 from rich.console import Console

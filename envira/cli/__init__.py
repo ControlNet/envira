@@ -3,7 +3,6 @@ Software Installation CLI with Rich Visualization
 """
 
 import argparse
-import sys
 
 from .installer import SoftwareInstaller
 from .models import InstallationStep

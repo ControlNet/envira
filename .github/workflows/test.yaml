@@ -1,28 +1,33 @@
-name: test
+name: Test
+
 on:
   push:
-    branches:
+    branches-ignore:
       - main
   pull_request:
-        
+  workflow_call:
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu, fedora, manjaro, arch]
-        mode: [sudo, user]
-    name: ${{ matrix.os }} ${{ matrix.mode }} test
-    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Build docker image
-        run: docker build -f .github/integration-test/Dockerfile-${{ matrix.os }}-${{ matrix.mode }} -t test_os .
-      
-      - name: Run docker container
-        run: docker run --rm --privileged=true test_os
+      - uses: prefix-dev/setup-pixi@v0.8.3
+        with:
+          pixi-version: v0.47.0
+          cache: true
+          manifest-path: pyproject.toml
+
+      - name: Run tests
+        run: pixi run test
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            coverage.xml
+          retention-days: 30 
