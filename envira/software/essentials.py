@@ -448,7 +448,7 @@ class Btop(Software):
         return self.install_user()
 
     def is_installed_sudo(self) -> bool | None:
-        return os.path.exists(f"/usr/local/bin/btop")
+        return os.path.exists(f"/usr/local/bin/btop") or os.path.exists(f"/usr/bin/btop")
     
     def is_installed_user(self) -> bool | None:
         return os.path.exists(f"{home}/.local/bin/btop")
