@@ -276,10 +276,10 @@ curl https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/i
 go install github.com/lemonade-command/lemonade@latest
 
 # install zerotier
-curl -s https://install.zerotier.com | sudo bash
+# curl -s https://install.zerotier.com | sudo bash
 
 # install tailscale
-curl -fsSL https://tailscale.com/install.sh | sh
+# curl -fsSL https://tailscale.com/install.sh | sh
 
 # install lsd with alias to ls
 cargo install lsd
