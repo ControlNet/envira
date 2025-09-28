@@ -241,6 +241,11 @@ echo '[flavor]\nuse = "onedark"' > ~/.config/yazi/theme.toml
 npm config set prefix '~/.local/'
 npm install -g pm2
 
+# install CLI agents
+npm install -g @openai/codex@latest
+npm install -g @google/gemini-cli
+curl https://cursor.com/install -fsS | bash
+
 # install cargo-update
 cargo install cargo-update
 
