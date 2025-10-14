@@ -162,11 +162,11 @@ echo "alias du='dust'" >> ~/.zshrc
 
 # add fd as the alias to find
 cargo install fd-find
-echo "alias find='fd'" >> ~/.zshrc
+# echo "alias find='fd'" >> ~/.zshrc
 
 # add riggrep as the alias to grep
 cargo install --features "pcre2" ripgrep
-echo "alias grep='rg'" >> ~/.zshrc
+# echo "alias grep='rg'" >> ~/.zshrc
 
 # install gping as the alias to ping
 cargo install gping
