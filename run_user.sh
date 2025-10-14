@@ -230,6 +230,7 @@ wget https://github.com/yorukot/superfile/releases/download/v1.1.5/superfile-lin
 tar -xvf superfile-linux-v1.1.5-amd64.tar.gz
 mv dist/superfile-linux-v1.1.5-amd64/spf ~/.local/bin
 rm -r dist superfile-linux-v1.1.5-amd64.tar.gz
+sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/superfile/config.toml
 
 # install yazi (CLI file manager)
 cargo install yazi-fm yazi-cli

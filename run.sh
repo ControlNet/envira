@@ -370,6 +370,7 @@ pipx install "huggingface-hub[cli,hf_xet]"
 
 # install superfile (CLI file manager)
 bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)"
+sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/superfile/config.toml
 
 # install yazi (CLI file manager)
 cargo install yazi-fm yazi-cli
