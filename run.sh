@@ -386,6 +386,7 @@ npm install -g pm2
 npm install -g @openai/codex@latest
 npm install -g @google/gemini-cli
 curl https://cursor.com/install -fsS | bash
+npm install -g @anthropic-ai/claude-code
 
 # install cargo-update
 cargo install cargo-update
