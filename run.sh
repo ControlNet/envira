@@ -235,7 +235,7 @@ echo '[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh' >> ~/.zshrc
 source ~/.zshrc
 
 # install nodejs
-nvm install 20
+nvm install 24
 
 # setup LunarVim
 LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y
