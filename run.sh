@@ -142,8 +142,8 @@ fi
 # update pciids
 sudo update-pciids
 
-# install nvm for nodejs
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+# install fnm for nodejs
+curl -o- https://fnm.vercel.app/install | bash
 
 # set tmux color
 echo "set -g default-terminal \"screen-256color\"" >> ~/.tmux.conf
@@ -219,10 +219,13 @@ echo 'export PATH=$GOROOT/bin:$PATH' >> ~/.zshrc
 echo 'export GOPATH=$HOME/go' >> ~/.zshrc
 echo 'export PATH=$GOPATH/bin:$PATH' >> ~/.zshrc
 
-# setup nvm environment variables
-echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.zshrc
-echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm' >> ~/.zshrc
-echo '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion' >> ~/.zshrc
+# setup fnm environment variables
+echo 'export NFNM_PATH="$HOME/.local/share/fnm"' >> ~/.zshrc
+echo 'if [ -d "$FNM_PATH" ]; then' >> ~/.zshrc
+echo '  export PATH="$FNM_PATH:$PATH"' >> ~/.zshrc
+echo '  eval "`fnm env`"' >> ~/.zshrc
+echo 'fi' >> ~/.zshrc
+echo 'eval "$(fnm completions --shell zsh)"' >> ~/.zshrc
 
 # install fzf
 git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
@@ -235,7 +238,7 @@ echo '[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh' >> ~/.zshrc
 source ~/.zshrc
 
 # install nodejs
-nvm install 24
+fnm install --lts
 
 # setup LunarVim
 LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y
