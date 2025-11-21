@@ -388,6 +388,7 @@ npm install -g pm2
 # install CLI agents
 npm install -g @openai/codex@latest
 echo "features.web_search_request = true" >> ~/.codex/config.toml
+echo "sandbox_workspace_write.network_access = true" >> ~/.codex/config.toml
 npm install -g @google/gemini-cli
 curl https://cursor.com/install -fsS | bash
 npm install -g @anthropic-ai/claude-code
