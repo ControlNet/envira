@@ -220,7 +220,7 @@ echo 'export GOPATH=$HOME/go' >> ~/.zshrc
 echo 'export PATH=$GOPATH/bin:$PATH' >> ~/.zshrc
 
 # setup fnm environment variables
-echo 'export NFNM_PATH="$HOME/.local/share/fnm"' >> ~/.zshrc
+echo 'export FNM_PATH="$HOME/.local/share/fnm"' >> ~/.zshrc
 echo 'if [ -d "$FNM_PATH" ]; then' >> ~/.zshrc
 echo '  export PATH="$FNM_PATH:$PATH"' >> ~/.zshrc
 echo '  eval "`fnm env`"' >> ~/.zshrc
