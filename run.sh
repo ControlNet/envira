@@ -52,9 +52,8 @@ elif cat /etc/issue | grep -qiE "Mint|Ubuntu|Pop\!_OS"; then
     # update and install
     sudo apt update
     sudo apt install -y iputils-ping net-tools python3-venv apt-utils make openssh-server gedit vim git git-lfs curl wget zsh gcc make perl build-essential libfuse2 python3-pip screen tmux ncdu bat pipx xsel screenfetch neofetch p7zip-full unzip mosh nmap
-
-    # create a symlink for batcat to bat
-    ln -s /usr/bin/batcat ~/.local/bin/bat
+    # create a system-wide symlink for batcat to bat
+    sudo ln -sf /usr/bin/batcat /usr/local/bin/bat
 
     # install ctop
     sudo wget https://github.com/bcicen/ctop/releases/download/v0.7.7/ctop-0.7.7-linux-amd64 -O /usr/local/bin/ctop
@@ -192,24 +191,38 @@ rm miniconda_installer.sh
 # hide conda prefix
 echo "changeps1: false" >> ~/.condarc
 
-# setup cargo
+# setup cargo (Rust toolchain)
 curl https://sh.rustup.rs -sSf | sh -s -- -y
+# expose Rust toolchain binaries system-wide
+if [ -x "$HOME/.cargo/bin/rustup" ]; then
+    sudo install "$HOME/.cargo/bin/rustup" /usr/local/bin/rustup
+fi
+if [ -x "$HOME/.cargo/bin/cargo" ]; then
+    sudo install "$HOME/.cargo/bin/cargo" /usr/local/bin/cargo
+fi
 
-# setup go
-wget -q -O - https://git.io/vQhTU | bash
+# setup Go
+wget -q -O - https://raw.githubusercontent.com/ControlNet/golang-tools-install-script/refs/heads/master/goinstall.sh | bash
+# expose Go toolchain binaries system-wide (assuming default ~/.go layout)
+if [ -x "$HOME/.go/bin/go" ]; then
+    sudo ln -sf "$HOME/.go/bin/go" /usr/local/bin/go
+fi
+if [ -x "$HOME/.go/bin/gofmt" ]; then
+    sudo ln -sf "$HOME/.go/bin/gofmt" /usr/local/bin/gofmt
+fi
 
 # setup lazygit
 LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
 curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
 tar xf lazygit.tar.gz lazygit
-install lazygit ~/.local/bin/lazygit
+sudo install lazygit /usr/local/bin/lazygit
 rm lazygit.tar.gz lazygit
 
 # setup neovim
 curl -LO https://github.com/neovim/neovim/releases/download/v0.9.5/nvim-linux64.tar.gz
 tar -xzf nvim-linux64.tar.gz
 mv nvim-linux64 ~/.nvim
-ln -s $HOME/.nvim/bin/nvim $HOME/.local/bin/nvim
+sudo ln -sf $HOME/.nvim/bin/nvim /usr/local/bin/nvim
 rm nvim-linux64.tar.gz
 
 # setup GoLang environment variables (which is only set for bash in previous)
@@ -244,6 +257,9 @@ fnm install --lts
 LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y
 ~/miniconda3/bin/python -m pip install neovim
 
+# setup conda
+~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 # use faster libmamba solver for conda
 ~/miniconda3/bin/conda install -n base -y conda-libmamba-solver
 ~/miniconda3/bin/conda config --set solver libmamba
@@ -286,62 +302,77 @@ go install github.com/lemonade-command/lemonade@latest
 
 # install lsd with alias to ls
 cargo install lsd
+sudo install "$HOME/.cargo/bin/lsd" /usr/local/bin/lsd
 echo "alias ls='lsd'" >> ~/.zshrc
 
 # install cargo cache for cleaning cache of cargo
 cargo install cargo-cache
+sudo install "$HOME/.cargo/bin/cargo-cache" /usr/local/bin/cargo-cache
 
 # install git-delta
 cargo install git-delta
+sudo install "$HOME/.cargo/bin/delta" /usr/local/bin/delta
 
 # add duf as the alias to df
 go install github.com/muesli/duf@latest
+sudo install "$HOME/go/bin/duf" /usr/local/bin/duf
 echo "alias df='duf'" >> ~/.zshrc
 
 # add dust as the alias to du
 cargo install du-dust
+sudo install "$HOME/.cargo/bin/dust" /usr/local/bin/dust
 echo "alias du='dust'" >> ~/.zshrc
 
 # add fd as the alias to find
 cargo install fd-find
+sudo install "$HOME/.cargo/bin/fd" /usr/local/bin/fd
 # echo "alias find='fd'" >> ~/.zshrc
 
 # add riggrep as the alias to grep
 cargo install --features "pcre2" ripgrep
+sudo install "$HOME/.cargo/bin/rg" /usr/local/bin/rg
 # echo "alias grep='rg'" >> ~/.zshrc
 
 # install gping as the alias to ping
 cargo install gping
+sudo install "$HOME/.cargo/bin/gping" /usr/local/bin/gping
 echo "alias ping='gping'" >> ~/.zshrc
 
 # install procs as the alias to ps
 cargo install procs
+sudo install "$HOME/.cargo/bin/procs" /usr/local/bin/procs
 echo "alias ps='procs'" >> ~/.zshrc
 
 # install xh (http client)
 cargo install xh
+sudo install "$HOME/.cargo/bin/xh" /usr/local/bin/xh
 
 # install uv (faster pip)
 pipx install uv
+sudo ln -sf "$HOME/.local/bin/uv" /usr/local/bin/uv
 
 # install pixi (conda + poetry)
 curl -fsSL https://pixi.sh/install.sh | bash
 echo 'eval "$(pixi completion --shell zsh)"' >> ~/.zshrc
 mkdir -p ~/.config/pixi
 echo "shell.change-ps1 = false" > ~/.config/pixi/config.toml
-ln -s ~/.pixi/bin/pixi ~/.local/bin/pixi
+sudo ln -sf "$HOME/.pixi/bin/pixi" /usr/local/bin/pixi
 
 # install speedtest-cli (internet speed test)
 pipx install speedtest-cli
+sudo ln -sf "$HOME/.local/bin/speedtest-cli" /usr/local/bin/speedtest-cli
 
 # install gdown (google drive downloader)
 pipx install gdown
+sudo ln -sf "$HOME/.local/bin/gdown" /usr/local/bin/gdown
 
 # install archey4
 pipx install archey4
+sudo ln -sf "$HOME/.local/bin/archey4" /usr/local/bin/archey4
 
 # install genact
 cargo install genact
+sudo install "$HOME/.cargo/bin/genact" /usr/local/bin/genact
 
 # install rust-motd, work later
 # cargo install --git https://github.com/rust-motd/rust-motd
@@ -353,37 +384,48 @@ echo 'eval "$(zoxide init zsh)"' >> ~/.zshrc
 
 # install micro (better nano)
 curl https://getmic.ro | bash
-mv micro ~/.local/bin
+sudo install micro /usr/local/bin/micro
+rm micro
 echo "alias nano='micro'" >> ~/.zshrc
 
 # install scc (code counter)
 go install github.com/boyter/scc/v3@latest
+sudo install "$HOME/go/bin/scc" /usr/local/bin/scc
 
 # install viu (image viewer)
 cargo install viu
+sudo install "$HOME/.cargo/bin/viu" /usr/local/bin/viu
 
 # install dive (docker image explorer)
 go install github.com/wagoodman/dive@latest
+sudo install "$HOME/go/bin/dive" /usr/local/bin/dive
 
 # install tldr (CLI command help)
 pipx install tldr
+sudo ln -sf "$HOME/.local/bin/tldr" /usr/local/bin/tldr
 
 # install huggingface CLI
 pipx install "huggingface-hub[cli,hf_xet]"
+sudo ln -sf "$HOME/.local/bin/huggingface-cli" /usr/local/bin/huggingface-cli
 
 # install superfile (CLI file manager)
 bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)"
 sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/superfile/config.toml
+sudo ln -sf "$HOME/.local/bin/superfile" /usr/local/bin/superfile
 
 # install yazi (CLI file manager)
 cargo install yazi-fm yazi-cli
 mkdir -p ~/.config/yazi
 ya pack -a BennyOe/onedark
-echo '[flavor]\nuse = "onedark"' > ~/.config/yazi/theme.toml
+echo '[flavor]' > ~/.config/yazi/theme.toml
+echo 'use = "onedark"' >> ~/.config/yazi/theme.toml
+sudo install "$HOME/.cargo/bin/yazi" /usr/local/bin/yazi
+sudo install "$HOME/.cargo/bin/ya" /usr/local/bin/ya
 
 # install pm2
 npm config set prefix '~/.local/'
 npm install -g pm2
+sudo ln -sf "$HOME/.local/bin/pm2" /usr/local/bin/pm2
 
 # install CLI agents
 npm install -g @openai/codex@latest
@@ -393,27 +435,32 @@ echo "sandbox_workspace_write.network_access = true" >> ~/.codex/config.toml
 npm install -g @google/gemini-cli
 curl https://cursor.com/install -fsS | bash
 npm install -g @anthropic-ai/claude-code
-
-# install cargo-update
-cargo install cargo-update
+sudo ln -sf "$HOME/.local/bin/openai" /usr/local/bin/openai || true
+sudo ln -sf "$HOME/.local/bin/gemini" /usr/local/bin/gemini || true
+sudo ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude || true
 
 # install rustscan
 cargo install rustscan
+sudo install "$HOME/.cargo/bin/rustscan" /usr/local/bin/rustscan
 
 # install gotify
 go install github.com/gotify/cli@latest
 mv ~/go/bin/cli ~/go/bin/gotify
+sudo install "$HOME/go/bin/gotify" /usr/local/bin/gotify
 
 # Monitoring tools
 
 # install bottom (system monitoring)
 cargo install bottom
+sudo install "$HOME/.cargo/bin/btm" /usr/local/bin/btm
 
 # install nvitop (nvidia gpu monitoring)
 pipx install nvitop
+sudo ln -sf "$HOME/.local/bin/nvitop" /usr/local/bin/nvitop
 
 # install nviwatch (nvidia gpu monitoring)
 cargo install nviwatch
+sudo install "$HOME/.cargo/bin/nviwatch" /usr/local/bin/nviwatch
 
 # install bpytop (better htop)
 # pipx install bpytop
@@ -432,16 +479,16 @@ pipx install rich-cli
 curl -sS https://webi.sh/gh | sh
 
 # install syncthing (file sync)
-curl -sS https://webinstall.dev/syncthing | bash
-mkdir -p ~/.config/systemd/user
-wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/syncthing.service -O ~/.config/systemd/user/syncthing.service
-systemctl --user enable syncthing.service
-systemctl --user start syncthing.service
+# curl -sS https://webinstall.dev/syncthing | bash
+# mkdir -p ~/.config/systemd/user
+# wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/syncthing.service -O ~/.config/systemd/user/syncthing.service
+# systemctl --user enable syncthing.service
+# systemctl --user start syncthing.service
 
 # setup the jupyter systemctl
-wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/jupyter.service -O ~/.config/systemd/user/jupyter.service
-systemctl --user enable jupyter.service
-systemctl --user start jupyter.service
+# wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/jupyter.service -O ~/.config/systemd/user/jupyter.service
+# systemctl --user enable jupyter.service
+# systemctl --user start jupyter.service
 
 # run portainer agent
 # disable as it requires docker which might not feasible in some cases

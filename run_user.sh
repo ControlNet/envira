@@ -84,7 +84,7 @@ echo "changeps1: false" >> ~/.condarc
 curl https://sh.rustup.rs -sSf | sh -s -- -y
 
 # setup go
-wget -q -O - https://git.io/vQhTU | bash
+wget -q -O - https://raw.githubusercontent.com/ControlNet/golang-tools-install-script/refs/heads/master/goinstall.sh | bash
 
 # setup lazygit
 LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
@@ -254,9 +254,6 @@ npm install -g @google/gemini-cli
 curl https://cursor.com/install -fsS | bash
 npm install -g @anthropic-ai/claude-code
 
-# install cargo-update
-cargo install cargo-update
-
 # install rustscan
 cargo install rustscan
 
@@ -293,16 +290,16 @@ pipx install rich-cli
 curl -sS https://webi.sh/gh | sh
 
 # install syncthing (file sync)
-curl -sS https://webinstall.dev/syncthing | bash
-mkdir -p ~/.config/systemd/user
-wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/syncthing.service -O ~/.config/systemd/user/syncthing.service
-systemctl --user enable syncthing.service
-systemctl --user start syncthing.service
+# curl -sS https://webinstall.dev/syncthing | bash
+# mkdir -p ~/.config/systemd/user
+# wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/syncthing.service -O ~/.config/systemd/user/syncthing.service
+# systemctl --user enable syncthing.service
+# systemctl --user start syncthing.service
 
 # setup the jupyter systemctl
-wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/jupyter.service -O ~/.config/systemd/user/jupyter.service
-systemctl --user enable jupyter.service
-systemctl --user start jupyter.service
+# wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/jupyter.service -O ~/.config/systemd/user/jupyter.service
+# systemctl --user enable jupyter.service
+# systemctl --user start jupyter.service
 
 cargo cache -a
 
