@@ -356,7 +356,6 @@ curl -fsSL https://pixi.sh/install.sh | bash
 echo 'eval "$(pixi completion --shell zsh)"' >> ~/.zshrc
 mkdir -p ~/.config/pixi
 echo "shell.change-ps1 = false" > ~/.config/pixi/config.toml
-sudo ln -sf "$HOME/.pixi/bin/pixi" /usr/local/bin/pixi
 
 # install speedtest-cli (internet speed test)
 pipx install speedtest-cli
