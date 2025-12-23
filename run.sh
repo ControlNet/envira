@@ -26,7 +26,7 @@ if [[ -f /etc/redhat-release ]]; then
         sudo yum install -y neofetch
 
         # install btop
-        wget https://github.com/aristocratos/btop/releases/download/v1.4.0/btop-x86_64-linux-musl.tbz -O btop.tbz
+        wget https://github.com/aristocratos/btop/releases/download/v1.4.5/btop-x86_64-linux-musl.tbz -O btop.tbz
         tar -xvf btop.tbz
         cd btop && ./install.sh
         cd ..
@@ -73,7 +73,7 @@ elif cat /etc/issue | grep -qiE "Mint|Ubuntu|Pop\!_OS"; then
     sudo apt install -y fastfetch
 
     # install btop
-    wget https://github.com/aristocratos/btop/releases/download/v1.4.0/btop-x86_64-linux-musl.tbz -O btop.tbz
+    wget https://github.com/aristocratos/btop/releases/download/v1.4.5/btop-x86_64-linux-musl.tbz -O btop.tbz
     tar -xvf btop.tbz
     cd btop && ./install.sh
     cd ..
