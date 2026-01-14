@@ -254,8 +254,17 @@ mkdir -p ~/.codex
 echo "features.web_search_request = true" >> ~/.codex/config.toml
 echo "sandbox_workspace_write.network_access = true" >> ~/.codex/config.toml
 npm install -g @google/gemini-cli
-curl https://cursor.com/install -fsS | bash
-npm install -g @anthropic-ai/claude-code
+curl -fsSL https://cursor.com/install | bash
+curl -fsSL https://claude.ai/install.sh | bash
+curl -fsSL https://opencode.ai/install | bash
+curl -fsSL https://bun.sh/install | bash
+~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --chatgpt=no --gemini=no
+
+# because it's installed in bash, so we need to manually add it to .zshrc
+echo 'export PATH="$HOME/.opencode/bin:$PATH"' >> ~/.zshrc
+echo '[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"' >> ~/.zshrc
+echo 'export BUN_INSTALL="$HOME/.bun"' >> ~/.zshrc
+echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> ~/.zshrc
 
 # install rustscan
 cargo install rustscan
