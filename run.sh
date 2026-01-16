@@ -429,8 +429,8 @@ sudo ln -sf "$HOME/.local/bin/pm2" /usr/local/bin/pm2
 # install CLI agents
 npm install -g @openai/codex@latest
 mkdir -p ~/.codex
+echo "network_access = true" >> ~/.codex/config.toml
 echo "features.web_search_request = true" >> ~/.codex/config.toml
-echo "sandbox_workspace_write.network_access = true" >> ~/.codex/config.toml
 npm install -g @google/gemini-cli
 curl -fsSL https://cursor.com/install | bash
 curl -fsSL https://claude.ai/install.sh | bash
