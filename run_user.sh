@@ -242,7 +242,8 @@ sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/s
 cargo install yazi-fm yazi-cli
 mkdir -p ~/.config/yazi
 ya pack -a BennyOe/onedark
-echo '[flavor]\nuse = "onedark"' > ~/.config/yazi/theme.toml
+echo '[flavor]' > ~/.config/yazi/theme.toml
+echo 'use = "onedark"' >> ~/.config/yazi/theme.toml
 
 # install pm2
 npm config set prefix '~/.local/'
