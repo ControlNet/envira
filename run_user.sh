@@ -239,7 +239,7 @@ rm -r dist superfile-linux-v1.1.5-amd64.tar.gz
 sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/superfile/config.toml
 
 # install yazi (CLI file manager)
-cargo install yazi-fm yazi-cli
+cargo install yazi-build
 mkdir -p ~/.config/yazi
 ya pack -a BennyOe/onedark
 echo '[flavor]' > ~/.config/yazi/theme.toml

@@ -413,7 +413,7 @@ sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/s
 sudo ln -sf "$HOME/.local/bin/superfile" /usr/local/bin/superfile
 
 # install yazi (CLI file manager)
-cargo install yazi-fm yazi-cli
+cargo install yazi-build
 mkdir -p ~/.config/yazi
 ya pack -a BennyOe/onedark
 echo '[flavor]' > ~/.config/yazi/theme.toml
