@@ -148,26 +148,37 @@ curl https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/i
 # install lemonade for neovim/lunarvim clipboard for SSH
 go install github.com/lemonade-command/lemonade@latest
 
+# install cargo-binstall for faster cargo installation
+cargo install cargo-binstall
+export BINSTALL_DISABLE_TELEMETRY=true
+export BINSTALL_NO_CONFIRM=true
+echo "export BINSTALL_DISABLE_TELEMETRY=true" >> ~/.zshrc
+echo "export BINSTALL_NO_CONFIRM=true" >> ~/.zshrc
+
+# install zellij
+cargo binstall zellij
+echo "alias zel='zellij'" >> ~/.zshrc
+
 # install lsd with alias to ls
-cargo install lsd
+cargo binstall lsd
 echo "alias ls='lsd'" >> ~/.zshrc
 
 # install cargo cache for cleaning cache of cargo
-cargo install cargo-cache
+cargo binstall cargo-cache
 
 # install git-delta
-cargo install git-delta
+cargo binstall git-delta
 
 # add duf as the alias to df
 go install github.com/muesli/duf@latest
 echo "alias df='duf'" >> ~/.zshrc
 
 # add dust as the alias to du
-cargo install du-dust
+cargo binstall du-dust
 echo "alias du='dust'" >> ~/.zshrc
 
 # add fd as the alias to find
-cargo install fd-find
+cargo binstall fd-find
 # echo "alias find='fd'" >> ~/.zshrc
 
 # add riggrep as the alias to grep
@@ -175,15 +186,15 @@ cargo install --features "pcre2" ripgrep
 # echo "alias grep='rg'" >> ~/.zshrc
 
 # install gping as the alias to ping
-cargo install gping
+cargo binstall gping
 echo "alias ping='gping'" >> ~/.zshrc
 
 # install procs as the alias to ps
-cargo install procs
+cargo binstall procs
 echo "alias ps='procs'" >> ~/.zshrc
 
 # install xh (http client)
-cargo install xh
+cargo binstall xh
 
 # install uv (faster pip)
 pipx install uv
@@ -206,6 +217,9 @@ pipx install archey4
 # install genact
 cargo install genact
 
+# install rust-motd, work later
+# cargo install --git https://github.com/rust-motd/rust-motd
+
 # install zoxide (better cd)
 curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
 echo 'eval "$(zoxide init bash)"' >> ~/.bashrc
@@ -220,7 +234,7 @@ echo "alias nano='micro'" >> ~/.zshrc
 go install github.com/boyter/scc/v3@latest
 
 # install viu (image viewer)
-cargo install viu
+cargo binstall viu
 
 # install dive (docker image explorer)
 go install github.com/wagoodman/dive@latest
@@ -232,10 +246,7 @@ pipx install tldr
 pipx install "huggingface-hub[cli,hf_xet]"
 
 # install superfile (CLI file manager)
-wget https://github.com/yorukot/superfile/releases/download/v1.1.5/superfile-linux-v1.1.5-amd64.tar.gz
-tar -xvf superfile-linux-v1.1.5-amd64.tar.gz
-mv dist/superfile-linux-v1.1.5-amd64/spf ~/.local/bin
-rm -r dist superfile-linux-v1.1.5-amd64.tar.gz
+bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)"
 sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/superfile/config.toml
 
 # install yazi (CLI file manager)
@@ -268,7 +279,7 @@ echo 'export BUN_INSTALL="$HOME/.bun"' >> ~/.zshrc
 echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> ~/.zshrc
 
 # install rustscan
-cargo install rustscan
+cargo binstall rustscan
 
 # install gotify
 go install github.com/gotify/cli@latest
@@ -277,13 +288,13 @@ mv ~/go/bin/cli ~/go/bin/gotify
 # Monitoring tools
 
 # install bottom (system monitoring)
-cargo install bottom
+cargo binstall bottom
 
 # install nvitop (nvidia gpu monitoring)
 pipx install nvitop
 
 # install nviwatch (nvidia gpu monitoring)
-cargo install nviwatch
+cargo binstall nviwatch
 
 # install bpytop (better htop)
 # pipx install bpytop

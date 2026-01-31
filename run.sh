@@ -300,17 +300,28 @@ go install github.com/lemonade-command/lemonade@latest
 # install tailscale
 # curl -fsSL https://tailscale.com/install.sh | sh
 
+# install cargo-binstall for faster cargo installation
+cargo install cargo-binstall
+export BINSTALL_DISABLE_TELEMETRY=true
+export BINSTALL_NO_CONFIRM=true
+echo "export BINSTALL_DISABLE_TELEMETRY=true" >> ~/.zshrc
+echo "export BINSTALL_NO_CONFIRM=true" >> ~/.zshrc
+
+# install zellij
+cargo binstall zellij
+echo "alias zel='zellij'" >> ~/.zshrc
+
 # install lsd with alias to ls
-cargo install lsd
+cargo binstall lsd
 sudo install "$HOME/.cargo/bin/lsd" /usr/local/bin/lsd
 echo "alias ls='lsd'" >> ~/.zshrc
 
 # install cargo cache for cleaning cache of cargo
-cargo install cargo-cache
+cargo binstall cargo-cache
 sudo install "$HOME/.cargo/bin/cargo-cache" /usr/local/bin/cargo-cache
 
 # install git-delta
-cargo install git-delta
+cargo binstall git-delta
 sudo install "$HOME/.cargo/bin/delta" /usr/local/bin/delta
 
 # add duf as the alias to df
@@ -319,12 +330,12 @@ sudo install "$HOME/go/bin/duf" /usr/local/bin/duf
 echo "alias df='duf'" >> ~/.zshrc
 
 # add dust as the alias to du
-cargo install du-dust
+cargo binstall du-dust
 sudo install "$HOME/.cargo/bin/dust" /usr/local/bin/dust
 echo "alias du='dust'" >> ~/.zshrc
 
 # add fd as the alias to find
-cargo install fd-find
+cargo binstall fd-find
 sudo install "$HOME/.cargo/bin/fd" /usr/local/bin/fd
 # echo "alias find='fd'" >> ~/.zshrc
 
@@ -334,17 +345,17 @@ sudo install "$HOME/.cargo/bin/rg" /usr/local/bin/rg
 # echo "alias grep='rg'" >> ~/.zshrc
 
 # install gping as the alias to ping
-cargo install gping
+cargo binstall gping
 sudo install "$HOME/.cargo/bin/gping" /usr/local/bin/gping
 echo "alias ping='gping'" >> ~/.zshrc
 
 # install procs as the alias to ps
-cargo install procs
+cargo binstall procs
 sudo install "$HOME/.cargo/bin/procs" /usr/local/bin/procs
 echo "alias ps='procs'" >> ~/.zshrc
 
 # install xh (http client)
-cargo install xh
+cargo binstall xh
 sudo install "$HOME/.cargo/bin/xh" /usr/local/bin/xh
 
 # install uv (faster pip)
@@ -392,7 +403,7 @@ go install github.com/boyter/scc/v3@latest
 sudo install "$HOME/go/bin/scc" /usr/local/bin/scc
 
 # install viu (image viewer)
-cargo install viu
+cargo binstall viu
 sudo install "$HOME/.cargo/bin/viu" /usr/local/bin/viu
 
 # install dive (docker image explorer)
@@ -445,7 +456,7 @@ echo 'export BUN_INSTALL="$HOME/.bun"' >> ~/.zshrc
 echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> ~/.zshrc
 
 # install rustscan
-cargo install rustscan
+cargo binstall rustscan
 sudo install "$HOME/.cargo/bin/rustscan" /usr/local/bin/rustscan
 
 # install gotify
@@ -456,7 +467,7 @@ sudo install "$HOME/go/bin/gotify" /usr/local/bin/gotify
 # Monitoring tools
 
 # install bottom (system monitoring)
-cargo install bottom
+cargo binstall bottom
 sudo install "$HOME/.cargo/bin/btm" /usr/local/bin/btm
 
 # install nvitop (nvidia gpu monitoring)
@@ -464,7 +475,7 @@ pipx install nvitop
 sudo ln -sf "$HOME/.local/bin/nvitop" /usr/local/bin/nvitop
 
 # install nviwatch (nvidia gpu monitoring)
-cargo install nviwatch
+cargo binstall nviwatch
 sudo install "$HOME/.cargo/bin/nviwatch" /usr/local/bin/nviwatch
 
 # install bpytop (better htop)
@@ -474,7 +485,7 @@ sudo install "$HOME/.cargo/bin/nviwatch" /usr/local/bin/nviwatch
 echo "alias top='btop'" >> ~/.zshrc
 
 # install bandwhich (bandwidth monitoring)
-cargo install bandwhich
+cargo binstall bandwhich
 sudo install $HOME/.cargo/bin/bandwhich /usr/local/bin
 
 # install rich cli
