@@ -301,7 +301,7 @@ go install github.com/lemonade-command/lemonade@latest
 # curl -fsSL https://tailscale.com/install.sh | sh
 
 # install cargo-binstall for faster cargo installation
-cargo install cargo-binstall
+curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 export BINSTALL_DISABLE_TELEMETRY=true
 export BINSTALL_NO_CONFIRM=true
 echo "export BINSTALL_DISABLE_TELEMETRY=true" >> ~/.zshrc
