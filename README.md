@@ -20,6 +20,7 @@ What tools will be installed:
 # lagacy scripts
 curl -fsSL https://boot.controlnet.space/ | bash  # if you have sudo permission
 curl -fsSL https://boot.controlnet.space/user | bash  # if you don't have sudo permission
+curl -fsSL https://boot.controlnet.space/verify | bash  # verify the installation
 # new scripts (still in development)
 curl -fsSL https://boot.controlnet.space/envira | bash && ~/.local/bin/envira
 # or you can install via pipx

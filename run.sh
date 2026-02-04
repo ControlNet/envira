@@ -420,7 +420,11 @@ sudo ln -sf "$HOME/.local/bin/huggingface-cli" /usr/local/bin/huggingface-cli
 
 # install superfile (CLI file manager)
 bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)"
-sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' ~/.config/superfile/config.toml
+CFG="$HOME/.config/superfile/config.toml"
+URL="https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml"
+mkdir -p "$HOME/.config/superfile"
+[ -f "$CFG" ] || curl -fsSL "$URL" -o "$CFG"
+sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' "$CFG"
 sudo ln -sf "$HOME/.local/bin/superfile" /usr/local/bin/superfile
 
 # install yazi (CLI file manager)
