@@ -223,7 +223,7 @@ check_file "$HOME/.bun/bin/bun"
 check_cmd "bun"
 
 section "OpenCode path & Codex config"
-check_dir "$HOME/.opencode"
+check_dir "$HOME/.config/opencode"
 check_dir "$HOME/.codex"
 check_file "$HOME/.codex/config.toml"
 check_contains "$HOME/.codex/config.toml" 'network_access\s*=\s*true' "codex config: network_access=true"

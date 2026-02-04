@@ -448,12 +448,11 @@ echo "network_access = true" >> ~/.codex/config.toml
 npm install -g @google/gemini-cli
 curl -fsSL https://cursor.com/install | bash
 curl -fsSL https://claude.ai/install.sh | bash
-curl -fsSL https://opencode.ai/install | bash
+npm install -g opencode-ai@1.1.38
 curl -fsSL https://bun.sh/install | bash
-~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --chatgpt=no --gemini=no
+~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no
 
 # because it's installed in bash, so we need to manually add it to .zshrc
-echo 'export PATH="$HOME/.opencode/bin:$PATH"' >> ~/.zshrc
 echo '[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"' >> ~/.zshrc
 echo 'export BUN_INSTALL="$HOME/.bun"' >> ~/.zshrc
 echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> ~/.zshrc
