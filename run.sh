@@ -448,7 +448,7 @@ echo "network_access = true" >> ~/.codex/config.toml
 npm install -g @google/gemini-cli
 curl -fsSL https://cursor.com/install | bash
 curl -fsSL https://claude.ai/install.sh | bash
-npm install -g opencode-ai@1.1.38
+curl -fsSL https://opencode.ai/install | bash
 curl -fsSL https://bun.sh/install | bash
 ~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no
 
