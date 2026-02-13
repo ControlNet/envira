@@ -135,6 +135,7 @@ LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.
 # setup conda
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
 # use faster libmamba solver for conda
 ~/miniconda3/bin/conda install -n base -y conda-libmamba-solver
 ~/miniconda3/bin/conda config --set solver libmamba
