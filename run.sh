@@ -311,6 +311,7 @@ echo "export BINSTALL_NO_CONFIRM=true" >> ~/.zshrc
 # install zellij
 cargo binstall zellij
 echo "alias zel='zellij'" >> ~/.zshrc
+curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3
 
 # install lsd with alias to ls
 cargo binstall lsd
