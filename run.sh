@@ -452,6 +452,13 @@ curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://opencode.ai/install | bash
 curl -fsSL https://bun.sh/install | bash
 ~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no
+curl -fsSL https://raw.githubusercontent.com/btriapitsyn/openchamber/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh
+
+# add more relavent tools for agents
+curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)" | bash
+
 
 # because it's installed in bash, so we need to manually add it to .zshrc
 echo '[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"' >> ~/.zshrc
