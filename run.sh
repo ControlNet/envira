@@ -1,5 +1,29 @@
 #!/bin/bash
- 
+
+prepend_path() {
+    case ":$PATH:" in
+        *":$1:"*) ;;
+        *) PATH="$1:$PATH" ;;
+    esac
+}
+
+export GOROOT="$HOME/.go"
+export GOPATH="$HOME/go"
+export FNM_PATH="$HOME/.local/share/fnm"
+export BUN_INSTALL="$HOME/.bun"
+
+prepend_path "$HOME/.local/bin"
+prepend_path "$HOME/.cargo/bin"
+prepend_path "$GOPATH/bin"
+prepend_path "$GOROOT/bin"
+prepend_path "$HOME/.fzf/bin"
+prepend_path "$FNM_PATH"
+prepend_path "$HOME/.pixi/bin"
+prepend_path "$BUN_INSTALL/bin"
+prepend_path "$HOME/.opencode/bin"
+prepend_path "$HOME/.nvim/bin"
+export PATH
+
 # install dev tools
 mkdir -p ~/.local/bin
 # if fedora or centos
@@ -247,11 +271,11 @@ git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
 # setup fzf environment variables
 echo '[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh' >> ~/.zshrc
 
-# try to apply the changes to the current shell (bash), there will be a problem from omz, but can be ignored
-source ~/.zshrc
+eval "$(fnm env --shell bash)"
 
 # install nodejs
-fnm install --lts
+fnm install --lts --use
+eval "$(fnm env --shell bash)"
 
 # setup LunarVim
 LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y
@@ -366,6 +390,7 @@ sudo ln -sf "$HOME/.local/bin/uv" /usr/local/bin/uv
 
 # install pixi (conda + poetry)
 curl -fsSL https://pixi.sh/install.sh | bash
+echo 'export PATH="$HOME/.pixi/bin:$PATH"' >> ~/.zshrc
 echo 'eval "$(pixi completion --shell zsh)"' >> ~/.zshrc
 mkdir -p ~/.config/pixi
 echo "shell.change-ps1 = false" > ~/.config/pixi/config.toml
@@ -439,7 +464,7 @@ sudo install "$HOME/.cargo/bin/yazi" /usr/local/bin/yazi
 sudo install "$HOME/.cargo/bin/ya" /usr/local/bin/ya
 
 # install pm2
-npm config set prefix '~/.local/'
+npm config set prefix "$HOME/.local"
 npm install -g pm2
 sudo ln -sf "$HOME/.local/bin/pm2" /usr/local/bin/pm2
 
