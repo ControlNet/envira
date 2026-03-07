@@ -2,8 +2,8 @@ name: Lagacy Test
 on:
   workflow_call:
   push:
-    branches:
-      - '**'
+    branches-ignore:
+      - main
     paths:
       - 'run.sh'
       - 'run_user.sh'
