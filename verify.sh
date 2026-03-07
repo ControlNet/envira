@@ -27,6 +27,8 @@ add_path "$HOME/.cargo/bin"
 add_path "$HOME/go/bin"
 add_path "$HOME/.go/bin"
 add_path "$HOME/.fzf/bin"
+add_path "$HOME/.local/share/fnm"
+add_path "$HOME/.pixi/bin"
 add_path "$HOME/.bun/bin"
 add_path "$HOME/.opencode/bin"
 add_path "$HOME/.nvim/bin"
@@ -38,6 +40,10 @@ bad()  { printf "%sFAIL%s %s\n"  "$RED" "$RST" "$1"; fail=$((fail+1)); missing+=
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+if command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env --shell bash)" >/dev/null 2>&1 || warn "fnm env: unable to initialize bash environment"
+fi
+
 check_cmd() {
   local c="$1"
   if have_cmd "$c"; then
@@ -45,6 +51,19 @@ check_cmd() {
   else
     bad "cmd: $c"
   fi
+}
+
+check_npm_prefix() {
+  local prefix
+  prefix="$(npm config get prefix 2>/dev/null || true)"
+  case "$prefix" in
+    "$HOME/.local"|"$HOME/.local/")
+      ok "npm prefix: $prefix"
+      ;;
+    *)
+      bad "npm prefix: $prefix (expected $HOME/.local)"
+      ;;
+  esac
 }
 
 check_file() {
@@ -204,9 +223,10 @@ check_cmd "fnm"
 check_cmd "node"
 check_cmd "npm"
 
-# NOTE: run_user.sh sets npm prefix to '~/.local/' (tilde may not expand in npm config).
-# We verify via command presence first; if missing, you likely hit the prefix issue.
 check_cmd "pm2"
+if have_cmd "npm"; then
+  check_npm_prefix
+fi
 
 # @openai/codex -> usually `codex`
 check_cmd "codex"

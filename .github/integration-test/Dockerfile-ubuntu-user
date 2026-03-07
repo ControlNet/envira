@@ -6,7 +6,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # Install the required packages
 RUN apt update
-RUN apt install -y sudo net-tools python3-venv apt-utils make openssh-server gedit vim git git-lfs curl wget zsh gcc make perl build-essential libfuse2 python3-pip
+RUN apt install -y sudo net-tools python3-venv apt-utils make openssh-server gedit vim git git-lfs curl wget zsh gcc make perl build-essential libfuse2 python3-pip unzip
 RUN echo 'debconf debconf/frontend select Noninteractive' | sudo debconf-set-selections
 RUN TZ=Etc/UTC apt install -o DPkg::Options::="--force-confnew" -y tzdata
 

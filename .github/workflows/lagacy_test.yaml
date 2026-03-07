@@ -45,6 +45,8 @@ jobs:
           fi
 
           docker run --rm --privileged=true \
+            -e HOME=/home/user \
+            -w /home/user \
             -v "$PWD:/workspace" \
             test_os \
-            bash -lc "cd /home/user && bash \"$script\" && bash /workspace/verify.sh"
+            bash -lc "bash \"$script\" && bash /workspace/verify.sh"
