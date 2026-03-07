@@ -7,7 +7,28 @@ prepend_path() {
     esac
 }
 
-export GOROOT="$HOME/.go"
+refresh_go_toolchain_path() {
+    if [ -x "$HOME/.go/bin/go" ]; then
+        export GOROOT="$HOME/.go"
+        prepend_path "$GOROOT/bin"
+    fi
+}
+
+ensure_pipx() {
+    if command -v pipx >/dev/null 2>&1; then
+        pipx ensurepath --force || true
+        return 0
+    fi
+
+    if python3 -m pip --version >/dev/null 2>&1; then
+        python3 -m pip install --user pipx
+        python3 -m pipx ensurepath --force || true
+        return 0
+    fi
+
+    echo "pip is unavailable; skipping pipx bootstrap"
+}
+
 export GOPATH="$HOME/go"
 export FNM_PATH="$HOME/.local/share/fnm"
 export BUN_INSTALL="$HOME/.bun"
@@ -15,26 +36,27 @@ export BUN_INSTALL="$HOME/.bun"
 prepend_path "$HOME/.local/bin"
 prepend_path "$HOME/.cargo/bin"
 prepend_path "$GOPATH/bin"
-prepend_path "$GOROOT/bin"
 prepend_path "$HOME/.fzf/bin"
 prepend_path "$FNM_PATH"
 prepend_path "$HOME/.pixi/bin"
 prepend_path "$BUN_INSTALL/bin"
 prepend_path "$HOME/.opencode/bin"
 prepend_path "$HOME/.nvim/bin"
+
+refresh_go_toolchain_path
+
 export PATH
 
 # install dev tools
 mkdir -p ~/.local/bin
 # install pipx
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
+ensure_pipx
 
 # install bat
 wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.25.0/bat-v0.25.0-x86_64-unknown-linux-musl.tar.gz
 tar -xvzf bat.zip -C ~/.local/bin
 mv ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl/bat ~/.local/bin/bat
-rm -r bat-v0.25.0-x86_64-unknown-linux-musl
+rm -r ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl
 rm bat.zip
 
 # install fnm for nodejs
@@ -109,6 +131,8 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y
 
 # setup go
 wget -q -O - https://raw.githubusercontent.com/ControlNet/golang-tools-install-script/refs/heads/master/goinstall.sh | bash
+refresh_go_toolchain_path
+export PATH
 
 # setup lazygit
 LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')

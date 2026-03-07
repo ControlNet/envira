@@ -7,7 +7,6 @@ prepend_path() {
     esac
 }
 
-export GOROOT="$HOME/.go"
 export GOPATH="$HOME/go"
 export FNM_PATH="$HOME/.local/share/fnm"
 export BUN_INSTALL="$HOME/.bun"
@@ -15,13 +14,18 @@ export BUN_INSTALL="$HOME/.bun"
 prepend_path "$HOME/.local/bin"
 prepend_path "$HOME/.cargo/bin"
 prepend_path "$GOPATH/bin"
-prepend_path "$GOROOT/bin"
 prepend_path "$HOME/.fzf/bin"
 prepend_path "$FNM_PATH"
 prepend_path "$HOME/.pixi/bin"
 prepend_path "$BUN_INSTALL/bin"
 prepend_path "$HOME/.opencode/bin"
 prepend_path "$HOME/.nvim/bin"
+
+if [ -d "$HOME/.go" ]; then
+    export GOROOT="$HOME/.go"
+    prepend_path "$GOROOT/bin"
+fi
+
 export PATH
 
 # install dev tools
@@ -126,7 +130,7 @@ elif cat /etc/os-release | grep -qiE "openSUSE"; then
 
 # if manjaro
 elif cat /etc/issue | grep -qiE "Manjaro"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch neofetch fastfetch p7zip unzip yay mosh iperf3 nmap btop
+    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch neofetch fastfetch p7zip unzip yay mosh iperf3 nmap btop
 
     # install vncserver
     sudo pacman -Sy --noconfirm tigervnc
@@ -136,7 +140,7 @@ elif cat /etc/issue | grep -qiE "Manjaro"; then
 
 # if arch
 elif cat /etc/os-release | grep -qiE "Arch"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
+    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
     # install yay
     git clone https://aur.archlinux.org/yay.git
     cd yay
@@ -149,7 +153,7 @@ elif cat /etc/os-release | grep -qiE "Arch"; then
 
 # if endeavour os
 elif cat /etc/os-release | grep -qiE "EndeavourOS"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
+    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
 
     # install gitkraken
     # considering endeavour os cannot use officila docker install script, so we install it here
