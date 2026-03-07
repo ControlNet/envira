@@ -371,6 +371,7 @@ $RECYCLE.BIN/
 
 # pixi environments
 .pixi
+.beads/
 *.egg-info
 .cursorignore
 envira/_version.py
