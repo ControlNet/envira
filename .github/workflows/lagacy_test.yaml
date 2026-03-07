@@ -7,12 +7,14 @@ on:
     paths:
       - 'run.sh'
       - 'run_user.sh'
+      - 'verify.sh'
       - '.github/integration-test/**'
       - '.github/workflows/lagacy_test.yaml'
   pull_request:
     paths:
       - 'run.sh'
       - 'run_user.sh'
+      - 'verify.sh'
       - '.github/integration-test/**'
       - '.github/workflows/lagacy_test.yaml'
         
@@ -35,5 +37,14 @@ jobs:
       - name: Build docker image
         run: docker build -f .github/integration-test/Dockerfile-${{ matrix.os }}-${{ matrix.mode }} -t test_os .
       
-      - name: Run docker container
-        run: docker run --rm --privileged=true test_os
+      - name: Run installer and verification
+        run: |
+          script="run.sh"
+          if [ "${{ matrix.mode }}" = "user" ]; then
+            script="run_user.sh"
+          fi
+
+          docker run --rm --privileged=true \
+            -v "$PWD:/workspace" \
+            test_os \
+            bash -lc "cd /home/user && bash \"$script\" && bash /workspace/verify.sh"
