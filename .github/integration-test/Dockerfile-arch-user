@@ -2,7 +2,7 @@
 FROM archlinux:latest
 
 # Install the required packages
-RUN pacman -Sy --noconfirm sudo gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux python-pipx p7zip unzip
+RUN pacman -Sy --noconfirm sudo gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux python-pip python-pipx p7zip unzip
 
 # Create a new user
 RUN useradd -m -s /bin/bash user && \

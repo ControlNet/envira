@@ -2,7 +2,7 @@
 FROM fedora:39
 
 # Install the required packages
-RUN dnf install -y sudo python3 gedit vim git git-lfs curl wget zsh gcc make perl screen unzip systemd
+RUN dnf install -y sudo python3 python3-pip gedit vim git git-lfs curl wget zsh gcc make perl screen unzip systemd
 
 # Create a new user
 RUN useradd -m -s /bin/bash user && \
