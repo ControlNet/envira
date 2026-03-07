@@ -11,6 +11,7 @@ RST=$'\e[0m'
 
 fail=0
 missing=()
+optional_missing=()
 
 add_path() {
   local p="$1"
@@ -53,6 +54,37 @@ check_cmd() {
   fi
 }
 
+check_optional_cmd() {
+  local c="$1"
+  if have_cmd "$c"; then
+    ok "cmd: $c ($(command -v "$c"))"
+  else
+    warn "cmd: $c"
+    optional_missing+=("cmd: $c")
+  fi
+}
+
+check_any_cmd() {
+  local mode="$1"
+  local label="$2"
+  shift 2
+
+  local c
+  for c in "$@"; do
+    if have_cmd "$c"; then
+      ok "cmd: $label ($(command -v "$c"))"
+      return 0
+    fi
+  done
+
+  if [[ "$mode" == "optional" ]]; then
+    warn "cmd: $label"
+    optional_missing+=("cmd: $label")
+  else
+    bad "cmd: $label"
+  fi
+}
+
 check_npm_prefix() {
   local prefix
   prefix="$(npm config get prefix 2>/dev/null || true)"
@@ -73,10 +105,24 @@ check_file() {
   fi
 }
 
+check_optional_file() {
+  local f="$1"
+  if [[ -f "$f" ]]; then ok "file: $f"
+  else warn "file: $f"; optional_missing+=("file: $f")
+  fi
+}
+
 check_dir() {
   local d="$1"
   if [[ -d "$d" ]]; then ok "dir:  $d"
   else bad "dir:  $d"
+  fi
+}
+
+check_optional_dir() {
+  local d="$1"
+  if [[ -d "$d" ]]; then ok "dir:  $d"
+  else warn "dir:  $d"; optional_missing+=("dir:  $d")
   fi
 }
 
@@ -86,6 +132,16 @@ check_contains() {
     ok "$label"
   else
     bad "$label"
+  fi
+}
+
+check_optional_contains() {
+  local f="$1" pat="$2" label="$3"
+  if [[ -f "$f" ]] && grep -qE "$pat" "$f"; then
+    ok "$label"
+  else
+    warn "$label"
+    optional_missing+=("$label")
   fi
 }
 
@@ -114,10 +170,10 @@ check_cmd "wget"
 
 section "bat / neofetch / ncdu / gitkraken"
 check_cmd "bat"
-check_cmd "neofetch"
+check_optional_cmd "neofetch"
 check_cmd "ncdu"
 # gitkraken is an app; envira symlinks a launcher
-check_cmd "gitkraken"
+check_optional_cmd "gitkraken"
 
 section "Conda (miniconda3)"
 check_dir "$HOME/miniconda3"
@@ -154,10 +210,10 @@ check_dir "$HOME/.nvim"
 check_cmd "nvim"
 check_dir "$HOME/.fzf"
 check_cmd "fzf"
-check_cmd "lvim"
+check_optional_cmd "lvim"
 
 section "Git TUIs"
-check_cmd "lazygit"
+check_optional_cmd "lazygit"
 check_cmd "lazydocker"
 
 section "Remote clipboard helper"
@@ -184,17 +240,14 @@ check_cmd "nviwatch"
 # pipx targets (run_user.sh uses pipx install ...)
 check_cmd "pipx"
 check_cmd "uv"
-check_cmd "speedtest"
-check_cmd "gdown"
-check_cmd "archey"
-check_cmd "tldr"
+check_optional_cmd "speedtest"
+check_optional_cmd "gdown"
+check_any_cmd optional "archey (or archey4)" archey archey4
+check_optional_cmd "tldr"
 # huggingface-hub[cli,...] provides huggingface-cli and/or hf
-if have_cmd "huggingface-cli"; then ok "cmd: huggingface-cli ($(command -v huggingface-cli))"
-elif have_cmd "hf"; then ok "cmd: hf ($(command -v hf))"
-else bad "cmd: huggingface-cli (or hf)"
-fi
-check_cmd "nvitop"
-check_cmd "rich"
+check_any_cmd optional "huggingface-cli (or hf)" huggingface-cli hf
+check_optional_cmd "nvitop"
+check_optional_cmd "rich"
 
 # go install targets
 check_cmd "scc"
@@ -207,9 +260,9 @@ check_file "$HOME/.config/pixi/config.toml"
 
 section "superfile"
 # superfile installs the 'spf' binary and writes config
-check_cmd "spf"
-check_file "$HOME/.config/superfile/config.toml"
-check_contains "$HOME/.config/superfile/config.toml" 'auto_check_update\s*=\s*false' "superfile: auto_check_update=false"
+check_any_cmd optional "spf (or superfile)" spf superfile
+check_optional_file "$HOME/.config/superfile/config.toml"
+check_optional_contains "$HOME/.config/superfile/config.toml" 'auto_check_update\s*=\s*false' "superfile: auto_check_update=false"
 
 section "yazi"
 check_cmd "yazi"
@@ -229,21 +282,21 @@ if have_cmd "npm"; then
 fi
 
 # @openai/codex -> usually `codex`
-check_cmd "codex"
+check_optional_cmd "codex"
 
 # @google/gemini-cli -> usually `gemini`
-check_cmd "gemini"
+check_optional_cmd "gemini"
 
 # Cursor / Claude / OpenCode / Bun
 # These installers may vary by distro; we only check presence.
-check_cmd "agent"
-check_cmd "claude"
-check_cmd "opencode"
+check_optional_cmd "agent"
+check_optional_cmd "claude"
+check_optional_cmd "opencode"
 check_file "$HOME/.bun/bin/bun"
 check_cmd "bun"
 
 section "OpenCode path & Codex config"
-check_dir "$HOME/.config/opencode"
+check_optional_dir "$HOME/.config/opencode"
 check_dir "$HOME/.codex"
 check_file "$HOME/.codex/config.toml"
 check_contains "$HOME/.codex/config.toml" 'network_access\s*=\s*true' "codex config: network_access=true"
@@ -259,5 +312,10 @@ else
   echo "${RED}Some checks failed ($fail).${RST}"
   echo "Missing items:"
   printf ' - %s\n' "${missing[@]}"
+  if [[ "${#optional_missing[@]}" -gt 0 ]]; then
+    echo
+    echo "Optional items missing:"
+    printf ' - %s\n' "${optional_missing[@]}"
+  fi
   exit 1
 fi
