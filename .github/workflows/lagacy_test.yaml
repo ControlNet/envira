@@ -1,11 +1,20 @@
 name: Lagacy Test
 on:
   workflow_call:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'run.sh'
+      - 'run_user.sh'
+      - '.github/integration-test/**'
+      - '.github/workflows/lagacy_test.yaml'
   pull_request:
-    paths-ignore:
-      - "**"
-      - "!run.sh"
-      - "!run_user.sh"
+    paths:
+      - 'run.sh'
+      - 'run_user.sh'
+      - '.github/integration-test/**'
+      - '.github/workflows/lagacy_test.yaml'
         
 jobs:
   test:
