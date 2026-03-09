@@ -332,6 +332,19 @@ curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/insta
 curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)" | bash
 
+# install dolt for beads
+arch="$(uname -m)" && \
+case "$arch" in
+  x86_64|amd64) asset="dolt-linux-amd64.tar.gz" ;;
+  aarch64|arm64) asset="dolt-linux-arm64.tar.gz" ;;
+  *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
+esac && \
+tmpdir="$(mktemp -d)" && \
+curl -L "https://github.com/dolthub/dolt/releases/latest/download/$asset" -o "$tmpdir/dolt.tgz" && \
+tar -xzf "$tmpdir/dolt.tgz" -C "$tmpdir" && \
+install -m 755 "$tmpdir"/*/bin/dolt ~/.local/bin/dolt && \
+rm -rf "$tmpdir"
+
 # because it's installed in bash, so we need to manually add it to .zshrc
 echo '[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"' >> ~/.zshrc
 echo 'export BUN_INSTALL="$HOME/.bun"' >> ~/.zshrc
