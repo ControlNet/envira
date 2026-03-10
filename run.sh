@@ -48,7 +48,7 @@ if [[ -f /etc/redhat-release ]]; then
         tar -xvzf bat.zip -C ~/.local/bin
         cd ~/.local/bin && mv bat-v0.7.1-x86_64-unknown-linux-musl/bat . && rm -r bat-v0.7.1-x86_64-unknown-linux-musl
         cd ~ && rm bat.zip
-        
+
         # install neofetch
         sudo curl -o /etc/yum.repos.d/konimex-neofetch-epel-7.repo https://copr.fedorainfracloud.org/coprs/konimex/neofetch/repo/epel-7/konimex-neofetch-epel-7.repo
         sudo yum install -y neofetch
@@ -487,7 +487,7 @@ curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/insta
 
 # add more relavent tools for agents
 curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)" | bash
+curl -fsSL https://raw.githubusercontent.com/zjrosen/perles/main/install.sh | bash
 
 # install dolt for beads
 arch="$(uname -m)" && \
