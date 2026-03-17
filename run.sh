@@ -169,6 +169,9 @@ fi
 # update pciids
 sudo update-pciids
 
+# set sysctl
+echo "fs.inotify.max_user_watches=524288" | sudo tee -a /etc/sysctl.conf
+
 # install fnm for nodejs
 curl -o- https://fnm.vercel.app/install | bash
 
