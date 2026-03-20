@@ -15,12 +15,14 @@ start_sudo_heartbeat() {
 
     (
         while true; do
+            # Non-interactive refresh: stop heartbeat if credentials can no longer be renewed.
             sudo -n -v >/dev/null 2>&1 || exit
             sleep 30
         done
     ) &
     SUDO_HEARTBEAT_PID=$!
 
+    # Suppress cleanup noise if the background heartbeat already exited.
     trap 'kill "$SUDO_HEARTBEAT_PID" >/dev/null 2>&1' EXIT INT TERM
 }
 
