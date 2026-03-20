@@ -8,9 +8,13 @@ prepend_path() {
 }
 
 cleanup_sudo_heartbeat() {
-    if [ -n "${SUDO_HEARTBEAT_PID:-}" ]; then
+    if [ -n "${SUDO_HEARTBEAT_PID:-}" ] && [ -e "${SUDO_HEARTBEAT_MARKER:-}" ]; then
         kill "$SUDO_HEARTBEAT_PID" >/dev/null 2>&1 || true
+        wait "$SUDO_HEARTBEAT_PID" 2>/dev/null || true
     fi
+
+    rm -f "${SUDO_HEARTBEAT_MARKER:-}" >/dev/null 2>&1 || true
+    unset SUDO_HEARTBEAT_PID SUDO_HEARTBEAT_MARKER
 }
 
 handle_interrupt() {
@@ -31,7 +35,13 @@ start_sudo_heartbeat() {
         exit 1
     }
 
+    SUDO_HEARTBEAT_MARKER="${TMPDIR:-/tmp}/envira-sudo-heartbeat-$$"
+    rm -f "$SUDO_HEARTBEAT_MARKER"
+    : > "$SUDO_HEARTBEAT_MARKER"
+
     (
+        trap 'rm -f "$SUDO_HEARTBEAT_MARKER"' EXIT
+
         while true; do
             sudo -n true >/dev/null 2>&1 || exit
             sleep 30
@@ -605,6 +615,8 @@ curl -sS https://webi.sh/gh | sh
 # sudo docker run -d -p 9001:9001 --name portainer_agent --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker/volumes:/var/lib/docker/volumes portainer/agent:latest
 
 cargo cache -a
+
+cleanup_sudo_heartbeat
 
 # change to zsh and apply theme
 zsh
