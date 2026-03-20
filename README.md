@@ -96,6 +96,10 @@ RUN echo "changeps1: false" >> /root/.condarc
 25. Installs several utilities (lsd, git-delta, duf, dust, fd, ripgrep, gping, procs, xh, uv, speedtest-cli, gdown, zoxide, micro, scc, viu, pm2) and sets up aliases for some of them.
 26. Installs several system monitoring tools (bottom, nvitop, bpytop, bandwhich).
 
+### Long install tip (keep sudo alive)
+
+If your sudo credential times out during a long installation, `run.sh` now automatically refreshes sudo credentials in the background after the first `sudo -v` prompt.
+
 
 ## License
 
