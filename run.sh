@@ -7,6 +7,53 @@ prepend_path() {
     esac
 }
 
+cleanup_sudo_heartbeat() {
+    if [ -n "${SUDO_HEARTBEAT_PID:-}" ] && [ -e "${SUDO_HEARTBEAT_MARKER:-}" ]; then
+        kill "$SUDO_HEARTBEAT_PID" >/dev/null 2>&1 || true
+        wait "$SUDO_HEARTBEAT_PID" 2>/dev/null || true
+    fi
+
+    rm -f "${SUDO_HEARTBEAT_MARKER:-}" >/dev/null 2>&1 || true
+    unset SUDO_HEARTBEAT_PID SUDO_HEARTBEAT_MARKER
+}
+
+handle_interrupt() {
+    cleanup_sudo_heartbeat
+    trap - INT
+    kill -INT "$$"
+}
+
+handle_terminate() {
+    cleanup_sudo_heartbeat
+    trap - TERM
+    kill -TERM "$$"
+}
+
+start_sudo_heartbeat() {
+    sudo true || {
+        echo "Failed to acquire sudo privileges."
+        exit 1
+    }
+
+    SUDO_HEARTBEAT_MARKER="${TMPDIR:-/tmp}/envira-sudo-heartbeat-$$"
+    rm -f "$SUDO_HEARTBEAT_MARKER"
+    : > "$SUDO_HEARTBEAT_MARKER"
+
+    (
+        trap 'rm -f "$SUDO_HEARTBEAT_MARKER"' EXIT
+
+        while true; do
+            sudo -n true >/dev/null 2>&1 || exit
+            sleep 30
+        done
+    ) &
+    SUDO_HEARTBEAT_PID=$!
+
+    trap cleanup_sudo_heartbeat EXIT
+    trap handle_interrupt INT
+    trap handle_terminate TERM
+}
+
 export GOPATH="$HOME/go"
 export FNM_PATH="$HOME/.local/share/fnm"
 export BUN_INSTALL="$HOME/.bun"
@@ -27,6 +74,8 @@ if [ -d "$HOME/.go" ]; then
 fi
 
 export PATH
+
+start_sudo_heartbeat
 
 # install dev tools
 mkdir -p ~/.local/bin
@@ -566,6 +615,8 @@ curl -sS https://webi.sh/gh | sh
 # sudo docker run -d -p 9001:9001 --name portainer_agent --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker/volumes:/var/lib/docker/volumes portainer/agent:latest
 
 cargo cache -a
+
+cleanup_sudo_heartbeat
 
 # change to zsh and apply theme
 zsh
