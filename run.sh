@@ -7,6 +7,23 @@ prepend_path() {
     esac
 }
 
+start_sudo_heartbeat() {
+    sudo -v || {
+        echo "Failed to acquire sudo privileges."
+        exit 1
+    }
+
+    (
+        while true; do
+            sudo -n -v >/dev/null 2>&1 || exit
+            sleep 30
+        done
+    ) &
+    SUDO_HEARTBEAT_PID=$!
+
+    trap 'kill "$SUDO_HEARTBEAT_PID" >/dev/null 2>&1' EXIT INT TERM
+}
+
 export GOPATH="$HOME/go"
 export FNM_PATH="$HOME/.local/share/fnm"
 export BUN_INSTALL="$HOME/.bun"
@@ -27,6 +44,8 @@ if [ -d "$HOME/.go" ]; then
 fi
 
 export PATH
+
+start_sudo_heartbeat
 
 # install dev tools
 mkdir -p ~/.local/bin
