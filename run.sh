@@ -26,14 +26,14 @@ handle_terminate() {
 }
 
 start_sudo_heartbeat() {
-    sudo -v || {
+    sudo true || {
         echo "Failed to acquire sudo privileges."
         exit 1
     }
 
     (
         while true; do
-            sudo -n -v >/dev/null 2>&1 || exit
+            sudo -n true >/dev/null 2>&1 || exit
             sleep 30
         done
     ) &

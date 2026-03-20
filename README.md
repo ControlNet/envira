@@ -98,7 +98,7 @@ RUN echo "changeps1: false" >> /root/.condarc
 
 ### Long install tip (keep sudo alive)
 
-If your sudo credential times out during a long installation, `run.sh` now automatically refreshes sudo credentials in the background after the first `sudo -v` prompt.
+If your sudo credential times out during a long installation, `run.sh` now automatically refreshes sudo credentials in the background after the first sudo prompt.
 
 
 ## License
