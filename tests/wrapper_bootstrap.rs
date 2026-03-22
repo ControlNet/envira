@@ -9,17 +9,25 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+const WRAPPER_FAILURE_EXIT_CODE: i32 = 80;
+
 #[test]
 fn wrapper_downloads_verifies_and_execs_binary_with_passthrough_args() {
     let fixture = WrapperFixture::new(valid_checksum_manifest());
 
-    let output = fixture.run_wrapper(["--run", "--", "catalog", "--format", "json"]);
+    let output = fixture.run_wrapper_with_env(
+        ["--run", "--", "catalog", "--format", "json"],
+        &[("ENVIRA_CURRENT_VERSION", "0.1.0")][..],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let installed_path = fixture.install_path();
 
     assert!(output.status.success(), "wrapper should succeed: {stderr}");
-    assert_eq!(stdout.trim(), r#"{"argv":["catalog","--format","json"]}"#);
+    assert_eq!(
+        stdout.trim(),
+        r#"{"argv":["catalog","--format","json"],"current_version_env":"unset"}"#
+    );
     assert!(stderr.contains("Verifying release checksum"));
     assert!(stderr.contains("Handing off to"));
     assert!(installed_path.exists(), "binary should be installed");
@@ -43,6 +51,7 @@ fn wrapper_stops_before_exec_when_checksum_does_not_match() {
         !output.status.success(),
         "wrapper should fail checksum validation"
     );
+    assert_eq!(output.status.code(), Some(WRAPPER_FAILURE_EXIT_CODE));
     assert!(
         stdout.trim().is_empty(),
         "binary stdout should stay empty on failure"
@@ -54,6 +63,37 @@ fn wrapper_stops_before_exec_when_checksum_does_not_match() {
     assert!(
         !fixture.install_path().exists(),
         "binary should not be installed after integrity failure"
+    );
+}
+
+#[test]
+fn updater_failure_stops_runtime_handoff() {
+    let fixture = WrapperFixture::new(valid_checksum_manifest());
+    let missing_checksum_url = format!("{}/missing.sha256", fixture.server.base_url());
+
+    let output = fixture.run_wrapper_with_env(
+        ["--run", "--", "catalog", "--format", "json"],
+        &[(
+            "ENVIRA_BOOTSTRAP_CHECKSUM_URL",
+            missing_checksum_url.as_str(),
+        )][..],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(WRAPPER_FAILURE_EXIT_CODE));
+    assert!(stdout.trim().is_empty(), "handoff stdout must stay empty");
+    assert!(
+        stderr.contains("Failed to download"),
+        "stderr should explain the updater failure: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Handing off to"),
+        "wrapper must not report exec handoff on updater failure"
+    );
+    assert!(
+        !fixture.install_path().exists(),
+        "binary should not be installed after updater failure"
     );
 }
 
@@ -83,13 +123,26 @@ impl WrapperFixture {
     }
 
     fn run_wrapper<const N: usize>(&self, args: [&str; N]) -> Output {
-        Command::new("bash")
+        self.run_wrapper_with_env(args, &[][..])
+    }
+
+    fn run_wrapper_with_env<const N: usize>(
+        &self,
+        args: [&str; N],
+        extra_env: &[(&str, &str)],
+    ) -> Output {
+        let mut command = Command::new("bash");
+        command
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("envira.sh"))
             .args(args)
             .env("HOME", &self.home)
-            .env("ENVIRA_BOOTSTRAP_BASE_URL", self.server.base_url())
-            .output()
-            .expect("wrapper should run")
+            .env("ENVIRA_BOOTSTRAP_BASE_URL", self.server.base_url());
+
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+
+        command.output().expect("wrapper should run")
     }
 }
 
@@ -171,7 +224,7 @@ impl Drop for TestServer {
 }
 
 fn bootstrap_binary() -> Vec<u8> {
-    b"#!/usr/bin/env bash\nset -euo pipefail\nprintf '{\"argv\":[\"%s\",\"%s\",\"%s\"]}\\n' \"${1:-}\" \"${2:-}\" \"${3:-}\"\n".to_vec()
+    b"#!/usr/bin/env bash\nset -euo pipefail\nprintf '{\"argv\":[\"%s\",\"%s\",\"%s\"],\"current_version_env\":\"%s\"}\\n' \"${1:-}\" \"${2:-}\" \"${3:-}\" \"${ENVIRA_CURRENT_VERSION-unset}\"\n".to_vec()
 }
 
 fn valid_checksum_manifest() -> Vec<u8> {

@@ -25,7 +25,7 @@ success() {
 
 fail() {
   printf '%b\n' "${RED}${BOLD}[ERROR]${RESET} $*" >&2
-  exit 1
+  exit "$BOOTSTRAP_FAILURE_EXIT_CODE"
 }
 
 usage() {
@@ -35,6 +35,10 @@ envira.sh - thin bootstrap wrapper for the envira binary
 Usage:
   bash envira.sh
   bash envira.sh --run -- <envira-args...>
+
+Exit codes:
+  - 0: wrapper bootstrap succeeded and the handed-off envira process exited 0
+  - 80: wrapper/bootstrap failed before exec handoff
 
 Trust contract:
   - download exactly two release-surface assets from the published files endpoint:
@@ -50,13 +54,19 @@ download_to_file() {
   local destination=$2
 
   if command -v curl >/dev/null 2>&1; then
-    curl --fail --location --silent --show-error "$url" --output "$destination"
-    return
+    if curl --fail --location --silent --show-error "$url" --output "$destination"; then
+      return
+    fi
+
+    fail "Failed to download $url."
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget --quiet --output-document="$destination" "$url"
-    return
+    if wget --quiet --output-document="$destination" "$url"; then
+      return
+    fi
+
+    fail "Failed to download $url."
   fi
 
   fail "Neither curl nor wget is installed; cannot download envira."
@@ -127,6 +137,7 @@ CHECKSUM_URL="${ENVIRA_BOOTSTRAP_CHECKSUM_URL:-$BASE_URL/$ASSET_NAME.sha256}"
 BIN_DIR="${ENVIRA_BOOTSTRAP_INSTALL_DIR:-$HOME/.local/bin}"
 OUTPUT="$BIN_DIR/$ASSET_NAME"
 RUN_AFTER_DOWNLOAD=false
+BOOTSTRAP_FAILURE_EXIT_CODE="${ENVIRA_BOOTSTRAP_FAILURE_EXIT_CODE:-80}"
 
 while (($# > 0)); do
   case "$1" in
@@ -193,6 +204,7 @@ if [[ "$RUN_AFTER_DOWNLOAD" == true ]]; then
   info "Handing off to $OUTPUT"
   trap - EXIT
   cleanup
+  unset ENVIRA_CURRENT_VERSION
   exec "$OUTPUT" "${RUN_ARGS[@]}"
 fi
 
