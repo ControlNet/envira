@@ -1,16 +1,11 @@
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::catalog::{
-    Catalog, CatalogItem, InstallTarget, RecipeArchiveFormat, RecipeBuildSystem, RecipeSpec,
-};
+use crate::catalog::{Catalog, CatalogCommand, CatalogItem, CommandMode};
 use crate::planner::{ActionPlan, ActionPlanStep, PlannedAction, PlannedScope};
 use crate::platform::{InvocationKind, PlatformContext};
 
-use super::backends::{build_native_backend_operations, BackendMappingError, NativePackageRecipe};
-use super::builtin::plan_builtin_operations;
+use super::builtin::plan_shell_operations;
 use super::operation::{ExecutionTarget, OperationSpec};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -33,40 +28,7 @@ pub struct ExecutionStep {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutionRecipe {
-    NativePackage(NativePackageRecipe),
-    Builtin(BuiltinRecipePlan),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "family", rename_all = "snake_case")]
-pub enum BuiltinRecipePlan {
-    DirectBinaryInstall {
-        url: String,
-        destination: PathBuf,
-        binary_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checksum_sha256: Option<String>,
-    },
-    ArchiveInstall {
-        url: String,
-        destination_dir: PathBuf,
-        format: RecipeArchiveFormat,
-        binary_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        member_path: Option<PathBuf>,
-        strip_components: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checksum_sha256: Option<String>,
-    },
-    SourceBuildInstall {
-        source_url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        revision: Option<String>,
-        build_system: RecipeBuildSystem,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        working_subdir: Option<PathBuf>,
-        install_prefix: PathBuf,
-    },
+    Shell { shell: String, command: String },
 }
 
 #[derive(Debug, Error)]
@@ -74,13 +36,12 @@ pub enum ExecutionPlanError {
     #[error("planned item `{item_id}` is missing from the catalog during execution planning")]
     MissingCatalogItem { item_id: String },
     #[error(
-        "item `{item_id}` is missing a recipe overlay for selected target `{:?}/{:?}`",
-        target.backend,
-        target.source
+        "item `{item_id}` is missing a recipe shell contract for planned scope `{planned_scope:?}` on distro `{distro_id}`"
     )]
     MissingRecipe {
         item_id: String,
-        target: InstallTarget,
+        planned_scope: PlannedScope,
+        distro_id: String,
     },
     #[error(
         "item `{item_id}` cannot resolve a `{planned_scope:?}` execution target from invocation `{:?}`",
@@ -91,17 +52,6 @@ pub enum ExecutionPlanError {
         planned_scope: PlannedScope,
         invocation: InvocationKind,
     },
-    #[error(
-        "item `{item_id}` selected target `{:?}/{:?}` is not supported by executor translation",
-        target.backend,
-        target.source
-    )]
-    UnsupportedTarget {
-        item_id: String,
-        target: InstallTarget,
-    },
-    #[error(transparent)]
-    BackendMapping(#[from] BackendMappingError),
 }
 
 pub fn build_execution_plan(
@@ -160,7 +110,13 @@ fn build_execution_step(
                     .ok_or_else(|| ExecutionPlanError::MissingCatalogItem {
                         item_id: item_id.to_string(),
                     })?;
-            build_operations_for_item(item, platform, action_step, execution_target)?
+            build_operations_for_item(
+                catalog.shell.as_str(),
+                item,
+                platform,
+                action_step,
+                execution_target,
+            )?
         }
         PlannedAction::Skip | PlannedAction::Blocked => (None, Vec::new()),
     };
@@ -174,109 +130,69 @@ fn build_execution_step(
 }
 
 fn build_operations_for_item(
+    catalog_shell: &str,
     item: &CatalogItem,
     platform: &PlatformContext,
     action_step: &ActionPlanStep,
     execution_target: ExecutionTarget,
 ) -> Result<(Option<ExecutionRecipe>, Vec<OperationSpec>), ExecutionPlanError> {
-    let selected_target = &action_step.step.selected_target;
-    let Some(recipe_overlay) = item.recipe_for_target(selected_target) else {
+    let planned_scope = action_step.step.planned_scope;
+    let distro_id = platform.distro.id.as_str();
+    let Some(recipe_contract) = select_recipe_contract(item, planned_scope, distro_id) else {
         return Err(ExecutionPlanError::MissingRecipe {
             item_id: item.id.as_str().to_string(),
-            target: selected_target.clone(),
+            planned_scope,
+            distro_id: distro_id.to_string(),
         });
     };
 
-    match &recipe_overlay.recipe {
-        RecipeSpec::NativePackage { packages } => {
-            let recipe = NativePackageRecipe {
-                packages: packages.clone(),
-            };
-            let operations = build_native_backend_operations(
-                selected_target.backend,
-                &recipe,
-                execution_target,
-            )?;
-            Ok((Some(ExecutionRecipe::NativePackage(recipe)), operations))
-        }
-        RecipeSpec::DirectBinary {
-            url,
-            binary_name,
-            checksum_sha256,
-        } => {
-            let recipe = BuiltinRecipePlan::DirectBinaryInstall {
-                url: url.clone(),
-                destination: install_bin_path(platform, execution_target, binary_name),
-                binary_name: binary_name.clone(),
-                checksum_sha256: checksum_sha256.clone(),
-            };
-            let operations = plan_builtin_operations(item.id.as_str(), &recipe, execution_target);
-            Ok((Some(ExecutionRecipe::Builtin(recipe)), operations))
-        }
-        RecipeSpec::Archive {
-            url,
-            format,
-            binary_name,
-            member_path,
-            strip_components,
-            checksum_sha256,
-        } => {
-            let recipe = BuiltinRecipePlan::ArchiveInstall {
-                url: url.clone(),
-                destination_dir: install_bin_dir(platform, execution_target),
-                format: *format,
-                binary_name: binary_name.clone(),
-                member_path: member_path.clone(),
-                strip_components: *strip_components,
-                checksum_sha256: checksum_sha256.clone(),
-            };
-            let operations = plan_builtin_operations(item.id.as_str(), &recipe, execution_target);
-            Ok((Some(ExecutionRecipe::Builtin(recipe)), operations))
-        }
-        RecipeSpec::SourceBuild {
-            source_url,
-            revision,
-            build_system,
-            working_subdir,
-        } => {
-            let recipe = BuiltinRecipePlan::SourceBuildInstall {
-                source_url: source_url.clone(),
-                revision: revision.clone(),
-                build_system: *build_system,
-                working_subdir: working_subdir.clone(),
-                install_prefix: install_prefix(platform, execution_target),
-            };
-            let operations = plan_builtin_operations(item.id.as_str(), &recipe, execution_target);
-            Ok((Some(ExecutionRecipe::Builtin(recipe)), operations))
-        }
+    let recipe = ExecutionRecipe::Shell {
+        shell: catalog_shell.to_string(),
+        command: recipe_contract.cmd.clone(),
+    };
+    let operations = plan_shell_operations(
+        catalog_shell,
+        recipe_contract.cmd.as_str(),
+        execution_target,
+    );
+
+    Ok((Some(recipe), operations))
+}
+
+fn select_recipe_contract<'a>(
+    item: &'a CatalogItem,
+    planned_scope: PlannedScope,
+    distro_id: &str,
+) -> Option<&'a CatalogCommand> {
+    let selected = item
+        .recipes
+        .iter()
+        .find(|recipe| recipe_supports_plan(recipe, planned_scope, distro_id));
+
+    if selected.is_some() || distro_id != "unknown" {
+        return selected;
     }
+
+    item.recipes
+        .iter()
+        .find(|recipe| recipe_supports_scope(recipe, planned_scope))
 }
 
-fn install_bin_path(
-    platform: &PlatformContext,
-    target: ExecutionTarget,
-    binary_name: &str,
-) -> PathBuf {
-    install_bin_dir(platform, target).join(binary_name)
+fn recipe_supports_plan(
+    recipe: &CatalogCommand,
+    planned_scope: PlannedScope,
+    distro_id: &str,
+) -> bool {
+    recipe_supports_scope(recipe, planned_scope)
+        && recipe
+            .distros
+            .iter()
+            .any(|distro| distro == "*" || distro == distro_id)
 }
 
-fn install_bin_dir(platform: &PlatformContext, target: ExecutionTarget) -> PathBuf {
-    install_prefix(platform, target).join("bin")
-}
-
-fn install_prefix(platform: &PlatformContext, target: ExecutionTarget) -> PathBuf {
-    match target {
-        ExecutionTarget::System => PathBuf::from("/usr/local"),
-        ExecutionTarget::CurrentProcess => platform.effective_user.home_dir.join(".local"),
-        ExecutionTarget::TargetUser => platform
-            .target_user
-            .as_ref()
-            .map(|user| user.home_dir.join(".local"))
-            .unwrap_or_else(|| platform.effective_user.home_dir.join(".local")),
-    }
-}
-
-#[allow(dead_code)]
-fn _assert_absolute(path: &Path) -> bool {
-    path.is_absolute()
+fn recipe_supports_scope(recipe: &CatalogCommand, planned_scope: PlannedScope) -> bool {
+    matches!(
+        (recipe.mode, planned_scope),
+        (CommandMode::Sudo, PlannedScope::System) | (CommandMode::User, PlannedScope::User)
+    )
 }

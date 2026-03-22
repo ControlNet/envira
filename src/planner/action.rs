@@ -166,21 +166,6 @@ fn classify_dependency_blocked(
 }
 
 fn classify_step(step: &PlanStep, verifier: VerifierResult) -> (PlannedAction, ActionRationale) {
-    if verifier.threshold_met {
-        return (
-            PlannedAction::Skip,
-            rationale(
-                ActionReasonCode::ThresholdMet,
-                format!(
-                    "Verifier already meets the required `{}` threshold for `{}`.",
-                    stage_name(step.success_threshold),
-                    step.item_id
-                ),
-                verifier,
-            ),
-        );
-    }
-
     if let Some(service) = verifier.service.as_ref() {
         let decision = match service.state {
             ServiceUsabilityState::Operational => (
@@ -236,6 +221,21 @@ fn classify_step(step: &PlanStep, verifier: VerifierResult) -> (PlannedAction, A
         return (decision.0, rationale(decision.1, decision.2, verifier));
     }
 
+    if verifier.threshold_met {
+        return (
+            PlannedAction::Skip,
+            rationale(
+                ActionReasonCode::ThresholdMet,
+                format!(
+                    "Verifier already meets the required `{}` threshold for `{}`.",
+                    stage_name(step.required_stage),
+                    step.item_id
+                ),
+                verifier,
+            ),
+        );
+    }
+
     if verifier.health == VerificationHealth::Unknown {
         return (
             PlannedAction::Blocked,
@@ -271,7 +271,7 @@ fn classify_step(step: &PlanStep, verifier: VerifierResult) -> (PlannedAction, A
             format!(
                 "Verifier shows `{}` is below the required `{}` threshold and should be repaired.",
                 step.item_id,
-                stage_name(step.success_threshold)
+                stage_name(step.required_stage)
             ),
             verifier,
         ),

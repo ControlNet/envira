@@ -18,6 +18,12 @@ impl OperationSpec {
     }
 }
 
+impl From<CommandOperation> for OperationSpec {
+    fn from(value: CommandOperation) -> Self {
+        Self::Command(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionTarget {
@@ -47,6 +53,10 @@ impl CommandOperation {
             timeout_ms: None,
             target: ExecutionTarget::CurrentProcess,
         }
+    }
+
+    pub fn shell(shell: impl Into<String>, command: impl Into<String>) -> Self {
+        Self::new(shell).with_args(vec!["-c".to_string(), command.into()])
     }
 
     pub fn with_args<I, S>(mut self, args: I) -> Self

@@ -32,10 +32,10 @@ fn docker_service_reports_blocked_when_socket_exists_but_access_is_denied() {
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("docker")],
+            checks: vec![command_check("command -v docker")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Docker,
-                command: Some("docker".to_string()),
+                command: Some("command -v docker".to_string()),
                 commands: Vec::new(),
                 service_unit: None,
                 service_scope: None,
@@ -66,6 +66,37 @@ fn docker_service_reports_blocked_when_socket_exists_but_access_is_denied() {
 }
 
 #[test]
+fn plain_shell_contract_docker_verifier_still_derives_blocked_service_readiness() {
+    let harness = TestHarness::new();
+    let docker_socket = harness.root.join("docker.sock");
+    let _socket = UnixListener::bind(&docker_socket).expect("docker socket should bind");
+    harness.write_executable(
+        "docker",
+        "#!/bin/bash\nprintf 'permission denied while trying to connect to the docker daemon socket\n' >&2\nexit 1\n",
+    );
+
+    let result = verify_with_context(
+        VerificationStage::Present,
+        &VerifierSpec {
+            checks: vec![command_check("command -v docker")],
+            service: None,
+        },
+        &harness.context(),
+    )
+    .expect("docker verification should complete")
+    .result;
+
+    let service = result
+        .service
+        .as_ref()
+        .expect("service assessment should be derived from the shell contract");
+    assert_eq!(service.kind, ServiceKind::Docker);
+    assert_eq!(service.state, ServiceUsabilityState::Blocked);
+    assert_eq!(service.achieved_stage, Some(VerificationStage::Present));
+    assert!(!result.threshold_met);
+}
+
+#[test]
 fn jupyter_service_reports_on_demand_when_user_unit_exists_but_http_is_down() {
     let harness = TestHarness::new();
     let port = allocate_unused_port();
@@ -78,15 +109,15 @@ fn jupyter_service_reports_on_demand_when_user_unit_exists_but_http_is_down() {
         "enabled",
         "dead",
     )];
-    harness.write_systemctl_fixture(&units);
+    harness.write_systemctl_fixture(&units[..]);
 
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("jupyter")],
+            checks: vec![command_check("command -v jupyter")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Jupyter,
-                command: Some("jupyter".to_string()),
+                command: Some("command -v jupyter".to_string()),
                 commands: Vec::new(),
                 service_unit: Some("jupyter.service".to_string()),
                 service_scope: Some(ServiceManagerScope::User),
@@ -134,7 +165,7 @@ fn jupyter_service_reaches_operational_when_user_unit_and_http_endpoint_are_live
         "enabled",
         "running",
     )];
-    harness.write_systemctl_fixture(&units);
+    harness.write_systemctl_fixture(&units[..]);
 
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("http client should connect");
@@ -148,10 +179,10 @@ fn jupyter_service_reaches_operational_when_user_unit_and_http_endpoint_are_live
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("jupyter")],
+            checks: vec![command_check("command -v jupyter")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Jupyter,
-                command: Some("jupyter".to_string()),
+                command: Some("command -v jupyter".to_string()),
                 commands: Vec::new(),
                 service_unit: Some("jupyter.service".to_string()),
                 service_scope: Some(ServiceManagerScope::User),
@@ -183,15 +214,15 @@ fn jupyter_service_does_not_claim_configuration_when_the_user_unit_is_missing() 
     let port = allocate_unused_port();
     harness.write_executable("jupyter", "#!/bin/bash\nexit 0\n");
     let units: [(&str, ServiceManagerScope, &str, &str, &str, &str); 0] = [];
-    harness.write_systemctl_fixture(&units);
+    harness.write_systemctl_fixture(&units[..]);
 
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("jupyter")],
+            checks: vec![command_check("command -v jupyter")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Jupyter,
-                command: Some("jupyter".to_string()),
+                command: Some("command -v jupyter".to_string()),
                 commands: Vec::new(),
                 service_unit: Some("jupyter.service".to_string()),
                 service_scope: Some(ServiceManagerScope::User),
@@ -234,10 +265,10 @@ fn pm2_service_reports_non_usable_when_daemon_artifacts_exist_but_ping_fails() {
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("pm2")],
+            checks: vec![command_check("command -v pm2")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Pm2,
-                command: Some("pm2".to_string()),
+                command: Some("command -v pm2".to_string()),
                 commands: Vec::new(),
                 service_unit: None,
                 service_scope: None,
@@ -273,11 +304,11 @@ fn vnc_service_requires_a_live_endpoint_for_operational_success() {
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("vncserver")],
+            checks: vec![command_check("command -v vncserver")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Vnc,
-                command: None,
-                commands: vec!["vncserver".to_string()],
+                command: Some("command -v vncserver".to_string()),
+                commands: Vec::new(),
                 service_unit: None,
                 service_scope: None,
                 socket_paths: Vec::new(),
@@ -310,16 +341,16 @@ fn vnc_service_does_not_claim_configuration_when_the_service_unit_is_missing() {
     let port = allocate_unused_port();
     harness.write_executable("vncserver", "#!/bin/bash\nexit 0\n");
     let units: [(&str, ServiceManagerScope, &str, &str, &str, &str); 0] = [];
-    harness.write_systemctl_fixture(&units);
+    harness.write_systemctl_fixture(&units[..]);
 
     let result = verify_with_context(
         VerificationStage::Operational,
         &VerifierSpec {
-            checks: vec![command_check("vncserver")],
+            checks: vec![command_check("command -v vncserver")],
             service: Some(ServiceVerificationSpec {
                 kind: ServiceKind::Vnc,
-                command: None,
-                commands: vec!["vncserver".to_string()],
+                command: Some("command -v vncserver".to_string()),
+                commands: Vec::new(),
                 service_unit: Some("vncserver@:1.service".to_string()),
                 service_scope: Some(ServiceManagerScope::System),
                 socket_paths: Vec::new(),

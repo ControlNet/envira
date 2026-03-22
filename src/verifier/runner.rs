@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::FileTypeExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use regex::Regex;
@@ -108,13 +108,15 @@ impl VerifierProbeRunner {
             aggregation.records(),
         )?;
 
-        if let Some(service_spec) = &spec.service {
+        if let Some(service_spec) = spec.effective_service() {
             let (service_evidence, service) = self.verify_service(service_spec, context);
             result.achieved_stage =
                 combine_achieved_stage(result.achieved_stage, service.achieved_stage);
-            result.threshold_met = result
-                .achieved_stage
-                .is_some_and(|stage| stage.meets(required_stage));
+            result.threshold_met = service.state
+                == crate::verifier::ServiceUsabilityState::Operational
+                && result
+                    .achieved_stage
+                    .is_some_and(|stage| stage.meets(required_stage));
             result.health = result.health.max(service.health());
             result.observed_scope =
                 combine_observed_scope(result.observed_scope, service.observed_scope);
@@ -130,7 +132,7 @@ impl VerifierProbeRunner {
 
     fn verify_service(
         &self,
-        service_spec: &ServiceVerificationSpec,
+        service_spec: ServiceVerificationSpec,
         context: &VerificationContext,
     ) -> (Vec<ServiceProbeEvidence>, ServiceAssessment) {
         let service_evidence = service_spec
@@ -172,6 +174,18 @@ impl VerifierProbeRunner {
         command: &str,
         context: &VerificationContext,
     ) -> EvidenceRecord {
+        if is_simple_command_name(command) {
+            return self.run_command_presence_probe(command, context);
+        }
+
+        self.run_shell_command_probe(command, context)
+    }
+
+    fn run_command_presence_probe(
+        &self,
+        command: &str,
+        context: &VerificationContext,
+    ) -> EvidenceRecord {
         match context.resolve_command(command) {
             Some(path) => EvidenceRecord {
                 status: EvidenceStatus::Satisfied,
@@ -184,6 +198,48 @@ impl VerifierProbeRunner {
                 observed_scope: ObservedScope::Unknown,
                 summary: format!("command `{command}` not found"),
                 detail: context.command_path_env(),
+            },
+        }
+    }
+
+    fn run_shell_command_probe(
+        &self,
+        command: &str,
+        context: &VerificationContext,
+    ) -> EvidenceRecord {
+        let mut operation = CommandOperation::shell(verifier_shell_program(), command)
+            .with_timeout_ms(context.command_timeout_ms());
+
+        if let Some(path_env) = context.command_path_env() {
+            operation = operation.with_env([(String::from("PATH"), path_env)]);
+        }
+
+        match self.command_runner.execute(&operation) {
+            Ok(execution) if execution.succeeded() => {
+                let detail =
+                    join_command_detail(&execution.stdout.evidence, &execution.stderr.evidence);
+                EvidenceRecord {
+                    status: EvidenceStatus::Satisfied,
+                    observed_scope: infer_shell_scope(command, &execution.stdout.evidence, context),
+                    summary: format!("shell verifier `{command}` exited successfully"),
+                    detail: Some(detail),
+                }
+            }
+            Ok(execution) => {
+                let detail =
+                    join_command_detail(&execution.stdout.evidence, &execution.stderr.evidence);
+                EvidenceRecord {
+                    status: classify_shell_failure(command, &execution),
+                    observed_scope: infer_shell_scope(command, &execution.stdout.evidence, context),
+                    summary: execution.summary.message,
+                    detail: Some(detail),
+                }
+            }
+            Err(error) => EvidenceRecord {
+                status: EvidenceStatus::Unknown,
+                observed_scope: infer_shell_scope(command, "", context),
+                summary: format!("shell verifier `{command}` could not be executed"),
+                detail: Some(error.to_string()),
             },
         }
     }
@@ -838,6 +894,60 @@ fn join_command_detail(stdout: &str, stderr: &str) -> String {
         (true, false) => format!("stderr={stderr}"),
         (false, false) => format!("stdout={stdout}\nstderr={stderr}"),
     }
+}
+
+fn is_simple_command_name(command: &str) -> bool {
+    let trimmed = command.trim();
+    !trimmed.is_empty()
+        && trimmed.split_whitespace().count() == 1
+        && !trimmed.contains(['|', '&', ';', '<', '>', '(', ')', '{', '}', '$', '\'', '"'])
+}
+
+fn verifier_shell_program() -> String {
+    if Path::new("/bin/bash").is_file() {
+        "/bin/bash".to_string()
+    } else {
+        "bash".to_string()
+    }
+}
+
+fn classify_shell_failure(
+    command: &str,
+    execution: &crate::executor::CommandExecution,
+) -> EvidenceStatus {
+    if presence_contract_binary(command).is_some()
+        && matches!(execution.summary.exit_code, Some(1) | Some(127))
+    {
+        return EvidenceStatus::Missing;
+    }
+
+    EvidenceStatus::Broken
+}
+
+fn infer_shell_scope(command: &str, stdout: &str, context: &VerificationContext) -> ObservedScope {
+    infer_shell_path(command, stdout, context)
+        .as_deref()
+        .map(|path| context.observed_scope_for_path(path))
+        .unwrap_or(ObservedScope::Unknown)
+}
+
+fn infer_shell_path(command: &str, stdout: &str, context: &VerificationContext) -> Option<PathBuf> {
+    if let Some(binary) = presence_contract_binary(command) {
+        if let Some(path) = context.resolve_command(binary) {
+            return Some(path);
+        }
+    }
+
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+}
+
+fn presence_contract_binary(command: &str) -> Option<&str> {
+    let suffix = command.trim().strip_prefix("command -v ")?.trim();
+    (!suffix.is_empty() && suffix.split_whitespace().count() == 1).then_some(suffix)
 }
 
 struct ParsedHttpUrl {

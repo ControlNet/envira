@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::verifier::ServiceVerificationSpec;
+use crate::catalog::CatalogCommand;
+use crate::verifier::{infer_service_verification_spec, ServiceVerificationSpec};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +45,13 @@ pub struct VerifierSpec {
 }
 
 impl VerifierSpec {
+    pub fn from_catalog_commands(commands: &[CatalogCommand]) -> Self {
+        Self {
+            checks: commands.iter().map(command_check_from_contract).collect(),
+            service: None,
+        }
+    }
+
     pub fn validate(&self, item_id: &str) -> Result<(), String> {
         if self.checks.is_empty() {
             return Err(format!(
@@ -60,6 +68,22 @@ impl VerifierSpec {
         }
 
         Ok(())
+    }
+
+    pub fn effective_service(&self) -> Option<ServiceVerificationSpec> {
+        self.service
+            .clone()
+            .or_else(|| infer_service_verification_spec(&self.checks))
+    }
+}
+
+pub fn required_stage_for_catalog_commands(commands: &[CatalogCommand]) -> VerificationStage {
+    let spec = VerifierSpec::from_catalog_commands(commands);
+
+    if spec.effective_service().is_some() {
+        VerificationStage::Operational
+    } else {
+        VerificationStage::Present
     }
 }
 
@@ -203,4 +227,17 @@ fn reject_present(
     }
 
     Ok(())
+}
+
+fn command_check_from_contract(command: &CatalogCommand) -> VerifierCheck {
+    VerifierCheck {
+        stage: VerificationStage::Present,
+        requirement: ProbeRequirement::Required,
+        min_profile: VerificationProfile::Quick,
+        kind: ProbeKind::Command,
+        command: Some(command.cmd.clone()),
+        commands: None,
+        path: None,
+        pattern: None,
+    }
 }

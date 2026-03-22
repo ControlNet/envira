@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use envira::catalog::{Catalog, TargetBackend};
+use envira::catalog::{Catalog, TargetBackend, TargetSource};
 use envira::executor::{
-    build_execution_plan, BuiltinRecipePlan, ExecutionPlanError, ExecutionRecipe, ExecutionTarget,
-    OperationSpec,
+    build_execution_plan, CommandOperation, ExecutionRecipe, ExecutionTarget, OperationSpec,
 };
 use envira::planner::{
-    build_install_plan, classify_install_plan, PlannedAction, PlannerError, PlannerRequest,
+    build_install_plan, classify_install_plan, InstallPlan, PlanStep, PlannedScope, PlannerError,
+    PlannerRequest,
 };
 use envira::platform::{
     ArchitectureIdentity, ArchitectureKind, DistroIdentity, DistroKind, InvocationKind,
@@ -21,71 +21,54 @@ use envira::verifier::{
 use serde_json::json;
 
 #[test]
-fn same_item_maps_to_different_native_backend_commands_per_distribution() {
+fn same_item_selects_different_native_targets_per_distribution() {
     let catalog = envira::catalog::load_embedded_catalog().expect("embedded catalog should parse");
 
-    let ubuntu = execution_plan_for(
+    let ubuntu = install_plan_for(
         &catalog,
         platform_context(TargetBackend::Apt, RuntimeScope::System),
         PlannerRequest::item("vnc"),
-        &["essentials", "vnc"],
     );
-    let fedora = execution_plan_for(
+    let fedora = install_plan_for(
         &catalog,
         platform_context(TargetBackend::Dnf, RuntimeScope::System),
         PlannerRequest::item("vnc"),
-        &["essentials", "vnc"],
     );
-    let arch = execution_plan_for(
+    let arch = install_plan_for(
         &catalog,
         platform_context(TargetBackend::Pacman, RuntimeScope::System),
         PlannerRequest::item("vnc"),
-        &["essentials", "vnc"],
     );
-    let opensuse = execution_plan_for(
+    let opensuse = install_plan_for(
         &catalog,
         platform_context(TargetBackend::Zypper, RuntimeScope::System),
         PlannerRequest::item("vnc"),
-        &["essentials", "vnc"],
     );
 
-    let ubuntu_step = step_for(&ubuntu, "vnc");
-    let fedora_step = step_for(&fedora, "vnc");
-    let arch_step = step_for(&arch, "vnc");
-    let opensuse_step = step_for(&opensuse, "vnc");
+    let ubuntu_step = planned_step_for(&ubuntu, "vnc");
+    let fedora_step = planned_step_for(&fedora, "vnc");
+    let arch_step = planned_step_for(&arch, "vnc");
+    let opensuse_step = planned_step_for(&opensuse, "vnc");
 
-    assert_eq!(ubuntu_step.execution_target, ExecutionTarget::System);
+    assert_eq!(ubuntu_step.selected_target.backend, TargetBackend::Apt);
+    assert_eq!(fedora_step.selected_target.backend, TargetBackend::Dnf);
+    assert_eq!(arch_step.selected_target.backend, TargetBackend::Pacman);
+    assert_eq!(opensuse_step.selected_target.backend, TargetBackend::Zypper);
     assert_eq!(
-        command_programs(&ubuntu_step.operations),
-        vec!["apt", "apt"]
+        ubuntu_step.selected_target.source,
+        TargetSource::DistributionPackage
     );
     assert_eq!(
-        command_args(&ubuntu_step.operations[1]),
-        vec![
-            "install",
-            "-y",
-            "tigervnc-standalone-server",
-            "tigervnc-common",
-            "tigervnc-xorg-extension",
-        ]
+        fedora_step.selected_target.source,
+        TargetSource::DistributionPackage
     );
-
-    assert_eq!(command_programs(&fedora_step.operations), vec!["dnf"]);
     assert_eq!(
-        command_args(&fedora_step.operations[0]),
-        vec!["install", "-y", "tigervnc-server"]
+        arch_step.selected_target.source,
+        TargetSource::DistributionPackage
     );
-
-    assert_eq!(command_programs(&arch_step.operations), vec!["pacman"]);
     assert_eq!(
-        command_args(&arch_step.operations[0]),
-        vec!["-Sy", "--noconfirm", "tigervnc"]
-    );
-
-    assert_eq!(command_programs(&opensuse_step.operations), vec!["zypper"]);
-    assert_eq!(
-        command_args(&opensuse_step.operations[0]),
-        vec!["install", "-y", "tigervnc"]
+        opensuse_step.selected_target.source,
+        TargetSource::DistributionPackage
     );
 }
 
@@ -114,171 +97,98 @@ fn unsupported_native_target_is_reported_before_execution_planning() {
 }
 
 #[test]
-fn missing_recipe_overlay_reports_explicit_execution_error() {
+fn native_execution_plan_uses_catalog_shell_contract_instead_of_backend_adapter() {
     let catalog =
-        Catalog::from_toml_str(missing_recipe_manifest()).expect("fixture catalog should parse");
-    let platform = platform_context(TargetBackend::Apt, RuntimeScope::User);
+        Catalog::from_toml_str(native_only_manifest()).expect("fixture catalog should parse");
+    let platform = platform_context(TargetBackend::Apt, RuntimeScope::System);
     let install_plan =
-        build_install_plan(&catalog, &platform, &PlannerRequest::item("portable-tool"))
-            .expect("portable target should plan");
+        build_install_plan(&catalog, &platform, &PlannerRequest::item("native-only"))
+            .expect("native target should plan");
     let action_plan = classify_install_plan(
         &install_plan,
         &BTreeMap::from([(
-            "portable-tool".to_string(),
+            "native-only".to_string(),
             missing_result(VerificationStage::Present),
         )]),
     )
     .expect("action plan should classify");
 
-    let error = build_execution_plan(&catalog, &platform, &action_plan)
-        .expect_err("execution planning should require a matching recipe overlay");
-
-    match error {
-        ExecutionPlanError::MissingRecipe { item_id, target } => {
-            assert_eq!(item_id, "portable-tool");
-            assert_eq!(target.backend, TargetBackend::Archive);
-        }
-        other => panic!("expected missing recipe error, got {other}"),
-    }
-}
-
-#[test]
-fn builtin_recipe_planning_stays_typed_and_bounded() {
-    let catalog =
-        Catalog::from_toml_str(direct_binary_manifest()).expect("fixture catalog should parse");
-    let platform = platform_context(TargetBackend::Apt, RuntimeScope::User);
-    let execution_plan = execution_plan_for(
-        &catalog,
-        platform,
-        PlannerRequest::item("portable-tool"),
-        &["portable-tool"],
-    );
-
-    let step = step_for(&execution_plan, "portable-tool");
-    assert_eq!(step.action_step.action, PlannedAction::Install);
-    assert_eq!(step.execution_target, ExecutionTarget::CurrentProcess);
-
-    match step
-        .recipe
-        .as_ref()
-        .expect("builtin recipe should be attached")
-    {
-        ExecutionRecipe::Builtin(BuiltinRecipePlan::DirectBinaryInstall {
-            url,
-            destination,
-            binary_name,
-            ..
-        }) => {
-            assert_eq!(url, "https://example.com/portable-tool");
-            assert_eq!(binary_name, "portable-tool");
-            assert_eq!(
-                destination,
-                &PathBuf::from("/home/alice/.local/bin/portable-tool")
-            );
-        }
-        other => panic!("expected typed direct binary recipe, got {other:?}"),
-    }
-
-    assert!(step
-        .operations
+    let execution_plan = build_execution_plan(&catalog, &platform, &action_plan)
+        .expect("execution planning should use the catalog shell contract");
+    let step = execution_plan
+        .steps
         .iter()
-        .all(|operation| matches!(operation, OperationSpec::Command(_))));
-    assert!(command_programs(&step.operations)
-        .into_iter()
-        .all(|program| program != "sh" && program != "bash"));
+        .find(|step| step.action_step.step.item_id == "native-only")
+        .expect("native-only execution step should exist");
+
+    assert_eq!(step.execution_target, ExecutionTarget::System);
+    assert_eq!(
+        step.recipe,
+        Some(ExecutionRecipe::Shell {
+            shell: "bash".to_string(),
+            command: "sudo apt install -y native-only".to_string(),
+        })
+    );
+    assert_eq!(
+        step.operations,
+        vec![OperationSpec::Command(
+            CommandOperation::shell("bash", "sudo apt install -y native-only")
+                .with_target(ExecutionTarget::System)
+        )]
+    );
 }
 
 #[test]
-fn execution_plan_serialization_exposes_operation_details_for_future_consumers() {
+fn user_recipe_planning_uses_generic_user_shell_target() {
     let catalog =
         Catalog::from_toml_str(direct_binary_manifest()).expect("fixture catalog should parse");
     let platform = platform_context(TargetBackend::Apt, RuntimeScope::User);
-    let execution_plan = execution_plan_for(
-        &catalog,
-        platform,
-        PlannerRequest::item("portable-tool"),
-        &["portable-tool"],
-    );
+    let install_plan =
+        build_install_plan(&catalog, &platform, &PlannerRequest::item("portable-tool"))
+            .expect("install plan should build");
 
-    let json_value =
-        serde_json::to_value(&execution_plan).expect("execution plan should serialize");
-
-    assert_eq!(json_value["steps"][0]["action_step"]["action"], "install");
-    assert_eq!(
-        json_value["steps"][0]["execution_target"],
-        "current_process"
-    );
-    assert_eq!(
-        json_value["steps"][0]["recipe"],
-        json!({
-            "kind": "builtin",
-            "family": "direct_binary_install",
-            "url": "https://example.com/portable-tool",
-            "destination": "/home/alice/.local/bin/portable-tool",
-            "binary_name": "portable-tool"
-        })
-    );
-    assert_eq!(
-        json_value["steps"][0]["operations"][2],
-        json!({
-            "kind": "command",
-            "program": "curl",
-            "args": ["-fsSL", "https://example.com/portable-tool", "-o", "/tmp/envira/direct-binary/portable-tool/portable-tool"],
-            "env": {},
-            "cwd": null,
-            "timeout_ms": null,
-            "target": "current_process"
-        })
-    );
+    let step = planned_step_for(&install_plan, "portable-tool");
+    assert_eq!(step.catalog_scope, envira::catalog::InstallScope::User);
+    assert_eq!(step.planned_scope, PlannedScope::User);
+    assert_eq!(step.selected_target.backend, TargetBackend::DirectBinary);
+    assert_eq!(step.selected_target.source, TargetSource::GithubRelease);
 }
 
-fn execution_plan_for(
+#[test]
+fn install_plan_serialization_exposes_selected_target_details_for_active_consumers() {
+    let catalog =
+        Catalog::from_toml_str(direct_binary_manifest()).expect("fixture catalog should parse");
+    let platform = platform_context(TargetBackend::Apt, RuntimeScope::User);
+    let install_plan =
+        build_install_plan(&catalog, &platform, &PlannerRequest::item("portable-tool"))
+            .expect("install plan should build");
+
+    let json_value = serde_json::to_value(&install_plan).expect("install plan should serialize");
+
+    assert_eq!(json_value["steps"][0]["recipe"], serde_json::Value::Null);
+    assert_eq!(
+        json_value["steps"][0]["selected_target"],
+        json!({
+            "backend": "direct_binary",
+            "source": "github_release"
+        })
+    );
+    assert_eq!(json_value["steps"][0]["planned_scope"], "user");
+}
+
+fn install_plan_for(
     catalog: &Catalog,
     platform: PlatformContext,
     request: PlannerRequest,
-    missing_items: &[&str],
-) -> envira::executor::ExecutionPlan {
-    let install_plan =
-        build_install_plan(catalog, &platform, &request).expect("install plan should build");
-    let verifier_results = missing_items
-        .iter()
-        .map(|item_id| {
-            (
-                (*item_id).to_string(),
-                missing_result(VerificationStage::Present),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let action_plan = classify_install_plan(&install_plan, &verifier_results)
-        .expect("action plan should classify");
-    build_execution_plan(catalog, &platform, &action_plan).expect("execution plan should build")
+) -> InstallPlan {
+    build_install_plan(catalog, &platform, &request).expect("install plan should build")
 }
 
-fn step_for<'a>(
-    plan: &'a envira::executor::ExecutionPlan,
-    item_id: &str,
-) -> &'a envira::executor::ExecutionStep {
+fn planned_step_for<'a>(plan: &'a InstallPlan, item_id: &str) -> &'a PlanStep {
     plan.steps
         .iter()
-        .find(|step| step.action_step.step.item_id == item_id)
-        .expect("expected item in execution plan")
-}
-
-fn command_programs(operations: &[OperationSpec]) -> Vec<&str> {
-    operations
-        .iter()
-        .map(|operation| match operation {
-            OperationSpec::Command(command) => command.program.as_str(),
-            other => panic!("expected command operation, got {other:?}"),
-        })
-        .collect()
-}
-
-fn command_args(operation: &OperationSpec) -> Vec<&str> {
-    match operation {
-        OperationSpec::Command(command) => command.args.iter().map(String::as_str).collect(),
-        other => panic!("expected command operation, got {other:?}"),
-    }
+        .find(|step| step.item_id == item_id)
+        .expect("expected item in install plan")
 }
 
 fn platform_context(native_backend: TargetBackend, runtime_scope: RuntimeScope) -> PlatformContext {
@@ -407,94 +317,58 @@ fn missing_result(required_stage: VerificationStage) -> VerifierResult {
 
 fn native_only_manifest() -> &'static str {
     r#"
-schema_version = 1
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
 default_bundles = ["core"]
 
-[[items]]
-id = "native-only"
-display_name = "Native Only"
-category = "foundation"
-scope = "system"
+[items.native-only]
+name = "Native Only"
+desc = "Native only"
 depends_on = []
-targets = [{ backend = "apt", source = "distribution_package" }]
-success_threshold = "present"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "native-only"
+[[items.native-only.recipes]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "sudo apt install -y native-only"
 
-  [[items.recipes]]
-  backend = "apt"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["native-only"]
+[[items.native-only.verifiers]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "command -v native-only"
 
-[[bundles]]
-id = "core"
-display_name = "Core"
+[bundles.core]
+name = "Core"
+desc = "Core"
 items = ["native-only"]
-"#
-}
-
-fn missing_recipe_manifest() -> &'static str {
-    r#"
-schema_version = 1
-default_bundles = ["portable"]
-
-[[items]]
-id = "portable-tool"
-display_name = "Portable Tool"
-category = "terminal_tool"
-scope = "user"
-depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "present"
-standalone = false
-
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "portable-tool"
-
-[[bundles]]
-id = "portable"
-display_name = "Portable"
-items = ["portable-tool"]
 "#
 }
 
 fn direct_binary_manifest() -> &'static str {
     r#"
-schema_version = 1
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
 default_bundles = ["portable"]
 
-[[items]]
-id = "portable-tool"
-display_name = "Portable Tool"
-category = "terminal_tool"
-scope = "user"
+[items.portable-tool]
+name = "Portable Tool"
+desc = "Portable tool"
 depends_on = []
-targets = [{ backend = "direct_binary", source = "github_release" }]
-success_threshold = "present"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "portable-tool"
+[[items.portable-tool.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/portable-tool -o ~/.local/bin/portable-tool && chmod +x ~/.local/bin/portable-tool"
 
-  [[items.recipes]]
-  backend = "direct_binary"
-  source = "github_release"
-  recipe = "direct_binary"
-  url = "https://example.com/portable-tool"
-  binary_name = "portable-tool"
+[[items.portable-tool.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v portable-tool"
 
-[[bundles]]
-id = "portable"
-display_name = "Portable"
+[bundles.portable]
+name = "Portable"
+desc = "Portable"
 items = ["portable-tool"]
 "#
 }

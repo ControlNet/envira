@@ -9,7 +9,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    catalog::{load_embedded_catalog, Catalog, CatalogError},
+    catalog::{embedded_manifest, Catalog, CatalogError},
     executor::{
         build_execution_plan, execute_execution_plan, ExecutionDisposition, ExecutionPlanError,
         ExecutionPlanReport, ExecutionPlanSummary, ExecutionStepReport, OperationExecutionReport,
@@ -20,7 +20,10 @@ use crate::{
         PlannedAction, PlannerError,
     },
     platform::{PlatformContext, PlatformError, RuntimeScope},
-    verifier::{verify_with_context, VerificationContext, VerificationError, VerificationProfile},
+    verifier::{
+        verify_with_context, VerificationContext, VerificationError, VerificationProfile,
+        VerifierSpec,
+    },
 };
 
 pub use self::types::{
@@ -31,6 +34,7 @@ pub use self::types::{
 };
 
 const CATALOG_PATH_ENV: &str = "ENVIRA_CATALOG_PATH";
+pub const CURRENT_VERSION_ENV: &str = "ENVIRA_CURRENT_VERSION";
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -49,6 +53,41 @@ pub enum EngineError {
     LoadCatalog {
         manifest_path: Option<PathBuf>,
         source: CatalogError,
+    },
+    #[error("catalog required_version `{required_version}` is invalid: {reason}")]
+    InvalidRequiredVersion {
+        required_version: String,
+        reason: String,
+    },
+    #[error(
+        "catalog required_version `{required_version}` uses unsupported prerelease semantics; use a stable major.minor.patch version"
+    )]
+    UnsupportedRequiredVersionPrerelease { required_version: String },
+    #[error("envira binary version `{current_version}` is invalid: {reason}")]
+    InvalidBinaryVersion {
+        current_version: String,
+        reason: String,
+    },
+    #[error(
+        "envira binary version `{current_version}` uses unsupported prerelease semantics; prerelease binaries cannot satisfy catalog minimum versions"
+    )]
+    UnsupportedBinaryPrerelease { current_version: String },
+    #[error(
+        "envira {current_version} is older than catalog minimum {required_version}; run the approved update flow before continuing"
+    )]
+    UpdateRequired {
+        current_version: String,
+        required_version: String,
+    },
+    #[error(
+        "envira {current_version} is older than catalog minimum {required_version}, and the approved update flow failed: {detail}"
+    )]
+    AutoUpdateFailed {
+        current_version: String,
+        required_version: String,
+        updater: String,
+        detail: String,
+        exit_code: Option<i32>,
     },
     #[error(transparent)]
     DetectPlatform(#[from] PlatformError),
@@ -82,6 +121,14 @@ impl EngineError {
             Self::UnsupportedInterface { .. } => "unsupported_interface",
             Self::ReadCatalogManifest { .. } => "catalog_read_failed",
             Self::LoadCatalog { .. } => "catalog_invalid",
+            Self::InvalidRequiredVersion { .. } => "catalog_required_version_invalid",
+            Self::UnsupportedRequiredVersionPrerelease { .. } => {
+                "catalog_required_version_prerelease_unsupported"
+            }
+            Self::InvalidBinaryVersion { .. } => "envira_binary_version_invalid",
+            Self::UnsupportedBinaryPrerelease { .. } => "envira_binary_prerelease_unsupported",
+            Self::UpdateRequired { .. } => "envira_update_required",
+            Self::AutoUpdateFailed { .. } => "envira_auto_update_failed",
             Self::DetectPlatform(_) => "platform_detect_failed",
             Self::BuildPlan(_) => "planning_failed",
             Self::ClassifyPlan(_) => "action_classification_failed",
@@ -109,6 +156,48 @@ impl EngineError {
                     context.insert("manifest_path".to_string(), "embedded".to_string());
                 }
             }
+            Self::InvalidRequiredVersion {
+                required_version,
+                reason,
+            } => {
+                context.insert("required_version".to_string(), required_version.clone());
+                context.insert("reason".to_string(), reason.clone());
+            }
+            Self::UnsupportedRequiredVersionPrerelease { required_version } => {
+                context.insert("required_version".to_string(), required_version.clone());
+            }
+            Self::InvalidBinaryVersion {
+                current_version,
+                reason,
+            } => {
+                context.insert("current_version".to_string(), current_version.clone());
+                context.insert("reason".to_string(), reason.clone());
+            }
+            Self::UnsupportedBinaryPrerelease { current_version } => {
+                context.insert("current_version".to_string(), current_version.clone());
+            }
+            Self::UpdateRequired {
+                current_version,
+                required_version,
+            } => {
+                context.insert("current_version".to_string(), current_version.clone());
+                context.insert("required_version".to_string(), required_version.clone());
+            }
+            Self::AutoUpdateFailed {
+                current_version,
+                required_version,
+                updater,
+                detail,
+                exit_code,
+            } => {
+                context.insert("current_version".to_string(), current_version.clone());
+                context.insert("required_version".to_string(), required_version.clone());
+                context.insert("updater".to_string(), updater.clone());
+                context.insert("detail".to_string(), detail.clone());
+                if let Some(exit_code) = exit_code {
+                    context.insert("exit_code".to_string(), exit_code.to_string());
+                }
+            }
             Self::MissingCatalogItem { item_id } => {
                 context.insert("item_id".to_string(), item_id.clone());
             }
@@ -121,6 +210,16 @@ impl EngineError {
 
         context
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VersionGate {
+    NotApplicable,
+    Satisfied,
+    UpdateRequired {
+        current_version: String,
+        required_version: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -215,7 +314,50 @@ impl Engine {
         ))
     }
 
+    pub fn assess_version_gate(
+        &self,
+        request: &CommandRequest,
+    ) -> Result<VersionGate, EngineError> {
+        if !matches!(
+            request.command,
+            CommandName::Plan | CommandName::Install | CommandName::Verify | CommandName::Tui
+        ) {
+            return Ok(VersionGate::NotApplicable);
+        }
+
+        let catalog = self.load_catalog()?;
+        let required_version_raw = catalog.required_version.trim().to_string();
+        let current_version_raw = env::var(CURRENT_VERSION_ENV)
+            .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+            .trim()
+            .to_string();
+        let required_version =
+            parse_stable_version(required_version_raw.as_str(), VersionField::CatalogRequired)?;
+        let current_version =
+            parse_stable_version(current_version_raw.as_str(), VersionField::CurrentBinary)?;
+
+        if current_version >= required_version {
+            Ok(VersionGate::Satisfied)
+        } else {
+            Ok(VersionGate::UpdateRequired {
+                current_version: current_version_raw,
+                required_version: required_version_raw,
+            })
+        }
+    }
+
     fn prepare_workflow(&self, request: &CommandRequest) -> Result<PreparedWorkflow, EngineError> {
+        if let VersionGate::UpdateRequired {
+            current_version,
+            required_version,
+        } = self.assess_version_gate(request)?
+        {
+            return Err(EngineError::UpdateRequired {
+                current_version,
+                required_version,
+            });
+        }
+
         let catalog = self.load_catalog()?;
         let platform = PlatformContext::detect()?;
         let planner_request = request.resolved_planner_request();
@@ -265,10 +407,7 @@ impl Engine {
             return load_catalog_from_path(&path);
         }
 
-        load_embedded_catalog().map_err(|source| EngineError::LoadCatalog {
-            manifest_path: None,
-            source,
-        })
+        load_catalog_from_manifest(embedded_manifest(), None)
     }
 
     fn verify_install_plan(
@@ -287,8 +426,8 @@ impl Engine {
                     item_id: step.item_id.clone(),
                 }
             })?;
-            let verification_run =
-                verify_with_context(step.success_threshold, &item.verifier, &context)?;
+            let verifier = VerifierSpec::from_catalog_commands(&item.verifiers);
+            let verification_run = verify_with_context(step.required_stage, &verifier, &context)?;
 
             results.push(VerificationItemResult {
                 step: step.clone(),
@@ -323,8 +462,15 @@ fn load_catalog_from_path(path: &Path) -> Result<Catalog, EngineError> {
             source,
         })?;
 
-    Catalog::from_toml_str(&raw_manifest).map_err(|source| EngineError::LoadCatalog {
-        manifest_path: Some(path.to_path_buf()),
+    load_catalog_from_manifest(&raw_manifest, Some(path))
+}
+
+fn load_catalog_from_manifest(
+    raw_manifest: &str,
+    manifest_path: Option<&Path>,
+) -> Result<Catalog, EngineError> {
+    Catalog::from_toml_str(raw_manifest).map_err(|source| EngineError::LoadCatalog {
+        manifest_path: manifest_path.map(Path::to_path_buf),
         source,
     })
 }
@@ -475,5 +621,112 @@ fn dry_run_execution_report(plan: &crate::executor::ExecutionPlan) -> ExecutionP
             skipped_steps,
         },
         steps,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct StableVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionField {
+    CatalogRequired,
+    CurrentBinary,
+}
+
+fn parse_stable_version(raw: &str, field: VersionField) -> Result<StableVersion, EngineError> {
+    let value = raw.trim();
+
+    if value.is_empty() {
+        return Err(field.invalid_version("expected `major.minor.patch`".to_string(), value));
+    }
+
+    if value.contains('-') {
+        return Err(field.unsupported_prerelease(value));
+    }
+
+    if value.contains('+') {
+        return Err(field.invalid_version(
+            "build metadata is not supported; expected `major.minor.patch`".to_string(),
+            value,
+        ));
+    }
+
+    let parts = value.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err(field.invalid_version("expected `major.minor.patch`".to_string(), value));
+    }
+
+    Ok(StableVersion {
+        major: parse_version_component(parts[0], "major", field, value)?,
+        minor: parse_version_component(parts[1], "minor", field, value)?,
+        patch: parse_version_component(parts[2], "patch", field, value)?,
+    })
+}
+
+fn parse_version_component(
+    component: &str,
+    name: &str,
+    field: VersionField,
+    original: &str,
+) -> Result<u64, EngineError> {
+    if component.is_empty() {
+        return Err(field.invalid_version(
+            format!("missing {name} version component; expected `major.minor.patch`"),
+            original,
+        ));
+    }
+
+    if !component
+        .chars()
+        .all(|character| character.is_ascii_digit())
+    {
+        return Err(field.invalid_version(
+            format!("{name} version component must contain only ASCII digits"),
+            original,
+        ));
+    }
+
+    if component.len() > 1 && component.starts_with('0') {
+        return Err(field.invalid_version(
+            format!("{name} version component must not contain leading zeroes"),
+            original,
+        ));
+    }
+
+    component.parse::<u64>().map_err(|_| {
+        field.invalid_version(
+            format!("{name} version component is too large to compare"),
+            original,
+        )
+    })
+}
+
+impl VersionField {
+    fn invalid_version(self, reason: String, version: &str) -> EngineError {
+        match self {
+            Self::CatalogRequired => EngineError::InvalidRequiredVersion {
+                required_version: version.to_string(),
+                reason,
+            },
+            Self::CurrentBinary => EngineError::InvalidBinaryVersion {
+                current_version: version.to_string(),
+                reason,
+            },
+        }
+    }
+
+    fn unsupported_prerelease(self, version: &str) -> EngineError {
+        match self {
+            Self::CatalogRequired => EngineError::UnsupportedRequiredVersionPrerelease {
+                required_version: version.to_string(),
+            },
+            Self::CurrentBinary => EngineError::UnsupportedBinaryPrerelease {
+                current_version: version.to_string(),
+            },
+        }
     }
 }

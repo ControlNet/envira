@@ -6,11 +6,11 @@ use thiserror::Error;
 mod action;
 
 use crate::catalog::{
-    Catalog, CatalogError, CatalogItem, InstallScope, InstallTarget, ItemCategory, TargetBackend,
-    ALL_DEFAULT_BUNDLE_ID,
+    Catalog, CatalogCommand, CatalogError, CatalogItem, CommandMode, InstallScope, InstallTarget,
+    TargetBackend,
 };
 use crate::platform::{PlatformContext, RuntimeScope};
-use crate::verifier::VerificationStage;
+use crate::verifier::{required_stage_for_catalog_commands, VerificationStage};
 
 pub use self::action::{
     classify_install_plan, ActionPlan, ActionPlanError, ActionPlanStep, ActionRationale,
@@ -35,10 +35,6 @@ impl PlannerRequest {
         Self::new(vec![PlanSelection::bundle(id)])
     }
 
-    pub fn all_default() -> Self {
-        Self::new(vec![PlanSelection::AllDefault])
-    }
-
     pub fn all_items() -> Self {
         Self::new(vec![PlanSelection::AllItems])
     }
@@ -49,7 +45,6 @@ impl PlannerRequest {
 pub enum PlanSelection {
     Item { id: String },
     Bundle { id: String },
-    AllDefault,
     AllItems,
 }
 
@@ -80,13 +75,12 @@ pub struct PlanPlatformSnapshot {
 pub struct PlanStep {
     pub item_id: String,
     pub display_name: String,
-    pub category: ItemCategory,
     pub requested: bool,
     pub depends_on: Vec<String>,
     pub catalog_scope: InstallScope,
     pub planned_scope: PlannedScope,
     pub selected_target: InstallTarget,
-    pub success_threshold: VerificationStage,
+    pub required_stage: VerificationStage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -102,6 +96,18 @@ pub enum PlannerError {
     Catalog(#[from] CatalogError),
     #[error("requested item `{item_id}` is not defined in the catalog")]
     UnknownItem { item_id: String },
+    #[error("requested bundle `{bundle_id}` is not defined in the catalog")]
+    UnknownBundle { bundle_id: String },
+    #[error(
+        "item `{item_id}` has no supported {contract_kind} for distro `{distro_id}` in runtime scope `{runtime_scope:?}`; available coverage: {available_coverage:?}"
+    )]
+    UnsupportedCoverage {
+        item_id: String,
+        contract_kind: String,
+        distro_id: String,
+        runtime_scope: RuntimeScope,
+        available_coverage: Vec<String>,
+    },
     #[error(
         "item `{item_id}` has no supported target for native backend `{native_backend:?}`; available targets: {available_targets:?}"
     )]
@@ -169,23 +175,54 @@ fn expand_requested_items<'a>(
     request: &PlannerRequest,
 ) -> Result<Vec<&'a CatalogItem>, PlannerError> {
     let mut items = Vec::new();
-    let mut seen = BTreeSet::new();
+    let mut requested_item_ids = BTreeSet::new();
 
-    for selection in &request.selections {
-        let expanded = match selection {
-            PlanSelection::Item { id } => {
-                vec![catalog.item(id).ok_or_else(|| PlannerError::UnknownItem {
-                    item_id: id.clone(),
-                })?]
-            }
-            PlanSelection::Bundle { id } => catalog.expand_bundle(id)?,
-            PlanSelection::AllDefault => catalog.expand_bundle(ALL_DEFAULT_BUNDLE_ID)?,
-            PlanSelection::AllItems => catalog.items.iter().collect(),
-        };
-
-        for item in expanded {
-            if seen.insert(item.id.as_str().to_string()) {
+    if request.selections.is_empty() {
+        for item in catalog.expand_default_bundles()? {
+            if requested_item_ids.insert(item.id.as_str().to_string()) {
                 items.push(item);
+            }
+        }
+    } else {
+        for selection in &request.selections {
+            match selection {
+                PlanSelection::Item { id } => {
+                    let item = catalog.item(id).ok_or_else(|| PlannerError::UnknownItem {
+                        item_id: id.clone(),
+                    })?;
+
+                    if requested_item_ids.insert(id.clone()) {
+                        items.push(item);
+                    }
+                }
+                PlanSelection::Bundle { id } => {
+                    let bundle = catalog
+                        .bundle(id)
+                        .ok_or_else(|| PlannerError::UnknownBundle {
+                            bundle_id: id.clone(),
+                        })?;
+
+                    for item_id in &bundle.items {
+                        let item_id = item_id.as_str().to_string();
+                        if !requested_item_ids.insert(item_id.clone()) {
+                            continue;
+                        }
+
+                        let item = catalog.item(item_id.as_str()).ok_or_else(|| {
+                            PlannerError::UnknownItem {
+                                item_id: item_id.clone(),
+                            }
+                        })?;
+                        items.push(item);
+                    }
+                }
+                PlanSelection::AllItems => {
+                    for item in &catalog.items {
+                        if requested_item_ids.insert(item.id.as_str().to_string()) {
+                            items.push(item);
+                        }
+                    }
+                }
             }
         }
     }
@@ -235,28 +272,44 @@ fn visit_item(
         )?;
     }
 
-    let selected_target = select_target(item.id.as_str(), &item.targets, platform.native_backend)?;
+    let supported_recipes =
+        supported_commands(item, &item.recipes, "recipes", platform, None, true)?;
+    let available_targets =
+        compatible_targets_for_commands(&supported_recipes, platform.distro.id.as_str());
+    let selected_target = select_target(
+        item.id.as_str(),
+        &available_targets,
+        platform.native_backend,
+    )?;
+    let item_scope = scope_for_commands(&supported_recipes);
     let planned_scope = resolve_scope(
         item.id.as_str(),
-        item.scope,
+        item_scope,
         platform.runtime_scope,
         selected_target.backend,
+    )?;
+    supported_commands(
+        item,
+        &item.verifiers,
+        "verifiers",
+        platform,
+        Some(planned_scope),
+        false,
     )?;
 
     steps.push(PlanStep {
         item_id: item_id.clone(),
-        display_name: item.display_name.clone(),
-        category: item.category,
+        display_name: item.name.clone(),
         requested: requested_ids.contains(item_id.as_str()),
         depends_on: item
             .depends_on
             .iter()
             .map(|dependency| dependency.as_str().to_string())
             .collect(),
-        catalog_scope: item.scope,
+        catalog_scope: item.install_scope(),
         planned_scope,
         selected_target,
-        success_threshold: item.success_threshold,
+        required_stage: required_stage_for_catalog_commands(&item.verifiers),
     });
 
     stack.pop();
@@ -273,6 +326,137 @@ fn cycle_from_stack(stack: &[String], repeated_id: &str) -> Vec<String> {
     let mut cycle = stack[start_index..].to_vec();
     cycle.push(repeated_id.to_string());
     cycle
+}
+
+fn supported_commands<'a>(
+    item: &CatalogItem,
+    commands: &'a [CatalogCommand],
+    contract_kind: &str,
+    platform: &PlatformContext,
+    required_scope: Option<PlannedScope>,
+    allow_unknown_distro_fallback: bool,
+) -> Result<Vec<&'a CatalogCommand>, PlannerError> {
+    let supported = commands
+        .iter()
+        .filter(|command| command_supports_distro(command, platform.distro.id.as_str()))
+        .filter(|command| {
+            required_scope
+                .map(|scope| command_supports_scope(command, scope))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+
+    if supported.is_empty() && allow_unknown_distro_fallback && platform.distro.id == "unknown" {
+        return Ok(commands.iter().collect());
+    }
+
+    if supported.is_empty() {
+        return Err(PlannerError::UnsupportedCoverage {
+            item_id: item.id.as_str().to_string(),
+            contract_kind: contract_kind.to_string(),
+            distro_id: platform.distro.id.clone(),
+            runtime_scope: platform.runtime_scope,
+            available_coverage: commands.iter().map(command_coverage_summary).collect(),
+        });
+    }
+
+    Ok(supported)
+}
+
+fn command_supports_distro(command: &CatalogCommand, distro_id: &str) -> bool {
+    command
+        .distros
+        .iter()
+        .any(|distro| distro == "*" || distro == distro_id)
+}
+
+fn command_supports_scope(command: &CatalogCommand, planned_scope: PlannedScope) -> bool {
+    matches!(
+        (command.mode, planned_scope),
+        (CommandMode::Sudo, PlannedScope::System) | (CommandMode::User, PlannedScope::User)
+    )
+}
+
+fn command_coverage_summary(command: &CatalogCommand) -> String {
+    format!(
+        "mode={} distros={:?}",
+        command.mode.as_str(),
+        command.distros
+    )
+}
+
+fn scope_for_commands(commands: &[&CatalogCommand]) -> InstallScope {
+    let has_user = commands
+        .iter()
+        .any(|command| command.mode == CommandMode::User);
+    let has_sudo = commands
+        .iter()
+        .any(|command| command.mode == CommandMode::Sudo);
+
+    match (has_user, has_sudo) {
+        (true, true) => InstallScope::Hybrid,
+        (true, false) => InstallScope::User,
+        _ => InstallScope::System,
+    }
+}
+
+fn compatible_targets_for_commands(
+    commands: &[&CatalogCommand],
+    distro_id: &str,
+) -> Vec<InstallTarget> {
+    let mut targets = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for command in commands {
+        for target in compatible_targets_for_command(command, distro_id) {
+            let key = (target.backend, target.source);
+            if seen.insert(key) {
+                targets.push(target);
+            }
+        }
+    }
+
+    targets
+}
+
+fn compatible_targets_for_command(command: &CatalogCommand, distro_id: &str) -> Vec<InstallTarget> {
+    match command.mode {
+        CommandMode::User => vec![InstallTarget::generic_user()],
+        CommandMode::Sudo => {
+            if command_supports_distro(command, distro_id) {
+                native_targets_for_distro(distro_id)
+            } else {
+                command
+                    .distros
+                    .iter()
+                    .flat_map(|declared_distro| native_targets_for_distro(declared_distro))
+                    .collect()
+            }
+        }
+    }
+}
+
+fn native_targets_for_distro(distro_id: &str) -> Vec<InstallTarget> {
+    native_backend_for_distro(distro_id)
+        .map(native_install_target)
+        .into_iter()
+        .collect()
+}
+
+fn native_backend_for_distro(distro_id: &str) -> Option<TargetBackend> {
+    match distro_id {
+        "ubuntu" | "debian" | "mint" | "linuxmint" => Some(TargetBackend::Apt),
+        "arch" | "archlinux" | "manjaro" => Some(TargetBackend::Pacman),
+        "fedora" | "rhel" | "redhat" | "centos" => Some(TargetBackend::Dnf),
+        "opensuse" | "opensuse-leap" | "opensuse-tumbleweed" | "sles" => {
+            Some(TargetBackend::Zypper)
+        }
+        _ => None,
+    }
+}
+
+fn native_install_target(backend: TargetBackend) -> InstallTarget {
+    InstallTarget::native_package(backend)
 }
 
 fn resolve_scope(

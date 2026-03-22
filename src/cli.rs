@@ -10,7 +10,7 @@ use crate::{
 #[command(
     name = "envira",
     version,
-    about = "Software environment management tool",
+    about = "Catalog-driven software environment management tool",
     long_about = None
 )]
 pub struct Cli {
@@ -26,10 +26,24 @@ impl Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    #[command(about = "Inspect the loaded catalog and its default bundles")]
     Catalog(OutputArgs),
+    #[command(
+        about = "Preview catalog actions without executing commands",
+        after_help = "When no selection flag is provided, envira selects the catalog's default_bundles."
+    )]
     Plan(WorkflowArgs),
+    #[command(
+        about = "Execute catalog commands for selected items",
+        after_help = "When no selection flag is provided, envira selects the catalog's default_bundles."
+    )]
     Install(InstallArgs),
+    #[command(
+        about = "Run catalog verification for selected items",
+        after_help = "When no selection flag is provided, envira selects the catalog's default_bundles."
+    )]
     Verify(VerifyArgs),
+    #[command(about = "Open the interactive terminal interface")]
     Tui,
 }
 
@@ -55,22 +69,45 @@ impl OutputArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct OutputArgs {
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = OutputFormat::Text,
+        help = "Render headless output as text or json"
+    )]
     format: OutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct SelectionArgs {
-    #[arg(long, value_name = "BUNDLE", conflicts_with = "all")]
+    #[arg(
+        long,
+        value_name = "ITEM",
+        conflicts_with_all = ["bundle", "all"],
+        help = "Select one catalog item"
+    )]
+    item: Option<String>,
+    #[arg(
+        long,
+        value_name = "BUNDLE",
+        conflicts_with_all = ["item", "all"],
+        help = "Select one catalog bundle"
+    )]
     bundle: Option<String>,
-    #[arg(long, conflicts_with = "bundle")]
+    #[arg(
+        long,
+        conflicts_with_all = ["item", "bundle"],
+        help = "Select every catalog item"
+    )]
     all: bool,
 }
 
 impl SelectionArgs {
     fn into_planner_request(self) -> Option<PlannerRequest> {
         if self.all {
-            Some(PlannerRequest::all_default())
+            Some(PlannerRequest::all_items())
+        } else if let Some(item) = self.item {
+            Some(PlannerRequest::item(item))
         } else {
             self.bundle.map(PlannerRequest::bundle)
         }
@@ -121,11 +158,25 @@ impl VerifyArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct VerifySelectionArgs {
-    #[arg(long, value_name = "ID", conflicts_with_all = ["bundle", "all"])]
+    #[arg(
+        long,
+        value_name = "ITEM",
+        conflicts_with_all = ["bundle", "all"],
+        help = "Select one catalog item"
+    )]
     item: Option<String>,
-    #[arg(long, value_name = "BUNDLE", conflicts_with_all = ["item", "all"])]
+    #[arg(
+        long,
+        value_name = "BUNDLE",
+        conflicts_with_all = ["item", "all"],
+        help = "Select one catalog bundle"
+    )]
     bundle: Option<String>,
-    #[arg(long, conflicts_with_all = ["item", "bundle"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["item", "bundle"],
+        help = "Select every catalog item"
+    )]
     all: bool,
 }
 
@@ -145,7 +196,7 @@ impl VerifySelectionArgs {
 pub struct InstallArgs {
     #[command(flatten)]
     workflow: WorkflowArgs,
-    #[arg(long)]
+    #[arg(long, help = "Preview commands without executing them")]
     dry_run: bool,
 }
 

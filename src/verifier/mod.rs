@@ -22,10 +22,11 @@ pub use self::runner::{
     VerificationError, VerificationRun, VerifierProbeRunner,
 };
 pub use self::service::{
-    combine_achieved_stage, combine_observed_scope, ServiceAssessment, ServiceKind,
-    ServiceProbeDefinition, ServiceProbeEvidence, ServiceUsabilityState, ServiceVerificationSpec,
+    combine_achieved_stage, combine_observed_scope, infer_service_verification_spec,
+    ServiceAssessment, ServiceKind, ServiceProbeDefinition, ServiceProbeEvidence,
+    ServiceUsabilityState, ServiceVerificationSpec,
 };
 pub use self::spec::{
-    ProbeKind, ProbeRequirement, VerificationProfile, VerificationStage, VerifierCheck,
-    VerifierSpec,
+    required_stage_for_catalog_commands, ProbeKind, ProbeRequirement, VerificationProfile,
+    VerificationStage, VerifierCheck, VerifierSpec,
 };

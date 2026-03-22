@@ -153,6 +153,29 @@ fn service_blocked_item_becomes_blocked() {
 }
 
 #[test]
+fn present_but_non_usable_service_becomes_repair_even_when_present_stage_exists() {
+    let catalog = fixture_catalog();
+    let plan = plan_for(&catalog, "blocked-service");
+    let action_plan = classify_install_plan(
+        &plan,
+        &BTreeMap::from([(
+            "blocked-service".to_string(),
+            service_result(
+                VerificationStage::Present,
+                ServiceUsabilityState::NonUsable,
+                Some(VerificationStage::Present),
+            ),
+        )]),
+    )
+    .expect("action plan should classify");
+
+    let step = &action_plan.steps[0];
+    assert_eq!(step.action, PlannedAction::Repair);
+    assert_eq!(step.rationale.code, ActionReasonCode::ServiceNonUsable);
+    assert!(!step.rationale.verifier.threshold_met);
+}
+
+#[test]
 fn dependency_blocked_reason_propagates_to_dependents() {
     let catalog = fixture_catalog();
     let plan = plan_for(&catalog, "app-with-dependency");
@@ -297,7 +320,8 @@ fn service_result(
         EvidenceStatus::Satisfied,
     )];
     let health = VerificationHealth::Healthy.max(state.health());
-    let threshold_met = achieved_stage.is_some_and(|stage| stage.meets(required_stage));
+    let threshold_met = state == ServiceUsabilityState::Operational
+        && achieved_stage.is_some_and(|stage| stage.meets(required_stage));
 
     VerifierResult {
         requested_profile: VerificationProfile::Quick,
@@ -429,117 +453,119 @@ fn platform_context() -> PlatformContext {
 
 fn fixture_manifest() -> &'static str {
     r#"
-schema_version = 1
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
 default_bundles = ["core"]
 
-[[items]]
-id = "ready-tool"
-display_name = "Ready Tool"
-category = "terminal_tool"
-scope = "user"
+[items.ready-tool]
+name = "Ready Tool"
+desc = "Ready tool"
 depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "operational"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "ready-tool"
+[[items.ready-tool.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/ready-tool.tar.gz | tar -xz -C ~/.local/bin"
 
-[[items]]
-id = "missing-tool"
-display_name = "Missing Tool"
-category = "terminal_tool"
-scope = "user"
+[[items.ready-tool.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v ready-tool"
+
+[items.missing-tool]
+name = "Missing Tool"
+desc = "Missing tool"
 depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "present"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "missing-tool"
+[[items.missing-tool.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/missing-tool.tar.gz | tar -xz -C ~/.local/bin"
 
-[[items]]
-id = "broken-tool"
-display_name = "Broken Tool"
-category = "terminal_tool"
-scope = "user"
+[[items.missing-tool.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v missing-tool"
+
+[items.broken-tool]
+name = "Broken Tool"
+desc = "Broken tool"
 depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "configured"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "broken-tool"
+[[items.broken-tool.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/broken-tool.tar.gz | tar -xz -C ~/.local/bin"
 
-[[items]]
-id = "unknown-tool"
-display_name = "Unknown Tool"
-category = "terminal_tool"
-scope = "user"
+[[items.broken-tool.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v broken-tool"
+
+[items.unknown-tool]
+name = "Unknown Tool"
+desc = "Unknown tool"
 depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "present"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "unknown-tool"
+[[items.unknown-tool.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/unknown-tool.tar.gz | tar -xz -C ~/.local/bin"
 
-[[items]]
-id = "blocked-service"
-display_name = "Blocked Service"
-category = "remote_access"
-scope = "user"
+[[items.unknown-tool.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v unknown-tool"
+
+[items.blocked-service]
+name = "Blocked Service"
+desc = "Blocked service"
 depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "operational"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "blocked-service"
+[[items.blocked-service.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/blocked-service.tar.gz | tar -xz -C ~/.local/bin"
 
-[[items]]
-id = "on-demand-service"
-display_name = "On Demand Service"
-category = "remote_access"
-scope = "user"
+[[items.blocked-service.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v blocked-service"
+
+[items.on-demand-service]
+name = "On Demand Service"
+desc = "On demand service"
 depends_on = []
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "operational"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "on-demand-service"
+[[items.on-demand-service.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/on-demand-service.tar.gz | tar -xz -C ~/.local/bin"
 
-[[items]]
-id = "app-with-dependency"
-display_name = "App With Dependency"
-category = "terminal_tool"
-scope = "user"
+[[items.on-demand-service.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v on-demand-service"
+
+[items.app-with-dependency]
+name = "App With Dependency"
+desc = "App With Dependency"
 depends_on = ["blocked-service"]
-targets = [{ backend = "archive", source = "github_release" }]
-success_threshold = "present"
-standalone = false
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "app-with-dependency"
+[[items.app-with-dependency.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/app-with-dependency.tar.gz | tar -xz -C ~/.local/bin"
 
-[[bundles]]
-id = "core"
-display_name = "Core"
+[[items.app-with-dependency.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v app-with-dependency"
+
+[bundles.core]
+name = "Core"
+desc = "Core"
 items = [
   "ready-tool",
   "missing-tool",

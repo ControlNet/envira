@@ -67,9 +67,10 @@ impl App {
 fn render_command_response(response: &CommandResponse) -> String {
     match &response.payload {
         CommandPayload::Catalog { catalog } => format!(
-            "Catalog loaded successfully with {} items across {} bundles.",
+            "Catalog loaded with {} items across {} bundles; {} default bundle(s) are available.",
             catalog.items.len(),
-            catalog.bundles.len()
+            catalog.bundles.len(),
+            catalog.default_bundles.len()
         ),
         CommandPayload::Plan { action_plan } => {
             let mut output = String::new();
@@ -83,6 +84,11 @@ fn render_command_response(response: &CommandResponse) -> String {
                 .iter()
                 .filter(|step| matches!(step.action, crate::planner::PlannedAction::Repair))
                 .count();
+            let skip_steps = action_plan
+                .steps
+                .iter()
+                .filter(|step| matches!(step.action, crate::planner::PlannedAction::Skip))
+                .count();
             let blocked_steps = action_plan
                 .steps
                 .iter()
@@ -90,7 +96,7 @@ fn render_command_response(response: &CommandResponse) -> String {
                 .count();
             let _ = writeln!(
                 output,
-                "Planned {} step(s): {install_steps} install, {repair_steps} repair, {blocked_steps} blocked.",
+                "Planned {} catalog item(s): {install_steps} install, {repair_steps} repair, {skip_steps} skip, {blocked_steps} blocked.",
                 action_plan.steps.len()
             );
 
@@ -108,7 +114,7 @@ fn render_command_response(response: &CommandResponse) -> String {
             let mut output = String::new();
             let _ = writeln!(
                 output,
-                "Verified {} step(s); {} met their threshold and {} did not.",
+                "Verified {} catalog item(s); {} met the requested threshold and {} did not.",
                 verification.summary.total_steps,
                 verification.summary.threshold_met_steps,
                 verification.summary.threshold_unmet_steps
@@ -128,7 +134,7 @@ fn render_command_response(response: &CommandResponse) -> String {
             let mut output = String::new();
             let _ = writeln!(
                 output,
-                "Install finished with {:?}; execution succeeded={} and {} of {} actionable step(s) met their threshold after verification.",
+                "Install finished with {:?}; execution succeeded={} and {} of {} actionable catalog item(s) met the requested threshold.",
                 install.outcome.status,
                 install.outcome.execution_succeeded,
                 install.outcome.threshold_met_steps,
@@ -138,10 +144,11 @@ fn render_command_response(response: &CommandResponse) -> String {
             for failure in &install.outcome.failures {
                 let _ = writeln!(
                     output,
-                    "- {} => {:?}, threshold_met={}, execution={:?}",
+                    "- {} => {:?}, threshold_met={}, health={:?}, execution={:?}",
                     failure.item_id,
                     failure.action,
                     failure.verifier.threshold_met,
+                    failure.verifier.health,
                     failure.execution_disposition
                 );
             }
@@ -152,14 +159,5 @@ fn render_command_response(response: &CommandResponse) -> String {
 }
 
 fn render_error_response(response: &CommandErrorResponse) -> String {
-    let mut output = format!("{}: {}", response.error.code, response.error.message);
-
-    if !response.error.context.is_empty() {
-        output.push_str("\nContext:");
-        for (key, value) in &response.error.context {
-            let _ = write!(output, "\n- {key}: {value}");
-        }
-    }
-
-    output
+    response.render_text()
 }

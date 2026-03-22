@@ -6,9 +6,21 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use envira::catalog::{Catalog, TargetBackend};
 use envira::executor::{
-    ArchiveFormat, BuiltinOperation, CommandEvent, CommandOperation, CommandRunner,
-    ExecutionDisposition, ExecutionTarget, ExecutorError, OperationSpec,
+    build_execution_plan, execute_execution_plan, ArchiveFormat, BuiltinOperation, CommandEvent,
+    CommandOperation, CommandRunner, ExecutionDisposition, ExecutionRecipe, ExecutionTarget,
+    ExecutorError, OperationSpec,
+};
+use envira::planner::{build_install_plan, classify_install_plan, PlannerRequest};
+use envira::platform::{
+    ArchitectureIdentity, ArchitectureKind, DistroIdentity, DistroKind, InvocationKind,
+    PlatformContext, RuntimeScope, UserAccount,
+};
+use envira::verifier::{
+    EvidenceRecord, EvidenceStatus, ObservedScope, ProbeKind, ProbeRequirement, VerificationHealth,
+    VerificationProfile, VerificationStage, VerificationSummary, VerifierCheck, VerifierEvidence,
+    VerifierResult,
 };
 use serde_json::json;
 use users::get_effective_uid;
@@ -274,6 +286,235 @@ fn target_user_target_requires_explicit_user_context() {
         ExecutorError::MissingTargetUser { program } => assert_eq!(program, "python3"),
         other => panic!("expected missing target user error, got {other}"),
     }
+}
+
+#[test]
+fn execution_plan_uses_shell_recipe_contract_and_preserves_quotes_and_spaces() {
+    let execution_plan = execution_plan_for_manifest(
+        shell_preview_manifest(),
+        "shell-preview",
+        RuntimeScope::User,
+    );
+    let step = &execution_plan.steps[0];
+
+    assert_eq!(step.execution_target, ExecutionTarget::CurrentProcess);
+    assert_eq!(
+        step.recipe,
+        Some(ExecutionRecipe::Shell {
+            shell: "bash".to_string(),
+            command: shell_preview_command().to_string(),
+        })
+    );
+    assert_eq!(
+        step.operations,
+        vec![OperationSpec::Command(
+            CommandOperation::shell("bash", shell_preview_command())
+                .with_target(ExecutionTarget::CurrentProcess)
+        )]
+    );
+
+    let execution = execute_execution_plan(&execution_plan);
+    let operation = execution.steps[0].operations[0]
+        .command
+        .as_ref()
+        .expect("shell operation should execute");
+
+    assert_eq!(
+        execution.steps[0].disposition,
+        ExecutionDisposition::Success
+    );
+    assert_eq!(operation.summary.exit_code, Some(0));
+    assert_eq!(operation.stdout.evidence.trim(), "quoted value with spaces");
+}
+
+#[test]
+fn non_zero_recipe_exit_propagates() {
+    let execution_plan =
+        execution_plan_for_manifest(shell_failure_manifest(), "shell-fail", RuntimeScope::User);
+    let execution = execute_execution_plan(&execution_plan);
+    let step = &execution.steps[0];
+    let operation = step.operations[0]
+        .command
+        .as_ref()
+        .expect("shell operation should execute");
+
+    assert_eq!(step.disposition, ExecutionDisposition::Failure);
+    assert_eq!(operation.summary.exit_code, Some(23));
+    assert!(operation.stdout.evidence.contains("before failure"));
+    assert!(operation.stderr.evidence.contains("stderr evidence"));
+    assert!(step.message.contains("stderr evidence"));
+}
+
+fn execution_plan_for_manifest(
+    manifest: &str,
+    item_id: &str,
+    runtime_scope: RuntimeScope,
+) -> envira::executor::ExecutionPlan {
+    let catalog = Catalog::from_toml_str(manifest).expect("fixture catalog should parse");
+    let platform = platform_context(TargetBackend::Apt, runtime_scope);
+    let install_plan = build_install_plan(&catalog, &platform, &PlannerRequest::item(item_id))
+        .expect("install plan should build");
+    let action_plan = classify_install_plan(
+        &install_plan,
+        &std::collections::BTreeMap::from([(
+            item_id.to_string(),
+            missing_result(VerificationStage::Present),
+        )]),
+    )
+    .expect("action plan should classify");
+
+    build_execution_plan(&catalog, &platform, &action_plan)
+        .expect("execution plan should use the shell contract")
+}
+
+fn platform_context(native_backend: TargetBackend, runtime_scope: RuntimeScope) -> PlatformContext {
+    PlatformContext {
+        distro: DistroIdentity {
+            kind: DistroKind::Ubuntu,
+            id: "ubuntu".to_string(),
+            name: "Ubuntu".to_string(),
+            pretty_name: Some("Ubuntu".to_string()),
+            version_id: Some("latest".to_string()),
+        },
+        arch: ArchitectureIdentity {
+            kind: ArchitectureKind::X86_64,
+            raw: "x86_64".to_string(),
+        },
+        native_backend: Some(native_backend),
+        invocation: match runtime_scope {
+            RuntimeScope::System => InvocationKind::Root,
+            RuntimeScope::User | RuntimeScope::Unknown => InvocationKind::User,
+            RuntimeScope::Both => InvocationKind::Sudo,
+        },
+        effective_user: match runtime_scope {
+            RuntimeScope::System => user("root", "/root", 0, 0),
+            RuntimeScope::User | RuntimeScope::Both | RuntimeScope::Unknown => {
+                user("alice", "/home/alice", 1000, 1000)
+            }
+        },
+        target_user: match runtime_scope {
+            RuntimeScope::Both => Some(user("alice", "/home/alice", 1000, 1000)),
+            RuntimeScope::User => Some(user("alice", "/home/alice", 1000, 1000)),
+            RuntimeScope::System | RuntimeScope::Unknown => None,
+        },
+        runtime_scope,
+    }
+}
+
+fn user(username: &str, home_dir: &str, uid: u32, gid: u32) -> UserAccount {
+    UserAccount {
+        username: username.to_string(),
+        home_dir: PathBuf::from(home_dir),
+        uid: Some(uid),
+        gid: Some(gid),
+    }
+}
+
+fn missing_result(required_stage: VerificationStage) -> VerifierResult {
+    let evidence = vec![VerifierEvidence {
+        check: VerifierCheck {
+            stage: VerificationStage::Present,
+            requirement: ProbeRequirement::Required,
+            min_profile: VerificationProfile::Quick,
+            kind: ProbeKind::Command,
+            command: Some("fixture-command".to_string()),
+            commands: None,
+            path: None,
+            pattern: None,
+        },
+        record: EvidenceRecord {
+            status: EvidenceStatus::Missing,
+            observed_scope: ObservedScope::Unknown,
+            summary: "required command is missing".to_string(),
+            detail: None,
+        },
+        participates: true,
+    }];
+
+    VerifierResult {
+        requested_profile: VerificationProfile::Quick,
+        required_stage,
+        achieved_stage: None,
+        threshold_met: false,
+        health: VerificationHealth::Missing,
+        observed_scope: ObservedScope::Unknown,
+        summary: VerificationSummary {
+            total_checks: 1,
+            participating_checks: 1,
+            skipped_checks: 0,
+            satisfied_checks: 0,
+            missing_checks: 1,
+            broken_checks: 0,
+            unknown_checks: 0,
+            not_applicable_checks: 0,
+            required_failures: 1,
+        },
+        evidence,
+        service_evidence: Vec::new(),
+        service: None,
+    }
+}
+
+fn shell_preview_command() -> &'static str {
+    r#"printf "%s\n" "quoted value with spaces""#
+}
+
+fn shell_preview_manifest() -> &'static str {
+    r#"
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
+default_bundles = ["shell-tests"]
+
+[items.shell-preview]
+name = "Shell Preview"
+desc = "Shell Preview"
+depends_on = []
+
+[[items.shell-preview.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = 'printf "%s\n" "quoted value with spaces"'
+
+[[items.shell-preview.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v shell-preview"
+
+[bundles.shell-tests]
+name = "Shell Tests"
+desc = "Shell Tests"
+items = ["shell-preview"]
+"#
+}
+
+fn shell_failure_manifest() -> &'static str {
+    r#"
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
+default_bundles = ["shell-tests"]
+
+[items.shell-fail]
+name = "Shell Fail"
+desc = "Shell Fail"
+depends_on = []
+
+[[items.shell-fail.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = 'printf "%s\n" "before failure"; printf "%s\n" "stderr evidence" >&2; exit 23'
+
+[[items.shell-fail.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v shell-fail"
+
+[bundles.shell-tests]
+name = "Shell Tests"
+desc = "Shell Tests"
+items = ["shell-fail"]
+"#
 }
 
 struct TestDir {

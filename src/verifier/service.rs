@@ -6,7 +6,7 @@ use crate::verifier::{
     CommandExecutionProbe, CommandExistsProbe, EvidenceRecord, EvidenceStatus,
     GroupMembershipProbe, HttpProbe, ObservedScope, ProbeSpec, ServiceManagerScope,
     ServiceUnitCondition, ServiceUnitProbe, TcpProbe, UnixSocketProbe, VerificationContext,
-    VerificationHealth, VerificationStage,
+    VerificationHealth, VerificationStage, VerifierCheck,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -132,6 +132,15 @@ impl ServiceVerificationSpec {
     }
 }
 
+pub fn infer_service_verification_spec(
+    checks: &[VerifierCheck],
+) -> Option<ServiceVerificationSpec> {
+    checks.iter().find_map(|check| {
+        let command = check.command.as_deref()?.trim();
+        infer_service_from_contract(command)
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceProbeDefinition {
     pub id: String,
@@ -189,7 +198,10 @@ fn docker_plan(
         id: "command".to_string(),
         stage: VerificationStage::Present,
         probe: ProbeSpec::CommandExists(CommandExistsProbe {
-            command: spec.command.clone().unwrap_or_else(|| "docker".to_string()),
+            command: spec
+                .command
+                .clone()
+                .unwrap_or_else(|| "command -v docker".to_string()),
         }),
     }];
 
@@ -236,7 +248,7 @@ fn docker_plan(
         id: "info".to_string(),
         stage: VerificationStage::Operational,
         probe: ProbeSpec::CommandExecution(CommandExecutionProbe {
-            program: spec.command.clone().unwrap_or_else(|| "docker".to_string()),
+            program: service_program(spec.command.as_deref(), "docker"),
             args: vec![
                 "info".to_string(),
                 "--format".to_string(),
@@ -263,7 +275,7 @@ fn jupyter_like_plan(
             command: spec
                 .command
                 .clone()
-                .unwrap_or_else(|| default_command.to_string()),
+                .unwrap_or_else(|| format!("command -v {default_command}")),
         }),
     }];
 
@@ -310,7 +322,10 @@ fn pm2_plan(
         id: "command".to_string(),
         stage: VerificationStage::Present,
         probe: ProbeSpec::CommandExists(CommandExistsProbe {
-            command: spec.command.clone().unwrap_or_else(|| "pm2".to_string()),
+            command: spec
+                .command
+                .clone()
+                .unwrap_or_else(|| "command -v pm2".to_string()),
         }),
     }];
 
@@ -333,7 +348,7 @@ fn pm2_plan(
         id: "ping".to_string(),
         stage: VerificationStage::Operational,
         probe: ProbeSpec::CommandExecution(CommandExecutionProbe {
-            program: spec.command.clone().unwrap_or_else(|| "pm2".to_string()),
+            program: service_program(spec.command.as_deref(), "pm2"),
             args: vec!["ping".to_string()],
             timeout_ms: None,
         }),
@@ -346,7 +361,9 @@ fn vnc_plan(spec: &ServiceVerificationSpec) -> Vec<ServiceProbeDefinition> {
     let mut plan = vec![ServiceProbeDefinition {
         id: "command".to_string(),
         stage: VerificationStage::Present,
-        probe: if spec.commands.is_empty() {
+        probe: if let Some(command) = spec.command.clone() {
+            ProbeSpec::CommandExists(CommandExistsProbe { command })
+        } else if spec.commands.is_empty() {
             ProbeSpec::AnyCommand(crate::verifier::AnyCommandProbe {
                 commands: vec![
                     "tigervncserver".to_string(),
@@ -905,4 +922,49 @@ impl ServiceKind {
             Self::Vnc => "vnc",
         }
     }
+}
+
+fn infer_service_from_contract(command: &str) -> Option<ServiceVerificationSpec> {
+    let kind = match command {
+        "command -v docker" => ServiceKind::Docker,
+        "command -v jupyter" => ServiceKind::Jupyter,
+        "command -v pm2" => ServiceKind::Pm2,
+        "command -v tigervncserver" | "command -v vncserver" | "command -v Xvnc" => {
+            ServiceKind::Vnc
+        }
+        _ => return None,
+    };
+
+    Some(ServiceVerificationSpec {
+        kind,
+        command: Some(command.to_string()),
+        commands: Vec::new(),
+        service_unit: None,
+        service_scope: None,
+        socket_paths: Vec::new(),
+        access_group: None,
+        http_url: None,
+        tcp_host: None,
+        tcp_port: None,
+    })
+}
+
+fn service_program(command: Option<&str>, default_program: &str) -> String {
+    command
+        .map(str::trim)
+        .and_then(command_contract_program)
+        .unwrap_or_else(|| default_program.to_string())
+}
+
+fn command_contract_program(command: &str) -> Option<String> {
+    if command.is_empty() {
+        return None;
+    }
+
+    if command.split_whitespace().count() == 1 {
+        return Some(command.to_string());
+    }
+
+    let suffix = command.strip_prefix("command -v ")?.trim();
+    (!suffix.is_empty() && suffix.split_whitespace().count() == 1).then(|| suffix.to_string())
 }
