@@ -1,16 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
-
-use crate::verifier::VerifierSpec;
-
-pub use crate::verifier::VerificationStage as SuccessThreshold;
-
-pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
-pub const ALL_DEFAULT_BUNDLE_ID: &str = "all-default";
 
 const EMBEDDED_MANIFEST: &str = include_str!("manifest.toml");
 
@@ -31,17 +23,33 @@ pub enum CatalogError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Catalog {
-    pub schema_version: u32,
-    pub items: Vec<CatalogItem>,
-    pub bundles: Vec<CatalogBundle>,
+    pub required_version: String,
+    pub distros: Vec<String>,
+    pub shell: String,
     pub default_bundles: Vec<CanonicalId>,
+    pub bundles: Vec<CatalogBundle>,
+    pub items: Vec<CatalogItem>,
 }
 
 impl Catalog {
     pub fn from_toml_str(raw: &str) -> Result<Self, CatalogError> {
-        let catalog: Self = toml::from_str(raw)?;
+        let root: toml::Value = toml::from_str(raw)?;
+        reject_legacy_catalog_shape(root.as_table())?;
+
+        let document: RawCatalogDocument = root.try_into()?;
+        let bundles = parse_bundles(document.bundles)?;
+        let items = parse_items(document.items)?;
+
+        let catalog = Self {
+            required_version: document.required_version,
+            distros: document.distros,
+            shell: document.shell,
+            default_bundles: document.default_bundles,
+            bundles,
+            items,
+        };
+
         catalog.validate()?;
         Ok(catalog)
     }
@@ -55,10 +63,6 @@ impl Catalog {
     }
 
     pub fn expand_bundle(&self, bundle_id: &str) -> Result<Vec<&CatalogItem>, CatalogError> {
-        if bundle_id == ALL_DEFAULT_BUNDLE_ID {
-            return self.expand_default_bundles();
-        }
-
         let bundle = self.bundle(bundle_id).ok_or_else(|| {
             CatalogError::Validation(format!(
                 "bundle `{bundle_id}` is not defined in the catalog"
@@ -75,7 +79,7 @@ impl Catalog {
         for bundle_id in &self.default_bundles {
             let bundle = self.bundle(bundle_id.as_str()).ok_or_else(|| {
                 CatalogError::Validation(format!(
-                    "default bundle `{}` is not defined in the catalog",
+                    "default_bundles references undefined bundle `{}`",
                     bundle_id
                 ))
             })?;
@@ -116,16 +120,35 @@ impl Catalog {
     }
 
     fn validate(&self) -> Result<(), CatalogError> {
-        if self.schema_version != SUPPORTED_SCHEMA_VERSION {
-            return Err(CatalogError::Validation(format!(
-                "schema_version `{}` is not supported; expected `{}`",
-                self.schema_version, SUPPORTED_SCHEMA_VERSION
-            )));
+        if self.required_version.trim().is_empty() {
+            return Err(CatalogError::Validation(
+                "required_version must not be empty".to_string(),
+            ));
         }
 
-        if self.items.is_empty() {
+        if self.distros.is_empty() {
             return Err(CatalogError::Validation(
-                "catalog must define at least one item".to_string(),
+                "distros must define at least one supported distro".to_string(),
+            ));
+        }
+
+        for distro in &self.distros {
+            if distro.trim().is_empty() {
+                return Err(CatalogError::Validation(
+                    "distros must not contain empty distro ids".to_string(),
+                ));
+            }
+        }
+
+        if self.shell.trim().is_empty() {
+            return Err(CatalogError::Validation(
+                "shell must not be empty".to_string(),
+            ));
+        }
+
+        if self.default_bundles.is_empty() {
+            return Err(CatalogError::Validation(
+                "default_bundles must reference at least one bundle".to_string(),
             ));
         }
 
@@ -135,121 +158,38 @@ impl Catalog {
             ));
         }
 
-        if self.default_bundles.is_empty() {
+        if self.items.is_empty() {
             return Err(CatalogError::Validation(
-                "catalog must define at least one default bundle".to_string(),
+                "catalog must define at least one item".to_string(),
             ));
         }
 
-        let mut item_ids = BTreeSet::new();
-        for item in &self.items {
-            item.validate()?;
-            if !item_ids.insert(item.id.clone()) {
-                return Err(CatalogError::Validation(format!(
-                    "item id `{}` is defined more than once",
-                    item.id
-                )));
-            }
-        }
-
-        let mut bundle_ids = BTreeSet::new();
-        let mut bundled_item_counts: BTreeMap<CanonicalId, usize> = self
+        let supported_distro_ids = self.distros.iter().cloned().collect::<BTreeSet<_>>();
+        let item_ids = self
             .items
             .iter()
-            .map(|item| (item.id.clone(), 0usize))
-            .collect();
+            .map(|item| item.id.clone())
+            .collect::<BTreeSet<_>>();
+        let bundle_ids = self
+            .bundles
+            .iter()
+            .map(|bundle| bundle.id.clone())
+            .collect::<BTreeSet<_>>();
 
-        for bundle in &self.bundles {
-            bundle.validate()?;
-
-            if bundle.id.as_str() == ALL_DEFAULT_BUNDLE_ID {
+        for bundle_id in &self.default_bundles {
+            if !bundle_ids.contains(bundle_id) {
                 return Err(CatalogError::Validation(format!(
-                    "bundle id `{ALL_DEFAULT_BUNDLE_ID}` is reserved for default bundle expansion"
+                    "default_bundles references undefined bundle `{bundle_id}`"
                 )));
-            }
-
-            if !bundle_ids.insert(bundle.id.clone()) {
-                return Err(CatalogError::Validation(format!(
-                    "bundle id `{}` is defined more than once",
-                    bundle.id
-                )));
-            }
-
-            let mut seen_bundle_items = BTreeSet::new();
-            for item_id in &bundle.items {
-                if !seen_bundle_items.insert(item_id.clone()) {
-                    return Err(CatalogError::Validation(format!(
-                        "bundle `{}` references item `{}` more than once",
-                        bundle.id, item_id
-                    )));
-                }
-                if !item_ids.contains(item_id) {
-                    return Err(CatalogError::Validation(format!(
-                        "bundle `{}` references undefined item `{}`",
-                        bundle.id, item_id
-                    )));
-                }
-
-                if let Some(count) = bundled_item_counts.get_mut(item_id) {
-                    *count += 1;
-                }
             }
         }
 
-        let mut seen_default_bundles = BTreeSet::new();
-        for bundle_id in &self.default_bundles {
-            if !seen_default_bundles.insert(bundle_id.clone()) {
-                return Err(CatalogError::Validation(format!(
-                    "default bundle `{}` is listed more than once",
-                    bundle_id
-                )));
-            }
-            if !bundle_ids.contains(bundle_id) {
-                return Err(CatalogError::Validation(format!(
-                    "default bundle `{}` is not defined in bundles",
-                    bundle_id
-                )));
-            }
+        for bundle in &self.bundles {
+            bundle.validate(&item_ids)?;
         }
 
         for item in &self.items {
-            for dependency in &item.depends_on {
-                if dependency == &item.id {
-                    return Err(CatalogError::Validation(format!(
-                        "item `{}` cannot depend on itself",
-                        item.id
-                    )));
-                }
-
-                if !item_ids.contains(dependency) {
-                    return Err(CatalogError::Validation(format!(
-                        "item `{}` depends on undefined item `{}`",
-                        item.id, dependency
-                    )));
-                }
-            }
-
-            let bundled = bundled_item_counts
-                .get(&item.id)
-                .copied()
-                .unwrap_or_default()
-                > 0;
-
-            match (bundled, item.standalone) {
-                (true, true) => {
-                    return Err(CatalogError::Validation(format!(
-                        "item `{}` cannot be bundled and standalone at the same time",
-                        item.id
-                    )));
-                }
-                (false, false) => {
-                    return Err(CatalogError::Validation(format!(
-                        "item `{}` must belong to at least one bundle or be marked standalone",
-                        item.id
-                    )));
-                }
-                _ => {}
-            }
+            item.validate(&item_ids, &supported_distro_ids)?;
         }
 
         Ok(())
@@ -257,107 +197,25 @@ impl Catalog {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogItem {
-    pub id: CanonicalId,
-    pub display_name: String,
-    pub category: ItemCategory,
-    pub scope: InstallScope,
-    pub depends_on: Vec<CanonicalId>,
-    pub targets: Vec<InstallTarget>,
-    #[serde(default)]
-    pub recipes: Vec<RecipeOverlay>,
-    pub success_threshold: SuccessThreshold,
-    pub verifier: VerifierSpec,
-    pub standalone: bool,
-}
-
-impl CatalogItem {
-    pub fn recipe_for_target(&self, target: &InstallTarget) -> Option<&RecipeOverlay> {
-        self.recipes
-            .iter()
-            .find(|recipe| recipe.backend == target.backend && recipe.source == target.source)
-    }
-
-    fn validate(&self) -> Result<(), CatalogError> {
-        if self.display_name.trim().is_empty() {
-            return Err(CatalogError::Validation(format!(
-                "item `{}` must define a non-empty display_name",
-                self.id
-            )));
-        }
-
-        if self.targets.is_empty() {
-            return Err(CatalogError::Validation(format!(
-                "item `{}` must define at least one target",
-                self.id
-            )));
-        }
-
-        let mut seen_targets = BTreeSet::new();
-        for target in &self.targets {
-            if !seen_targets.insert((target.backend, target.source)) {
-                return Err(CatalogError::Validation(format!(
-                    "item `{}` defines duplicate target `{:?}/{:?}`",
-                    self.id, target.backend, target.source
-                )));
-            }
-        }
-
-        let declared_targets = self
-            .targets
-            .iter()
-            .map(|target| (target.backend, target.source))
-            .collect::<BTreeSet<_>>();
-        let mut seen_recipes = BTreeSet::new();
-        for recipe in &self.recipes {
-            recipe
-                .validate(self.id.as_str())
-                .map_err(CatalogError::Validation)?;
-            let key = (recipe.backend, recipe.source);
-            if !seen_recipes.insert(key) {
-                return Err(CatalogError::Validation(format!(
-                    "item `{}` defines duplicate recipe overlay `{:?}/{:?}`",
-                    self.id, recipe.backend, recipe.source
-                )));
-            }
-            if !declared_targets.contains(&key) {
-                return Err(CatalogError::Validation(format!(
-                    "item `{}` defines recipe overlay `{:?}/{:?}` without a matching target",
-                    self.id, recipe.backend, recipe.source
-                )));
-            }
-        }
-
-        let mut seen_dependencies = BTreeSet::new();
-        for dependency in &self.depends_on {
-            if !seen_dependencies.insert(dependency.clone()) {
-                return Err(CatalogError::Validation(format!(
-                    "item `{}` lists dependency `{}` more than once",
-                    self.id, dependency
-                )));
-            }
-        }
-
-        self.verifier
-            .validate(self.id.as_str())
-            .map_err(CatalogError::Validation)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CatalogBundle {
     pub id: CanonicalId,
-    pub display_name: String,
+    pub name: String,
+    pub desc: String,
     pub items: Vec<CanonicalId>,
 }
 
 impl CatalogBundle {
-    fn validate(&self) -> Result<(), CatalogError> {
-        if self.display_name.trim().is_empty() {
+    fn validate(&self, item_ids: &BTreeSet<CanonicalId>) -> Result<(), CatalogError> {
+        if self.name.trim().is_empty() {
             return Err(CatalogError::Validation(format!(
-                "bundle `{}` must define a non-empty display_name",
+                "bundle `{}` must define a non-empty name",
+                self.id
+            )));
+        }
+
+        if self.desc.trim().is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "bundle `{}` must define a non-empty desc",
                 self.id
             )));
         }
@@ -369,18 +227,339 @@ impl CatalogBundle {
             )));
         }
 
+        for item_id in &self.items {
+            if !item_ids.contains(item_id) {
+                return Err(CatalogError::Validation(format!(
+                    "bundle `{}` references undefined item `{}`",
+                    self.id, item_id
+                )));
+            }
+        }
+
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CatalogItem {
+    pub id: CanonicalId,
+    pub name: String,
+    pub desc: String,
+    pub depends_on: Vec<CanonicalId>,
+    pub recipes: Vec<CatalogCommand>,
+    pub verifiers: Vec<CatalogCommand>,
+}
+
+impl CatalogItem {
+    fn validate(
+        &self,
+        item_ids: &BTreeSet<CanonicalId>,
+        supported_distro_ids: &BTreeSet<String>,
+    ) -> Result<(), CatalogError> {
+        if self.name.trim().is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "item `{}` must define a non-empty name",
+                self.id
+            )));
+        }
+
+        if self.desc.trim().is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "item `{}` must define a non-empty desc",
+                self.id
+            )));
+        }
+
+        if self.recipes.is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "item `{}` must define at least one recipe",
+                self.id
+            )));
+        }
+
+        if self.verifiers.is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "item `{}` must define at least one verifier",
+                self.id
+            )));
+        }
+
+        for dependency in &self.depends_on {
+            if !item_ids.contains(dependency) {
+                return Err(CatalogError::Validation(format!(
+                    "item `{}` depends_on undefined item `{}`",
+                    self.id, dependency
+                )));
+            }
+        }
+
+        validate_command_contracts(
+            self.id.as_str(),
+            "recipes",
+            &self.recipes,
+            supported_distro_ids,
+        )?;
+        validate_command_contracts(
+            self.id.as_str(),
+            "verifiers",
+            &self.verifiers,
+            supported_distro_ids,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn install_scope(&self) -> InstallScope {
+        let has_user = self
+            .recipes
+            .iter()
+            .any(|recipe| recipe.mode == CommandMode::User);
+        let has_sudo = self
+            .recipes
+            .iter()
+            .any(|recipe| recipe.mode == CommandMode::Sudo);
+
+        match (has_user, has_sudo) {
+            (true, true) => InstallScope::Hybrid,
+            (true, false) => InstallScope::User,
+            _ => InstallScope::System,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CatalogCommand {
+    pub mode: CommandMode,
+    pub distros: Vec<String>,
+    pub cmd: String,
+}
+
+impl CatalogCommand {
+    fn from_raw(item_id: &str, contract_kind: &str, raw: RawCommand) -> Result<Self, CatalogError> {
+        let mode = CommandMode::parse(item_id, contract_kind, raw.mode.as_str())?;
+
+        if raw.cmd.trim().is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "item `{item_id}` {contract_kind} entry for mode `{}` must define a non-empty cmd",
+                mode.as_str()
+            )));
+        }
+
+        if raw.distros.is_empty() {
+            return Err(CatalogError::Validation(format!(
+                "item `{item_id}` {contract_kind} entry for mode `{}` must define at least one distro",
+                mode.as_str()
+            )));
+        }
+
+        Ok(Self {
+            mode,
+            distros: raw.distros,
+            cmd: raw.cmd,
+        })
+    }
+
+    fn expand_distros(
+        &self,
+        item_id: &str,
+        contract_kind: &str,
+        supported_distro_ids: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, CatalogError> {
+        if self.distros.iter().any(|distro| distro == "*") {
+            if self.distros.len() != 1 {
+                return Err(CatalogError::Validation(format!(
+                    "item `{item_id}` {contract_kind} entry for mode `{}` must use `distros = [\"*\"]` only",
+                    self.mode.as_str(),
+                )));
+            }
+
+            return Ok(supported_distro_ids.clone());
+        }
+
+        let mut expanded = BTreeSet::new();
+        for distro in &self.distros {
+            if !supported_distro_ids.contains(distro) {
+                return Err(CatalogError::Validation(format!(
+                    "item `{item_id}` {contract_kind} entry for mode `{}` references unsupported distro `{distro}`",
+                    self.mode.as_str(),
+                )));
+            }
+
+            expanded.insert(distro.clone());
+        }
+
+        Ok(expanded)
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ItemCategory {
-    Foundation,
-    TerminalTool,
-    ContainerTool,
-    SystemMonitor,
-    RemoteAccess,
+pub enum CommandMode {
+    Sudo,
+    User,
+}
+
+impl CommandMode {
+    fn parse(item_id: &str, contract_kind: &str, raw_mode: &str) -> Result<Self, CatalogError> {
+        match raw_mode {
+            "sudo" => Ok(Self::Sudo),
+            "user" => Ok(Self::User),
+            other => Err(CatalogError::Validation(format!(
+                "item `{item_id}` {contract_kind} entry uses unsupported mode `{other}`"
+            ))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sudo => "sudo",
+            Self::User => "user",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCatalogDocument {
+    #[serde(default)]
+    required_version: String,
+    #[serde(default)]
+    distros: Vec<String>,
+    #[serde(default)]
+    shell: String,
+    #[serde(default)]
+    default_bundles: Vec<CanonicalId>,
+    #[serde(default)]
+    bundles: toml::Table,
+    #[serde(default)]
+    items: toml::Table,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBundle {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    desc: String,
+    #[serde(default)]
+    items: Vec<CanonicalId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawItem {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    desc: String,
+    #[serde(default)]
+    depends_on: Vec<CanonicalId>,
+    #[serde(default)]
+    recipes: Vec<RawCommand>,
+    #[serde(default)]
+    verifiers: Vec<RawCommand>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCommand {
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    distros: Vec<String>,
+    #[serde(default)]
+    cmd: String,
+}
+
+fn reject_legacy_catalog_shape(root: Option<&toml::Table>) -> Result<(), CatalogError> {
+    let Some(root) = root else {
+        return Ok(());
+    };
+
+    let has_legacy_root_field = root.contains_key("schema_version");
+    let has_legacy_item_array = root.get("items").is_some_and(toml::Value::is_array);
+    let has_legacy_bundle_array = root.get("bundles").is_some_and(toml::Value::is_array);
+
+    if has_legacy_root_field || has_legacy_item_array || has_legacy_bundle_array {
+        return Err(CatalogError::Validation(
+            "legacy catalog shape is no longer supported; use `required_version`, `distros`, `shell`, `default_bundles`, and keyed `[bundles.<id>]` / `[items.<id>]` tables"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_bundles(raw_bundles: toml::Table) -> Result<Vec<CatalogBundle>, CatalogError> {
+    raw_bundles
+        .into_iter()
+        .map(|(bundle_id, value)| {
+            let id = CanonicalId::parse(bundle_id).map_err(CatalogError::Validation)?;
+            let bundle: RawBundle = value.try_into()?;
+
+            Ok(CatalogBundle {
+                id,
+                name: bundle.name,
+                desc: bundle.desc,
+                items: bundle.items,
+            })
+        })
+        .collect()
+}
+
+fn parse_items(raw_items: toml::Table) -> Result<Vec<CatalogItem>, CatalogError> {
+    raw_items
+        .into_iter()
+        .map(|(item_id, value)| {
+            let id = CanonicalId::parse(item_id).map_err(CatalogError::Validation)?;
+            let item: RawItem = value.try_into()?;
+            let item_id = id.as_str().to_string();
+
+            Ok(CatalogItem {
+                id,
+                name: item.name,
+                desc: item.desc,
+                depends_on: item.depends_on,
+                recipes: item
+                    .recipes
+                    .into_iter()
+                    .map(|recipe| CatalogCommand::from_raw(item_id.as_str(), "recipes", recipe))
+                    .collect::<Result<Vec<_>, _>>()?,
+                verifiers: item
+                    .verifiers
+                    .into_iter()
+                    .map(|verifier| {
+                        CatalogCommand::from_raw(item_id.as_str(), "verifiers", verifier)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        })
+        .collect()
+}
+
+fn validate_command_contracts(
+    item_id: &str,
+    contract_kind: &str,
+    commands: &[CatalogCommand],
+    supported_distro_ids: &BTreeSet<String>,
+) -> Result<(), CatalogError> {
+    let mut seen = BTreeSet::new();
+
+    for command in commands {
+        let expanded_distros =
+            command.expand_distros(item_id, contract_kind, supported_distro_ids)?;
+        for distro in expanded_distros {
+            if !seen.insert((command.mode, distro.clone())) {
+                return Err(CatalogError::Validation(format!(
+                    "item `{item_id}` {contract_kind} overlap for mode `{}` on distro `{distro}`",
+                    command.mode.as_str()
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -418,192 +597,19 @@ pub struct InstallTarget {
     pub source: TargetSource,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RecipeOverlay {
-    pub backend: TargetBackend,
-    pub source: TargetSource,
-    #[serde(flatten)]
-    pub recipe: RecipeSpec,
-}
-
-impl RecipeOverlay {
-    fn validate(&self, item_id: &str) -> Result<(), String> {
-        self.recipe.validate(item_id, self.backend, self.source)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "recipe", rename_all = "snake_case")]
-pub enum RecipeSpec {
-    NativePackage {
-        packages: Vec<String>,
-    },
-    DirectBinary {
-        url: String,
-        binary_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checksum_sha256: Option<String>,
-    },
-    Archive {
-        url: String,
-        format: RecipeArchiveFormat,
-        binary_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        member_path: Option<PathBuf>,
-        #[serde(default)]
-        strip_components: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checksum_sha256: Option<String>,
-    },
-    SourceBuild {
-        source_url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        revision: Option<String>,
-        build_system: RecipeBuildSystem,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        working_subdir: Option<PathBuf>,
-    },
-}
-
-impl RecipeSpec {
-    fn validate(
-        &self,
-        item_id: &str,
-        backend: TargetBackend,
-        source: TargetSource,
-    ) -> Result<(), String> {
-        match self {
-            Self::NativePackage { packages } => {
-                if !matches!(
-                    backend,
-                    TargetBackend::Apt
-                        | TargetBackend::Pacman
-                        | TargetBackend::Dnf
-                        | TargetBackend::Zypper
-                ) {
-                    return Err(format!(
-                        "item `{item_id}` uses native_package recipe for non-native backend `{:?}`",
-                        backend
-                    ));
-                }
-                if source != TargetSource::DistributionPackage {
-                    return Err(format!(
-                        "item `{item_id}` uses native_package recipe for unsupported source `{:?}`",
-                        source
-                    ));
-                }
-                if packages.is_empty() {
-                    return Err(format!(
-                        "item `{item_id}` must declare at least one package for `{:?}/{:?}`",
-                        backend, source
-                    ));
-                }
-                for package in packages {
-                    if package.trim().is_empty() {
-                        return Err(format!(
-                            "item `{item_id}` contains an empty package name for `{:?}/{:?}`",
-                            backend, source
-                        ));
-                    }
-                }
-            }
-            Self::DirectBinary {
-                url, binary_name, ..
-            } => {
-                if backend != TargetBackend::DirectBinary {
-                    return Err(format!(
-                        "item `{item_id}` uses direct_binary recipe for backend `{:?}`",
-                        backend
-                    ));
-                }
-                if source != TargetSource::GithubRelease {
-                    return Err(format!(
-                        "item `{item_id}` uses direct_binary recipe for unsupported source `{:?}`",
-                        source
-                    ));
-                }
-                validate_non_empty_field(item_id, "url", url)?;
-                validate_non_empty_field(item_id, "binary_name", binary_name)?;
-            }
-            Self::Archive {
-                url, binary_name, ..
-            } => {
-                if backend != TargetBackend::Archive {
-                    return Err(format!(
-                        "item `{item_id}` uses archive recipe for backend `{:?}`",
-                        backend
-                    ));
-                }
-                if source != TargetSource::GithubRelease {
-                    return Err(format!(
-                        "item `{item_id}` uses archive recipe for unsupported source `{:?}`",
-                        source
-                    ));
-                }
-                validate_non_empty_field(item_id, "url", url)?;
-                validate_non_empty_field(item_id, "binary_name", binary_name)?;
-            }
-            Self::SourceBuild {
-                source_url,
-                working_subdir,
-                ..
-            } => {
-                if backend != TargetBackend::SourceBuild {
-                    return Err(format!(
-                        "item `{item_id}` uses source_build recipe for backend `{:?}`",
-                        backend
-                    ));
-                }
-                if source != TargetSource::GitRepository {
-                    return Err(format!(
-                        "item `{item_id}` uses source_build recipe for unsupported source `{:?}`",
-                        source
-                    ));
-                }
-                validate_non_empty_field(item_id, "source_url", source_url)?;
-                if working_subdir
-                    .as_ref()
-                    .is_some_and(|path| path.as_os_str().is_empty())
-                {
-                    return Err(format!(
-                        "item `{item_id}` must not declare an empty working_subdir for `{:?}/{:?}`",
-                        backend, source
-                    ));
-                }
-            }
+impl InstallTarget {
+    pub fn native_package(backend: TargetBackend) -> Self {
+        Self {
+            backend,
+            source: TargetSource::DistributionPackage,
         }
-
-        Ok(())
     }
-}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipeArchiveFormat {
-    TarGz,
-    TarXz,
-    TarBz2,
-    Zip,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipeBuildSystem {
-    Autotools,
-    Cmake,
-    Cargo,
-    Go,
-    Python,
-    Make,
-}
-
-fn validate_non_empty_field(item_id: &str, field_name: &str, value: &str) -> Result<(), String> {
-    if value.trim().is_empty() {
-        Err(format!(
-            "item `{item_id}` must define a non-empty `{field_name}` in recipe overlays"
-        ))
-    } else {
-        Ok(())
+    pub fn generic_user() -> Self {
+        Self {
+            backend: TargetBackend::DirectBinary,
+            source: TargetSource::GithubRelease,
+        }
     }
 }
 

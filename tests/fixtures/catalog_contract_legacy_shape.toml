@@ -1,0 +1,22 @@
+schema_version = 1
+default_bundles = ["core"]
+
+[[items]]
+id = "git"
+display_name = "Git"
+category = "foundation"
+scope = "system"
+depends_on = []
+targets = [{ backend = "apt", source = "distribution_package" }]
+success_threshold = "present"
+standalone = false
+
+  [[items.verifier.checks]]
+  requirement = "required"
+  kind = "command"
+  command = "git"
+
+[[bundles]]
+id = "core"
+display_name = "Core"
+items = ["git"]

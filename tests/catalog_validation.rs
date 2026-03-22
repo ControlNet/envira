@@ -1,505 +1,551 @@
-use std::{collections::BTreeMap, path::PathBuf};
-
-use envira::catalog::{
-    embedded_manifest, load_embedded_catalog, Catalog, CatalogError, InstallScope,
-    SuccessThreshold, TargetBackend, ALL_DEFAULT_BUNDLE_ID, SUPPORTED_SCHEMA_VERSION,
-};
-use envira::executor::build_execution_plan;
-use envira::planner::{build_install_plan, classify_install_plan, PlannerError, PlannerRequest};
-use envira::platform::{
-    ArchitectureIdentity, ArchitectureKind, DistroIdentity, DistroKind, InvocationKind,
-    PlatformContext, RuntimeScope, UserAccount,
-};
-use envira::verifier::{
-    EvidenceRecord, EvidenceStatus, ObservedScope, ProbeKind, ProbeRequirement, VerificationHealth,
-    VerificationProfile, VerificationStage, VerificationSummary, VerifierCheck, VerifierEvidence,
-    VerifierResult,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
 };
 
-#[test]
-fn catalog_schema_validation_valid_manifest_parses() {
-    let catalog = load_embedded_catalog().expect("embedded catalog should parse");
+use envira::catalog::{embedded_manifest, load_embedded_catalog, Catalog, CatalogError};
+use serde::Deserialize;
 
-    assert_eq!(catalog.schema_version, SUPPORTED_SCHEMA_VERSION);
-    assert_eq!(catalog.items.len(), 60);
-    assert_eq!(catalog.bundles.len(), 12);
-    assert_eq!(
-        catalog
-            .item("essentials")
-            .expect("essentials item exists")
-            .success_threshold,
-        SuccessThreshold::Present
+const CANONICAL_FIXTURE_PATH: &str = "tests/fixtures/catalog_contract_valid.toml";
+const LEGACY_FIXTURE_PATH: &str = "tests/fixtures/catalog_contract_legacy_shape.toml";
+const DUPLICATE_ITEM_FIXTURE_PATH: &str =
+    "tests/fixtures/catalog_contract_duplicate_item_table.toml";
+const DUPLICATE_BUNDLE_FIXTURE_PATH: &str =
+    "tests/fixtures/catalog_contract_duplicate_bundle_table.toml";
+const MISSING_DEPENDENCY_FIXTURE_PATH: &str =
+    "tests/fixtures/catalog_contract_missing_dependency.toml";
+const MISSING_DEFAULT_BUNDLE_FIXTURE_PATH: &str =
+    "tests/fixtures/catalog_contract_missing_default_bundle.toml";
+const WILDCARD_RECIPE_OVERLAP_FIXTURE_PATH: &str =
+    "tests/fixtures/catalog_contract_recipe_wildcard_overlap.toml";
+const WILDCARD_VERIFIER_OVERLAP_FIXTURE_PATH: &str =
+    "tests/fixtures/catalog_contract_verifier_wildcard_overlap.toml";
+const MISSING_RECIPE_FIXTURE_PATH: &str = "tests/fixtures/catalog_contract_missing_recipe.toml";
+const MISSING_VERIFIER_FIXTURE_PATH: &str = "tests/fixtures/catalog_contract_missing_verifier.toml";
+
+#[test]
+fn canonical_new_schema_fixture_is_valid_against_contract_model() {
+    let raw = fixture_text(CANONICAL_FIXTURE_PATH);
+    let catalog = load_approved_catalog(CANONICAL_FIXTURE_PATH).expect(
+        "Task 2 canonical fixture should stay valid independently of runtime parser support",
     );
-    assert_eq!(
-        catalog
-            .default_bundles
-            .iter()
-            .map(|bundle| bundle.as_str())
-            .collect::<Vec<_>>(),
-        vec!["core", "terminal-tools", "observability"]
-    );
-}
 
-#[test]
-fn catalog_schema_validation_rejects_unknown_fields() {
-    let manifest = r#"
-schema_version = 1
-default_bundles = ["core"]
-unexpected = true
+    assert_eq!(catalog.required_version, "0.1.0");
+    assert_eq!(catalog.distros, vec!["ubuntu"]);
+    assert_eq!(catalog.shell, "bash");
+    assert_eq!(catalog.default_bundles, vec!["essentials"]);
 
-[[items]]
-id = "essentials"
-display_name = "Essentials"
-category = "foundation"
-scope = "system"
-depends_on = []
-targets = [{ backend = "apt", source = "distribution_package" }]
-success_threshold = "present"
-standalone = false
+    let bundle = catalog
+        .bundles
+        .get("essentials")
+        .expect("canonical bundle should exist");
+    assert_eq!(bundle.name, "Essentials");
+    assert_eq!(bundle.items, vec!["git"]);
 
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "git"
+    let item = catalog
+        .items
+        .get("git")
+        .expect("canonical item should exist");
+    assert_eq!(item.name, "Git");
+    assert_eq!(item.depends_on, Vec::<String>::new());
+    assert_eq!(item.recipes.len(), 1);
+    assert_eq!(item.verifiers.len(), 1);
 
-[[bundles]]
-id = "core"
-display_name = "Core"
-items = ["essentials"]
-"#;
-
-    let error = Catalog::from_toml_str(manifest).expect_err("unknown fields should fail");
-
-    assert!(matches!(error, CatalogError::Parse(_)));
-    assert!(error.to_string().contains("unknown field `unexpected`"));
-}
-
-#[test]
-fn catalog_schema_validation_rejects_incomplete_item_metadata() {
-    let manifest = r#"
-schema_version = 1
-default_bundles = ["core"]
-
-[[items]]
-id = "essentials"
-category = "foundation"
-scope = "system"
-depends_on = []
-targets = [{ backend = "apt", source = "distribution_package" }]
-success_threshold = "present"
-standalone = false
-
-  [[items.verifier.checks]]
-  threshold = "required"
-  kind = "command"
-  command = "git"
-
-[[bundles]]
-id = "core"
-display_name = "Core"
-items = ["essentials"]
-"#;
-
-    let error = Catalog::from_toml_str(manifest).expect_err("missing item fields should fail");
-
-    assert!(matches!(error, CatalogError::Parse(_)));
-    assert!(error.to_string().contains("missing field `display_name`"));
-}
-
-#[test]
-fn catalog_schema_validation_default_bundle_semantics_are_data_driven() {
-    let catalog = load_embedded_catalog().expect("embedded catalog should parse");
-
-    let default_ids = catalog
-        .default_install_ids()
-        .expect("default bundle expansion should work");
-    let all_default_ids = catalog
-        .expand_bundle(ALL_DEFAULT_BUNDLE_ID)
-        .expect("all-default alias should expand")
-        .into_iter()
-        .map(|item| item.id.as_str())
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        default_ids,
-        vec!["essentials", "bat", "ctop", "fastfetch", "btop"]
-    );
-    assert_eq!(all_default_ids, default_ids);
-    assert!(!default_ids.contains(&"vnc"));
-}
-
-#[test]
-fn catalog_schema_validation_item_threshold_is_stage_oriented() {
-    let manifest = r#"
-schema_version = 1
-default_bundles = ["core"]
-
-[[items]]
-id = "essentials"
-display_name = "Essentials"
-category = "foundation"
-scope = "system"
-depends_on = []
-targets = [{ backend = "apt", source = "distribution_package" }]
-success_threshold = "configured"
-standalone = false
-
-  [[items.verifier.checks]]
-  threshold = "optional"
-  kind = "command"
-  command = "git"
-
-[[bundles]]
-id = "core"
-display_name = "Core"
-items = ["essentials"]
-"#;
-
-    let catalog = Catalog::from_toml_str(manifest)
-        .expect("stage-oriented item thresholds should not depend on verifier reduction");
-
-    assert_eq!(
-        catalog
-            .item("essentials")
-            .expect("essentials item exists")
-            .success_threshold,
-        SuccessThreshold::Configured
-    );
-}
-
-#[test]
-fn catalog_schema_validation_embedded_manifest_is_the_source_of_truth() {
-    let catalog =
-        Catalog::from_toml_str(embedded_manifest()).expect("embedded manifest should parse");
-
-    assert_eq!(
-        catalog.item("vnc").expect("vnc item exists").display_name,
-        "TigerVNC"
-    );
-    assert!(catalog.item("docker").is_some(), "docker item should exist");
-    for synthetic_id in [
-        "git-tools",
-        "editor-suite",
-        "rust-cli-tools",
-        "python-cli-tools",
-        "go-cli-tools",
-        "agent-clis",
-        "advanced-monitoring",
+    for legacy_fragment in [
+        "schema_version",
+        "display_name",
+        "targets",
+        "success_threshold",
+        "verifier.service",
+        "standalone",
+        "all-default",
     ] {
         assert!(
-            catalog.item(synthetic_id).is_none(),
-            "{synthetic_id} should not survive the item-level launch freeze"
+            !raw.contains(legacy_fragment),
+            "canonical fixture should not preserve legacy manifest fragment `{legacy_fragment}`",
         );
     }
 }
 
 #[test]
-fn catalog_schema_validation_embedded_manifest_freezes_expected_launch_inventory() {
-    let catalog = load_embedded_catalog().expect("embedded catalog should parse");
-    let mut item_ids = catalog
-        .items
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect::<Vec<_>>();
-    item_ids.sort_unstable();
+fn legacy_shape_fixture_is_rejected_by_schema_freeze_model() {
+    let error = load_approved_catalog(LEGACY_FIXTURE_PATH).expect_err(
+        "legacy array-of-tables manifest should be rejected by the Task 2 schema model",
+    );
 
-    assert_eq!(
-        item_ids,
-        vec![
-            "archey4",
-            "bandwhich",
-            "bat",
-            "bottom",
-            "btop",
-            "bun",
-            "cargo-binstall",
-            "cargo-cache",
-            "claude",
-            "codex",
-            "ctop",
-            "dive",
-            "docker",
-            "duf",
-            "dust",
-            "essentials",
-            "fastfetch",
-            "fd",
-            "fzf",
-            "gdown",
-            "gemini",
-            "genact",
-            "git-delta",
-            "github-cli",
-            "gitkraken",
-            "go-toolchain",
-            "gotify",
-            "gping",
-            "huggingface-cli",
-            "jupyter",
-            "lazydocker",
-            "lazygit",
-            "lemonade",
-            "lsd",
-            "lunarvim",
-            "micro",
-            "miniconda",
-            "neovim",
-            "nodejs",
-            "nvitop",
-            "nviwatch",
-            "opencode",
-            "pixi",
-            "pm2",
-            "procs",
-            "rich-cli",
-            "ripgrep",
-            "rust-toolchain",
-            "rustscan",
-            "scc",
-            "speedtest-cli",
-            "superfile",
-            "tldr",
-            "uv",
-            "viu",
-            "vnc",
-            "xh",
-            "yazi",
-            "zellij",
-            "zoxide",
-        ]
+    assert!(
+        error.contains("unknown field `schema_version`"),
+        "unexpected schema-freeze error: {error}",
     );
 }
 
 #[test]
-fn catalog_schema_validation_toolchains_bundle_is_execution_plannable_for_user_runtime() {
-    let catalog = load_embedded_catalog().expect("embedded catalog should parse");
-    let platform = platform_context(TargetBackend::Apt, RuntimeScope::User);
-    let install_plan =
-        build_install_plan(&catalog, &platform, &PlannerRequest::bundle("toolchains"))
-            .expect("toolchains bundle should build for user runtime");
-
-    let action_plan = classify_install_plan(
-        &install_plan,
-        &install_plan
-            .steps
-            .iter()
-            .map(|step| (step.item_id.clone(), missing_result(step.success_threshold)))
-            .collect::<BTreeMap<_, _>>(),
-    )
-    .expect("toolchains actions should classify");
-
-    let execution_plan = build_execution_plan(&catalog, &platform, &action_plan)
-        .expect("toolchains bundle should have recipe overlays for selected targets");
-
-    assert_eq!(
-        execution_plan
-            .steps
-            .iter()
-            .map(|step| step.action_step.step.item_id.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "miniconda",
-            "essentials",
-            "rust-toolchain",
-            "cargo-binstall",
-            "cargo-cache",
-            "go-toolchain",
-            "nodejs",
-            "pixi",
-            "jupyter",
-        ]
-    );
-    assert!(execution_plan
-        .steps
-        .iter()
-        .all(|step| step.recipe.is_some() || step.operations.is_empty()));
+fn duplicate_item_tables_are_rejected_by_toml_before_schema_validation() {
+    assert_duplicate_table_error(DUPLICATE_ITEM_FIXTURE_PATH, "items.git");
 }
 
 #[test]
-fn catalog_schema_validation_embedded_items_are_execution_plannable_when_scope_allows_it() {
-    let catalog = load_embedded_catalog().expect("embedded catalog should parse");
+fn duplicate_bundle_tables_are_rejected_by_toml_before_schema_validation() {
+    assert_duplicate_table_error(DUPLICATE_BUNDLE_FIXTURE_PATH, "bundles.essentials");
+}
 
-    for runtime_scope in [RuntimeScope::User, RuntimeScope::System] {
-        let platform = platform_context(TargetBackend::Apt, runtime_scope);
+#[test]
+fn missing_dependency_reference_is_rejected_by_contract_validator() {
+    let error = load_approved_catalog(MISSING_DEPENDENCY_FIXTURE_PATH)
+        .expect_err("fixtures with undefined dependencies should fail contract validation");
 
-        for item in &catalog.items {
-            let request = PlannerRequest::item(item.id.as_str());
+    assert_eq!(error, "item `bat` depends_on undefined item `wget`");
+}
 
-            match build_install_plan(&catalog, &platform, &request) {
-                Ok(install_plan) => {
-                    let action_plan = classify_install_plan(
-                        &install_plan,
-                        &install_plan
-                            .steps
-                            .iter()
-                            .map(|step| {
-                                (
-                                    step.item_id.clone(),
-                                    missing_result(step.success_threshold),
-                                )
-                            })
-                            .collect::<BTreeMap<_, _>>(),
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "classification should succeed for item `{}` in runtime `{runtime_scope:?}`: {error}",
-                            item.id.as_str()
-                        )
-                    });
+#[test]
+fn missing_default_bundle_reference_is_rejected_by_contract_validator() {
+    let error = load_approved_catalog(MISSING_DEFAULT_BUNDLE_FIXTURE_PATH)
+        .expect_err("fixtures with undefined default bundles should fail contract validation");
 
-                    build_execution_plan(&catalog, &platform, &action_plan).unwrap_or_else(|error| {
-                        panic!(
-                            "execution planning should succeed for item `{}` in runtime `{runtime_scope:?}`: {error}",
-                            item.id.as_str()
-                        )
-                    });
-                }
-                Err(PlannerError::UnsupportedScope {
-                    item_id,
-                    item_scope,
-                    runtime_scope: error_runtime_scope,
-                }) => {
-                    assert_eq!(error_runtime_scope, runtime_scope);
-                    assert_eq!(
-                        catalog
-                            .item(item_id.as_str())
-                            .expect("rejected item should exist in the embedded catalog")
-                            .scope,
-                        item_scope
-                    );
-                    assert!(
-                        matches!(
-                            (item_scope, runtime_scope),
-                            (InstallScope::System, RuntimeScope::User)
-                                | (InstallScope::User, RuntimeScope::System)
-                        ),
-                        "unexpected scope rejection for selected item `{}` via rejected item `{item_id}` in runtime `{runtime_scope:?}`",
-                        item.id.as_str(),
-                    );
-                }
-                Err(error) => panic!(
-                    "planning embedded item `{}` in runtime `{runtime_scope:?}` should not fail unexpectedly: {error}",
-                    item.id.as_str()
-                ),
+    assert_eq!(
+        error,
+        "default_bundles references undefined bundle `missing-bundle`"
+    );
+}
+
+#[test]
+fn wildcard_recipe_overlap_is_rejected_by_contract_validator() {
+    let error = load_approved_catalog(WILDCARD_RECIPE_OVERLAP_FIXTURE_PATH)
+        .expect_err("recipe wildcard overlap should be rejected before Task 3 runtime work");
+
+    assert_eq!(
+        error,
+        "item `git` recipes overlap for mode `sudo` on distro `ubuntu`"
+    );
+}
+
+#[test]
+fn wildcard_verifier_overlap_is_rejected_by_contract_validator() {
+    let error = load_approved_catalog(WILDCARD_VERIFIER_OVERLAP_FIXTURE_PATH)
+        .expect_err("verifier wildcard overlap should be rejected before Task 3 runtime work");
+
+    assert_eq!(
+        error,
+        "item `git` verifiers overlap for mode `sudo` on distro `ubuntu`"
+    );
+}
+
+#[test]
+fn item_without_recipe_is_rejected_by_contract_validator() {
+    let error = load_approved_catalog(MISSING_RECIPE_FIXTURE_PATH)
+        .expect_err("items without recipes should fail the Task 2 contract model");
+
+    assert_eq!(error, "item `git` must define at least one recipe");
+}
+
+#[test]
+fn item_without_verifier_is_rejected_by_contract_validator() {
+    let error = load_approved_catalog(MISSING_VERIFIER_FIXTURE_PATH)
+        .expect_err("items without verifiers should fail the Task 2 contract model");
+
+    assert_eq!(error, "item `git` must define at least one verifier");
+}
+
+#[test]
+fn parser_contract_accepts_canonical_new_schema_fixture() {
+    let manifest = fixture_text(CANONICAL_FIXTURE_PATH);
+
+    Catalog::from_toml_str(&manifest)
+        .expect("runtime parser should accept the canonical keyed TOML schema");
+}
+
+#[test]
+fn embedded_manifest_is_new_schema_source_of_truth() {
+    let raw = embedded_manifest();
+    let catalog = load_embedded_catalog()
+        .expect("embedded catalog should load through the keyed TOML runtime parser");
+
+    for legacy_fragment in [
+        "schema_version",
+        "display_name",
+        "targets",
+        "success_threshold",
+    ] {
+        assert!(
+            !raw.contains(legacy_fragment),
+            "embedded manifest should not contain legacy fragment `{legacy_fragment}`"
+        );
+    }
+
+    assert_eq!(catalog.required_version, "0.1.0");
+    assert_eq!(catalog.shell, "bash");
+    assert_eq!(catalog.default_bundles.len(), 3);
+    assert_eq!(catalog.default_bundles[0].as_str(), "core");
+    assert!(catalog.bundle("core").is_some());
+    assert!(catalog.item("essentials").is_some());
+}
+
+#[test]
+fn embedded_manifest_covers_legacy_run_script_tool_surface() {
+    let catalog = load_embedded_catalog().expect("embedded catalog should load");
+
+    for bundle_id in [
+        "core",
+        "terminal-tools",
+        "observability",
+        "containers",
+        "remote-access",
+        "services",
+        "desktop-tools",
+        "shell-customization",
+        "languages",
+        "editors",
+        "git-tooling",
+        "tui-tooling",
+        "ai-agents",
+        "monitoring",
+        "cloud-data",
+        "devops",
+    ] {
+        assert!(
+            catalog.bundle(bundle_id).is_some(),
+            "expected embedded manifest bundle `{bundle_id}` to exist"
+        );
+    }
+
+    for item_id in [
+        "essentials",
+        "git-lfs",
+        "bat",
+        "ctop",
+        "fastfetch",
+        "btop",
+        "neofetch",
+        "ncdu",
+        "gitkraken",
+        "meslo-font",
+        "oh-my-zsh",
+        "zsh-theme",
+        "zsh-plugins",
+        "fzf",
+        "pipx",
+        "miniconda",
+        "rust-toolchain",
+        "go-toolchain",
+        "fnm",
+        "nodejs",
+        "neovim",
+        "lunarvim",
+        "jupyter",
+        "vnc",
+        "docker",
+        "pm2",
+        "lazygit",
+        "lazydocker",
+        "lemonade",
+        "cargo-binstall",
+        "zellij",
+        "lsd",
+        "cargo-cache",
+        "git-delta",
+        "duf",
+        "dust",
+        "fd",
+        "ripgrep",
+        "gping",
+        "procs",
+        "xh",
+        "uv",
+        "pixi",
+        "speedtest-cli",
+        "gdown",
+        "archey4",
+        "genact",
+        "zoxide",
+        "micro",
+        "scc",
+        "viu",
+        "dive",
+        "tldr",
+        "huggingface-cli",
+        "superfile",
+        "yazi",
+        "codex-cli",
+        "gemini-cli",
+        "cursor-cli",
+        "claude-cli",
+        "opencode-cli",
+        "bun",
+        "oh-my-opencode",
+        "openchamber-web",
+        "oh-my-pi",
+        "beads",
+        "perles",
+        "dolt",
+        "rustscan",
+        "gotify",
+        "bottom",
+        "nvitop",
+        "nviwatch",
+        "bandwhich",
+        "rich-cli",
+        "gh",
+    ] {
+        assert!(
+            catalog.item(item_id).is_some(),
+            "expected embedded manifest item `{item_id}` to exist"
+        );
+    }
+}
+
+#[test]
+fn legacy_shape_rejected() {
+    let manifest = fixture_text(LEGACY_FIXTURE_PATH);
+    let error = Catalog::from_toml_str(&manifest)
+        .expect_err("runtime parser should reject the legacy catalog shape");
+
+    assert!(
+        matches!(error, CatalogError::Validation(_)),
+        "legacy shape rejection should be a validation error, got: {error}",
+    );
+    assert!(
+        error.to_string().contains("legacy catalog shape"),
+        "legacy rejection should mention the retired schema explicitly, got: {error}",
+    );
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedCatalog {
+    required_version: String,
+    distros: Vec<String>,
+    shell: String,
+    default_bundles: Vec<String>,
+    bundles: BTreeMap<String, ApprovedBundle>,
+    items: BTreeMap<String, ApprovedItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedBundle {
+    name: String,
+    desc: String,
+    items: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedItem {
+    name: String,
+    desc: String,
+    #[serde(default)]
+    depends_on: Vec<String>,
+    #[serde(default)]
+    recipes: Vec<CommandContract>,
+    #[serde(default)]
+    verifiers: Vec<CommandContract>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandContract {
+    mode: String,
+    distros: Vec<String>,
+    cmd: String,
+}
+
+fn load_approved_catalog(relative_path: &str) -> Result<ApprovedCatalog, String> {
+    let raw = fixture_text(relative_path);
+    let catalog: ApprovedCatalog =
+        toml::from_str(&raw).map_err(|error| format_toml_error(relative_path, error))?;
+    validate_catalog_contract(&catalog)?;
+    Ok(catalog)
+}
+
+fn validate_catalog_contract(catalog: &ApprovedCatalog) -> Result<(), String> {
+    if catalog.required_version.trim().is_empty() {
+        return Err("required_version must not be empty".to_string());
+    }
+
+    if catalog.distros.is_empty() {
+        return Err("distros must define at least one supported distro".to_string());
+    }
+
+    if catalog.shell.trim().is_empty() {
+        return Err("shell must not be empty".to_string());
+    }
+
+    if catalog.default_bundles.is_empty() {
+        return Err("default_bundles must reference at least one bundle".to_string());
+    }
+
+    for (bundle_id, bundle) in &catalog.bundles {
+        if bundle.name.trim().is_empty() {
+            return Err(format!("bundle `{bundle_id}` must define a non-empty name"));
+        }
+
+        if bundle.desc.trim().is_empty() {
+            return Err(format!("bundle `{bundle_id}` must define a non-empty desc"));
+        }
+
+        if bundle.items.is_empty() {
+            return Err(format!(
+                "bundle `{bundle_id}` must reference at least one item"
+            ));
+        }
+
+        for item_id in &bundle.items {
+            if !catalog.items.contains_key(item_id) {
+                return Err(format!(
+                    "bundle `{bundle_id}` references undefined item `{item_id}`"
+                ));
             }
         }
     }
-}
 
-fn platform_context(native_backend: TargetBackend, runtime_scope: RuntimeScope) -> PlatformContext {
-    let effective_user = match runtime_scope {
-        RuntimeScope::System => user("root", "/root", 0, 0),
-        RuntimeScope::User | RuntimeScope::Both | RuntimeScope::Unknown => {
-            user("alice", "/home/alice", 1000, 1000)
-        }
-    };
-    let target_user = match runtime_scope {
-        RuntimeScope::System | RuntimeScope::Unknown => None,
-        RuntimeScope::User => Some(user("alice", "/home/alice", 1000, 1000)),
-        RuntimeScope::Both => Some(user("alice", "/home/alice", 1000, 1000)),
-    };
-    let invocation = match runtime_scope {
-        RuntimeScope::System => InvocationKind::Root,
-        RuntimeScope::User | RuntimeScope::Unknown => InvocationKind::User,
-        RuntimeScope::Both => InvocationKind::Sudo,
-    };
+    let supported_distro_ids = catalog.distros.iter().cloned().collect::<BTreeSet<_>>();
 
-    PlatformContext {
-        distro: DistroIdentity {
-            kind: DistroKind::Ubuntu,
-            id: "ubuntu".to_string(),
-            name: "Ubuntu".to_string(),
-            pretty_name: Some("Ubuntu 24.04 LTS".to_string()),
-            version_id: Some("24.04".to_string()),
-        },
-        arch: ArchitectureIdentity {
-            kind: ArchitectureKind::X86_64,
-            raw: "x86_64".to_string(),
-        },
-        native_backend: Some(native_backend),
-        invocation,
-        effective_user,
-        target_user,
-        runtime_scope,
-    }
-}
-
-fn user(username: &str, home_dir: &str, uid: u32, gid: u32) -> UserAccount {
-    UserAccount {
-        username: username.to_string(),
-        home_dir: PathBuf::from(home_dir),
-        uid: Some(uid),
-        gid: Some(gid),
-    }
-}
-
-fn missing_result(required_stage: VerificationStage) -> VerifierResult {
-    let evidence = vec![VerifierEvidence {
-        check: VerifierCheck {
-            stage: VerificationStage::Present,
-            requirement: ProbeRequirement::Required,
-            min_profile: VerificationProfile::Quick,
-            kind: ProbeKind::Command,
-            command: Some("missing".to_string()),
-            commands: None,
-            path: None,
-            pattern: None,
-        },
-        record: EvidenceRecord {
-            status: EvidenceStatus::Missing,
-            observed_scope: ObservedScope::Unknown,
-            summary: "missing".to_string(),
-            detail: None,
-        },
-        participates: true,
-    }];
-
-    VerifierResult {
-        requested_profile: VerificationProfile::Quick,
-        required_stage,
-        achieved_stage: None,
-        threshold_met: false,
-        health: VerificationHealth::Missing,
-        observed_scope: ObservedScope::Unknown,
-        summary: summarize(&evidence),
-        evidence,
-        service_evidence: Vec::new(),
-        service: None,
-    }
-}
-
-fn summarize(evidence: &[VerifierEvidence]) -> VerificationSummary {
-    let mut summary = VerificationSummary {
-        total_checks: evidence.len(),
-        participating_checks: evidence.iter().filter(|entry| entry.participates).count(),
-        skipped_checks: evidence.iter().filter(|entry| !entry.participates).count(),
-        ..VerificationSummary::default()
-    };
-
-    for entry in evidence.iter().filter(|entry| entry.participates) {
-        match entry.record.status {
-            EvidenceStatus::Satisfied => summary.satisfied_checks += 1,
-            EvidenceStatus::Missing => {
-                summary.missing_checks += 1;
-                if entry.check.requirement == ProbeRequirement::Required {
-                    summary.required_failures += 1;
-                }
-            }
-            EvidenceStatus::Broken => {
-                summary.broken_checks += 1;
-                if entry.check.requirement == ProbeRequirement::Required {
-                    summary.required_failures += 1;
-                }
-            }
-            EvidenceStatus::Unknown => {
-                summary.unknown_checks += 1;
-                if entry.check.requirement == ProbeRequirement::Required {
-                    summary.required_failures += 1;
-                }
-            }
-            EvidenceStatus::NotApplicable => summary.not_applicable_checks += 1,
+    for bundle_id in &catalog.default_bundles {
+        if !catalog.bundles.contains_key(bundle_id) {
+            return Err(format!(
+                "default_bundles references undefined bundle `{bundle_id}`"
+            ));
         }
     }
 
-    summary
+    for (item_id, item) in &catalog.items {
+        if item.name.trim().is_empty() {
+            return Err(format!("item `{item_id}` must define a non-empty name"));
+        }
+
+        if item.desc.trim().is_empty() {
+            return Err(format!("item `{item_id}` must define a non-empty desc"));
+        }
+
+        if item.recipes.is_empty() {
+            return Err(format!("item `{item_id}` must define at least one recipe"));
+        }
+
+        if item.verifiers.is_empty() {
+            return Err(format!(
+                "item `{item_id}` must define at least one verifier"
+            ));
+        }
+
+        for dependency in &item.depends_on {
+            if !catalog.items.contains_key(dependency) {
+                return Err(format!(
+                    "item `{item_id}` depends_on undefined item `{dependency}`"
+                ));
+            }
+        }
+
+        validate_command_contracts(item_id, "recipes", &item.recipes, &supported_distro_ids)?;
+        validate_command_contracts(item_id, "verifiers", &item.verifiers, &supported_distro_ids)?;
+    }
+
+    Ok(())
+}
+
+fn validate_command_contracts(
+    item_id: &str,
+    contract_kind: &str,
+    commands: &[CommandContract],
+    supported_distro_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+
+    for command in commands {
+        let mode = command.mode.as_str();
+        if !matches!(mode, "sudo" | "user") {
+            return Err(format!(
+                "item `{item_id}` {contract_kind} entry uses unsupported mode `{mode}`"
+            ));
+        }
+
+        if command.cmd.trim().is_empty() {
+            return Err(format!(
+                "item `{item_id}` {contract_kind} entry for mode `{mode}` must define a non-empty cmd"
+            ));
+        }
+
+        if command.distros.is_empty() {
+            return Err(format!(
+                "item `{item_id}` {contract_kind} entry for mode `{mode}` must define at least one distro"
+            ));
+        }
+
+        let expanded_distros =
+            expand_distros(item_id, contract_kind, command, supported_distro_ids)?;
+        for distro in expanded_distros {
+            if !seen.insert((mode.to_string(), distro.clone())) {
+                return Err(format!(
+                    "item `{item_id}` {contract_kind} overlap for mode `{mode}` on distro `{distro}`"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn expand_distros(
+    item_id: &str,
+    contract_kind: &str,
+    command: &CommandContract,
+    supported_distro_ids: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, String> {
+    if command.distros.iter().any(|distro| distro == "*") {
+        if command.distros.len() != 1 {
+            return Err(format!(
+                "item `{item_id}` {contract_kind} entry for mode `{}` must use `distros = [\"*\"]` only",
+                command.mode,
+            ));
+        }
+
+        return Ok(supported_distro_ids.clone());
+    }
+
+    let mut expanded = BTreeSet::new();
+    for distro in &command.distros {
+        if !supported_distro_ids.contains(distro) {
+            return Err(format!(
+                "item `{item_id}` {contract_kind} entry for mode `{}` references unsupported distro `{distro}`",
+                command.mode,
+            ));
+        }
+
+        expanded.insert(distro.clone());
+    }
+
+    Ok(expanded)
+}
+
+fn assert_duplicate_table_error(relative_path: &str, table_hint: &str) {
+    let raw = fixture_text(relative_path);
+    let error = toml::from_str::<ApprovedCatalog>(&raw).expect_err(
+        "duplicate keyed tables should fail at the TOML parser layer before schema validation",
+    );
+    let message = format_toml_error(relative_path, error);
+
+    let mentions_duplicate = ["duplicate", "redefinition", "defined twice"]
+        .iter()
+        .any(|needle| message.contains(needle));
+    assert!(
+        mentions_duplicate,
+        "expected duplicate-table parser wording for {relative_path}, got: {message}",
+    );
+    assert!(
+        message.contains("items") || message.contains("bundles") || message.contains(table_hint),
+        "expected duplicate-table error to stay tied to `{table_hint}`, got: {message}",
+    );
+}
+
+fn format_toml_error(relative_path: &str, error: toml::de::Error) -> String {
+    format!("{relative_path}: {error}")
+}
+
+fn fixture_text(relative_path: &str) -> String {
+    fs::read_to_string(repo_path(relative_path))
+        .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"))
+}
+
+fn repo_path(relative_path: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_path)
 }

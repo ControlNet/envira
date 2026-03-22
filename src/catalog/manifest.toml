@@ -1,2015 +1,1344 @@
-schema_version = 1
+required_version = "0.1.0"
+distros = ["ubuntu", "mint", "popos", "fedora", "centos", "arch", "manjaro", "endeavouros", "opensuse", "opensuse-tumbleweed"]
+shell = "bash"
 default_bundles = ["core", "terminal-tools", "observability"]
 
-[[items]]
-id = "essentials"
-display_name = "Essentials"
-category = "foundation"
-scope = "hybrid"
-depends_on = []
-targets = [
-  { backend = "apt", source = "distribution_package" },
-  { backend = "pacman", source = "distribution_package" },
-  { backend = "dnf", source = "distribution_package" },
-  { backend = "zypper", source = "distribution_package" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "apt"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = [
-    "iputils-ping",
-    "net-tools",
-    "python3-venv",
-    "apt-utils",
-    "make",
-    "openssh-server",
-    "gedit",
-    "vim",
-    "git",
-    "git-lfs",
-    "curl",
-    "wget",
-    "zsh",
-    "gcc",
-    "perl",
-    "build-essential",
-    "libfuse2",
-    "python3-pip",
-    "screen",
-    "tmux",
-    "ncdu",
-    "pipx",
-    "xsel",
-    "screenfetch",
-    "neofetch",
-    "p7zip-full",
-    "unzip",
-    "mosh",
-    "nmap",
-  ]
-
-  [[items.recipes]]
-  backend = "pacman"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = [
-    "gedit",
-    "vim",
-    "git",
-    "git-lfs",
-    "curl",
-    "wget",
-    "zsh",
-    "gcc",
-    "make",
-    "perl",
-    "base-devel",
-    "binutils",
-    "screen",
-    "tmux",
-    "ncdu",
-    "python-pipx",
-    "xsel",
-    "screenfetch",
-    "p7zip",
-    "unzip",
-    "mosh",
-    "iperf3",
-    "nmap",
-  ]
-
-  [[items.recipes]]
-  backend = "dnf"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = [
-    "python3",
-    "pipx",
-    "gedit",
-    "vim",
-    "git",
-    "git-lfs",
-    "curl",
-    "wget",
-    "zsh",
-    "gcc",
-    "make",
-    "perl",
-    "screen",
-    "tmux",
-    "ncdu",
-    "xsel",
-    "unzip",
-    "screenfetch",
-    "neofetch",
-    "mosh",
-    "iperf3",
-    "nmap",
-  ]
-
-  [[items.recipes]]
-  backend = "zypper"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = [
-    "python3",
-    "python3-pip",
-    "gedit",
-    "vim",
-    "git",
-    "git-lfs",
-    "curl",
-    "wget",
-    "zsh",
-    "gcc",
-    "make",
-    "perl",
-    "screen",
-    "tmux",
-    "ncdu",
-    "xsel",
-    "screenfetch",
-    "neofetch",
-    "p7zip",
-    "unzip",
-    "mosh",
-    "iperf",
-    "nmap",
-  ]
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "git"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "curl"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "wget"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "ncdu"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "command"
-  command = "zsh"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "command"
-  command = "tmux"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "command"
-  command = "neofetch"
-
-[[items]]
-id = "bat"
-display_name = "bat"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "apt", source = "distribution_package" },
-  { backend = "pacman", source = "distribution_package" },
-  { backend = "dnf", source = "distribution_package" },
-  { backend = "zypper", source = "distribution_package" },
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "apt"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["bat"]
-
-  [[items.recipes]]
-  backend = "pacman"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["bat"]
-
-  [[items.recipes]]
-  backend = "dnf"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["bat"]
-
-  [[items.recipes]]
-  backend = "zypper"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["bat"]
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/sharkdp/bat/releases/download/v0.25.0/bat-v0.25.0-x86_64-unknown-linux-musl.tar.gz"
-  format = "tar_gz"
-  binary_name = "bat"
-  member_path = "bat-v0.25.0-x86_64-unknown-linux-musl/bat"
-  strip_components = 1
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "any_command"
-  commands = ["bat", "batcat"]
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "file"
-  path = "/usr/bin/bat"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "file"
-  path = "/usr/bin/batcat"
-
-[[items]]
-id = "ctop"
-display_name = "ctop"
-category = "container_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "direct_binary", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "direct_binary"
-  source = "github_release"
-  recipe = "direct_binary"
-  url = "https://github.com/bcicen/ctop/releases/download/v0.7.7/ctop-0.7.7-linux-amd64"
-  binary_name = "ctop"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "ctop"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "file"
-  path = "/usr/local/bin/ctop"
-
-[[items]]
-id = "fastfetch"
-display_name = "Fastfetch"
-category = "system_monitor"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "apt", source = "distribution_package" },
-  { backend = "pacman", source = "distribution_package" },
-  { backend = "dnf", source = "distribution_package" },
-  { backend = "zypper", source = "distribution_package" },
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "apt"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["fastfetch"]
-
-  [[items.recipes]]
-  backend = "pacman"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["fastfetch"]
-
-  [[items.recipes]]
-  backend = "dnf"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["fastfetch"]
-
-  [[items.recipes]]
-  backend = "zypper"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["fastfetch"]
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/fastfetch-cli/fastfetch/releases/download/2.44.0/fastfetch-linux-amd64.zip"
-  format = "zip"
-  binary_name = "fastfetch"
-  member_path = "fastfetch-linux-amd64/usr/bin/fastfetch"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "fastfetch"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "file"
-  path = "/usr/bin/fastfetch"
-
-[[items]]
-id = "btop"
-display_name = "btop"
-category = "system_monitor"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/aristocratos/btop"
-  build_system = "make"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "btop"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "file"
-  path = "/usr/local/bin/btop"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "optional"
-  min_profile = "standard"
-  kind = "file"
-  path = "/usr/bin/btop"
-
-[[items]]
-id = "vnc"
-display_name = "TigerVNC"
-category = "remote_access"
-scope = "system"
-depends_on = ["essentials"]
-targets = [
-  { backend = "apt", source = "distribution_package" },
-  { backend = "pacman", source = "distribution_package" },
-  { backend = "dnf", source = "distribution_package" },
-  { backend = "zypper", source = "distribution_package" },
-]
-success_threshold = "operational"
-standalone = false
-
-  [[items.recipes]]
-  backend = "apt"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["tigervnc-standalone-server", "tigervnc-common", "tigervnc-xorg-extension"]
-
-  [[items.recipes]]
-  backend = "pacman"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["tigervnc"]
-
-  [[items.recipes]]
-  backend = "dnf"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["tigervnc-server"]
-
-  [[items.recipes]]
-  backend = "zypper"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["tigervnc"]
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "any_command"
-  commands = ["tigervncserver", "vncserver", "Xvnc"]
-
-  [items.verifier.service]
-  kind = "vnc"
-  commands = ["tigervncserver", "vncserver", "Xvnc"]
-
-[[items]]
-id = "lazygit"
-display_name = "Lazygit"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/lazygit/releases/latest/download/lazygit.tar.gz"
-  format = "tar_gz"
-  binary_name = "lazygit"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "lazygit"
-
-[[items]]
-id = "gitkraken"
-display_name = "GitKraken"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/gitkraken/releases/latest/download/gitkraken.tar.gz"
-  format = "tar_gz"
-  binary_name = "gitkraken"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gitkraken"
-
-[[items]]
-id = "github-cli"
-display_name = "GitHub CLI"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/github-cli/releases/latest/download/gh.tar.gz"
-  format = "tar_gz"
-  binary_name = "gh"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gh"
-
-[[items]]
-id = "miniconda"
-display_name = "Miniconda"
-category = "foundation"
-scope = "user"
-depends_on = []
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://repo.anaconda.com/pkgs/main/linux-64/conda-24.11.3-py312h06a4308_0.tar.bz2"
-  format = "tar_bz2"
-  binary_name = "conda"
-  member_path = "bin/conda"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "conda"
-
-[[items]]
-id = "rust-toolchain"
-display_name = "Rust toolchain"
-category = "foundation"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/rust-lang/rustup"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "rustup"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "cargo"
-
-[[items]]
-id = "cargo-binstall"
-display_name = "cargo-binstall"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["rust-toolchain"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.12.3/cargo-binstall-x86_64-unknown-linux-musl.tgz"
-  format = "tar_gz"
-  binary_name = "cargo-binstall"
-  member_path = "cargo-binstall"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "cargo-binstall"
-
-[[items]]
-id = "cargo-cache"
-display_name = "cargo-cache"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/matthiaskrgr/cargo-cache"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "cargo-cache"
-
-[[items]]
-id = "go-toolchain"
-display_name = "Go toolchain"
-category = "foundation"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/golang/go"
-  build_system = "make"
-  working_subdir = "src"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "go"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gofmt"
-
-[[items]]
-id = "nodejs"
-display_name = "Node.js"
-category = "foundation"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.xz"
-  format = "tar_xz"
-  binary_name = "node"
-  member_path = "node-v22.14.0-linux-x64/bin/node"
-  strip_components = 2
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "fnm"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "node"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "npm"
-
-[[items]]
-id = "pixi"
-display_name = "pixi"
-category = "foundation"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/prefix-dev/pixi/releases/download/v0.41.4/pixi-x86_64-unknown-linux-musl.tar.gz"
-  format = "tar_gz"
-  binary_name = "pixi"
-  member_path = "pixi-x86_64-unknown-linux-musl/pixi"
-  strip_components = 1
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "pixi"
-
-[[items]]
-id = "jupyter"
-display_name = "Jupyter"
-category = "foundation"
-scope = "user"
-depends_on = ["miniconda"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "operational"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://repo.anaconda.com/pkgs/main/linux-64/jupyter_core-5.7.2-py312h06a4308_0.tar.bz2"
-  format = "tar_bz2"
-  binary_name = "jupyter"
-  member_path = "bin/jupyter"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "jupyter"
-
-  [items.verifier.service]
-  kind = "jupyter"
-  command = "jupyter"
-  service_unit = "jupyter.service"
-  service_scope = "user"
-  http_url = "http://127.0.0.1:8888/"
-
-[[items]]
-id = "neovim"
-display_name = "Neovim"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/neovim/releases/latest/download/nvim.tar.gz"
-  format = "tar_gz"
-  binary_name = "nvim"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "nvim"
-
-[[items]]
-id = "fzf"
-display_name = "fzf"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/fzf/releases/latest/download/fzf.tar.gz"
-  format = "tar_gz"
-  binary_name = "fzf"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "fzf"
-
-[[items]]
-id = "lunarvim"
-display_name = "LunarVim"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["neovim", "nodejs", "miniconda"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/lunarvim/releases/latest/download/lvim.tar.gz"
-  format = "tar_gz"
-  binary_name = "lvim"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "lvim"
-
-[[items]]
-id = "docker"
-display_name = "Docker"
-category = "container_tool"
-scope = "system"
-depends_on = ["essentials"]
-targets = [
-  { backend = "apt", source = "distribution_package" },
-  { backend = "pacman", source = "distribution_package" },
-  { backend = "dnf", source = "distribution_package" },
-]
-success_threshold = "operational"
-standalone = false
-
-  [[items.recipes]]
-  backend = "apt"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["docker.io"]
-
-  [[items.recipes]]
-  backend = "pacman"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["docker"]
-
-  [[items.recipes]]
-  backend = "dnf"
-  source = "distribution_package"
-  recipe = "native_package"
-  packages = ["docker"]
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "docker"
-
-  [items.verifier.service]
-  kind = "docker"
-  command = "docker"
-  service_unit = "docker.service"
-  service_scope = "system"
-  access_group = "docker"
-
-[[items]]
-id = "lazydocker"
-display_name = "Lazydocker"
-category = "container_tool"
-scope = "user"
-depends_on = ["docker"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/lazydocker/releases/latest/download/lazydocker.tar.gz"
-  format = "tar_gz"
-  binary_name = "lazydocker"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "lazydocker"
-
-[[items]]
-id = "lemonade"
-display_name = "Lemonade"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["go-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/lemonade"
-  build_system = "go"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "lemonade"
-
-[[items]]
-id = "zellij"
-display_name = "Zellij"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/zellij"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "zellij"
-
-[[items]]
-id = "lsd"
-display_name = "lsd"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/lsd"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "lsd"
-
-[[items]]
-id = "git-delta"
-display_name = "git-delta"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/git-delta"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "delta"
-
-[[items]]
-id = "duf"
-display_name = "duf"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["go-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/duf"
-  build_system = "go"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "duf"
-
-[[items]]
-id = "dust"
-display_name = "dust"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/dust"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "dust"
-
-[[items]]
-id = "fd"
-display_name = "fd"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/fd"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "fd"
-
-[[items]]
-id = "ripgrep"
-display_name = "ripgrep"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["rust-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/ripgrep"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "rg"
-
-[[items]]
-id = "gping"
-display_name = "gping"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/gping"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gping"
-
-[[items]]
-id = "procs"
-display_name = "procs"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/procs"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "procs"
-
-[[items]]
-id = "xh"
-display_name = "xh"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/xh"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "xh"
-
-[[items]]
-id = "genact"
-display_name = "genact"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["rust-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/genact"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "genact"
-
-[[items]]
-id = "viu"
-display_name = "viu"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/viu"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "viu"
-
-[[items]]
-id = "rustscan"
-display_name = "rustscan"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/rustscan"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "rustscan"
-
-[[items]]
-id = "uv"
-display_name = "uv"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/uv/releases/latest/download/uv.tar.gz"
-  format = "tar_gz"
-  binary_name = "uv"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "uv"
-
-[[items]]
-id = "speedtest-cli"
-display_name = "speedtest-cli"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/speedtest-cli/releases/latest/download/speedtest-cli.tar.gz"
-  format = "tar_gz"
-  binary_name = "speedtest-cli"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "any_command"
-  commands = ["speedtest", "speedtest-cli"]
-
-[[items]]
-id = "gdown"
-display_name = "gdown"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/gdown/releases/latest/download/gdown.tar.gz"
-  format = "tar_gz"
-  binary_name = "gdown"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gdown"
-
-[[items]]
-id = "archey4"
-display_name = "Archey4"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/archey4/releases/latest/download/archey4.tar.gz"
-  format = "tar_gz"
-  binary_name = "archey4"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "any_command"
-  commands = ["archey", "archey4"]
-
-[[items]]
-id = "tldr"
-display_name = "tldr"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/tldr/releases/latest/download/tldr.tar.gz"
-  format = "tar_gz"
-  binary_name = "tldr"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "tldr"
-
-[[items]]
-id = "huggingface-cli"
-display_name = "Hugging Face CLI"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/huggingface-cli/releases/latest/download/huggingface-cli.tar.gz"
-  format = "tar_gz"
-  binary_name = "huggingface-cli"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "any_command"
-  commands = ["huggingface-cli", "hf"]
-
-[[items]]
-id = "rich-cli"
-display_name = "Rich CLI"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/rich-cli/releases/latest/download/rich.tar.gz"
-  format = "tar_gz"
-  binary_name = "rich"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "rich"
-
-[[items]]
-id = "zoxide"
-display_name = "zoxide"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/zoxide/releases/latest/download/zoxide.tar.gz"
-  format = "tar_gz"
-  binary_name = "zoxide"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "zoxide"
-
-[[items]]
-id = "micro"
-display_name = "micro"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/micro/releases/latest/download/micro.tar.gz"
-  format = "tar_gz"
-  binary_name = "micro"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "micro"
-
-[[items]]
-id = "scc"
-display_name = "scc"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["go-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/scc"
-  build_system = "go"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "scc"
-
-[[items]]
-id = "dive"
-display_name = "dive"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["go-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/dive"
-  build_system = "go"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "dive"
-
-[[items]]
-id = "gotify"
-display_name = "Gotify CLI"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["go-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/gotify"
-  build_system = "go"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gotify"
-
-[[items]]
-id = "superfile"
-display_name = "Superfile"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/superfile/releases/latest/download/superfile.tar.gz"
-  format = "tar_gz"
-  binary_name = "superfile"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "any_command"
-  commands = ["spf", "superfile"]
-
-[[items]]
-id = "yazi"
-display_name = "Yazi"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["rust-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/yazi"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "yazi"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "ya"
-
-[[items]]
-id = "pm2"
-display_name = "PM2"
-category = "terminal_tool"
-scope = "hybrid"
-depends_on = ["nodejs"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "operational"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/pm2/releases/latest/download/pm2.tar.gz"
-  format = "tar_gz"
-  binary_name = "pm2"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "pm2"
-
-  [items.verifier.service]
-  kind = "pm2"
-  command = "pm2"
-
-[[items]]
-id = "codex"
-display_name = "Codex CLI"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["nodejs"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/codex/releases/latest/download/codex.tar.gz"
-  format = "tar_gz"
-  binary_name = "codex"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "codex"
-
-[[items]]
-id = "gemini"
-display_name = "Gemini CLI"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["nodejs"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/gemini/releases/latest/download/gemini.tar.gz"
-  format = "tar_gz"
-  binary_name = "gemini"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "gemini"
-
-[[items]]
-id = "claude"
-display_name = "Claude CLI"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/claude/releases/latest/download/claude.tar.gz"
-  format = "tar_gz"
-  binary_name = "claude"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "claude"
-
-[[items]]
-id = "opencode"
-display_name = "OpenCode CLI"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/opencode/releases/latest/download/opencode.tar.gz"
-  format = "tar_gz"
-  binary_name = "opencode"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "opencode"
-
-[[items]]
-id = "bun"
-display_name = "Bun"
-category = "terminal_tool"
-scope = "user"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/bun/releases/latest/download/bun.tar.gz"
-  format = "tar_gz"
-  binary_name = "bun"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "bun"
-
-[[items]]
-id = "bottom"
-display_name = "bottom"
-category = "system_monitor"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/bottom"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "btm"
-
-[[items]]
-id = "nvitop"
-display_name = "nvitop"
-category = "system_monitor"
-scope = "hybrid"
-depends_on = ["essentials"]
-targets = [
-  { backend = "archive", source = "github_release" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "archive"
-  source = "github_release"
-  recipe = "archive"
-  url = "https://github.com/envira-catalog/nvitop/releases/latest/download/nvitop.tar.gz"
-  format = "tar_gz"
-  binary_name = "nvitop"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "nvitop"
-
-[[items]]
-id = "nviwatch"
-display_name = "nviwatch"
-category = "system_monitor"
-scope = "hybrid"
-depends_on = ["cargo-binstall"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/nviwatch"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "nviwatch"
-
-[[items]]
-id = "bandwhich"
-display_name = "bandwhich"
-category = "system_monitor"
-scope = "system"
-depends_on = ["rust-toolchain"]
-targets = [
-  { backend = "source_build", source = "git_repository" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.recipes]]
-  backend = "source_build"
-  source = "git_repository"
-  recipe = "source_build"
-  source_url = "https://github.com/envira-catalog/bandwhich"
-  build_system = "cargo"
-
-  [[items.verifier.checks]]
-  stage = "present"
-  threshold = "required"
-  min_profile = "quick"
-  kind = "command"
-  command = "bandwhich"
-
-[[bundles]]
-id = "core"
-display_name = "Core"
+[bundles.core]
+name = "Core"
+desc = "Core system packages and foundation tools."
 items = ["essentials"]
 
-[[bundles]]
-id = "terminal-tools"
-display_name = "Terminal tools"
-items = ["bat", "ctop"]
+[bundles.terminal-tools]
+name = "Terminal Tools"
+desc = "Terminal-first utilities used in the legacy installers."
+items = ["bat", "ctop", "fastfetch"]
 
-[[bundles]]
-id = "observability"
-display_name = "Observability"
-items = ["fastfetch", "btop"]
+[bundles.observability]
+name = "Observability"
+desc = "Monitoring and system inspection tools."
+items = ["btop"]
 
-[[bundles]]
-id = "git-tooling"
-display_name = "Git tooling"
-items = ["lazygit", "gitkraken", "github-cli"]
+[bundles.containers]
+name = "Containers"
+desc = "Container engines and terminal tooling."
+items = ["docker", "lazydocker", "dive"]
 
-[[bundles]]
-id = "toolchains"
-display_name = "Toolchains"
-items = ["miniconda", "rust-toolchain", "cargo-binstall", "cargo-cache", "go-toolchain", "nodejs", "pixi", "jupyter"]
-
-[[bundles]]
-id = "editors"
-display_name = "Editors"
-items = ["neovim", "fzf", "lunarvim"]
-
-[[bundles]]
-id = "containers"
-display_name = "Containers"
-items = ["docker", "lazydocker"]
-
-[[bundles]]
-id = "remote-access"
-display_name = "Remote access"
+[bundles.remote-access]
+name = "Remote Access"
+desc = "Remote access and clipboard helpers."
 items = ["vnc", "lemonade"]
 
-[[bundles]]
-id = "cli-suites"
-display_name = "CLI suites"
-items = ["zellij", "lsd", "git-delta", "duf", "dust", "fd", "ripgrep", "gping", "procs", "xh", "genact", "viu", "rustscan", "uv", "speedtest-cli", "gdown", "archey4", "tldr", "huggingface-cli", "rich-cli", "zoxide", "micro", "scc", "dive", "gotify", "superfile", "yazi"]
+[bundles.services]
+name = "Services"
+desc = "Service-like tools that need usability verification."
+items = ["jupyter", "pm2"]
 
-[[bundles]]
-id = "services"
-display_name = "Services"
-items = ["pm2"]
+[bundles.desktop-tools]
+name = "Desktop Tools"
+desc = "Desktop-oriented applications and fonts from the legacy installers."
+items = ["neofetch", "ncdu", "gitkraken", "meslo-font"]
 
-[[bundles]]
-id = "agents"
-display_name = "Agent CLIs"
-items = ["codex", "gemini", "claude", "opencode", "bun"]
+[bundles.shell-customization]
+name = "Shell Customization"
+desc = "Shell setup, plugins, and interactive navigation helpers."
+items = ["oh-my-zsh", "zsh-theme", "zsh-plugins", "fzf"]
 
-[[bundles]]
-id = "advanced-observability"
-display_name = "Advanced observability"
-items = ["bottom", "nvitop", "nviwatch", "bandwhich"]
+[bundles.languages]
+name = "Languages"
+desc = "Language runtimes, package managers, and base developer toolchains."
+items = ["pipx", "miniconda", "rust-toolchain", "go-toolchain", "fnm", "nodejs", "uv", "pixi"]
+
+[bundles.editors]
+name = "Editors"
+desc = "Editors and editor distributions installed by the legacy scripts."
+items = ["neovim", "lunarvim", "micro"]
+
+[bundles.git-tooling]
+name = "Git Tooling"
+desc = "Git-adjacent applications and CLI workflows."
+items = ["git-lfs", "lazygit", "git-delta", "gh"]
+
+[bundles.tui-tooling]
+name = "TUI Tooling"
+desc = "CLI/TUI utilities installed via cargo, go, and shell installers."
+items = ["zellij", "lsd", "cargo-cache", "duf", "dust", "fd", "ripgrep", "gping", "procs", "xh", "zoxide", "scc", "viu", "superfile", "yazi", "tldr"]
+
+[bundles.ai-agents]
+name = "AI Agents"
+desc = "CLI coding agents and their supporting runtimes."
+items = ["codex-cli", "gemini-cli", "cursor-cli", "claude-cli", "opencode-cli", "bun", "oh-my-opencode", "openchamber-web", "oh-my-pi", "beads", "perles", "dolt"]
+
+[bundles.monitoring]
+name = "Monitoring"
+desc = "Monitoring, telemetry, and host inspection tools."
+items = ["bottom", "nvitop", "nviwatch", "bandwhich", "rich-cli", "speedtest-cli", "archey4", "genact"]
+
+[bundles.cloud-data]
+name = "Cloud and Data"
+desc = "Download, transfer, and package-distribution helpers."
+items = ["gdown", "huggingface-cli", "gotify"]
+
+[bundles.devops]
+name = "DevOps"
+desc = "Build, bootstrap, and low-level operator tooling."
+items = ["cargo-binstall", "rustscan"]
+
+[items.essentials]
+name = "Essentials"
+desc = "Foundation packages from the legacy system installer scripts."
+depends_on = []
+
+[[items.essentials.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos"]
+cmd = 'sudo apt update && sudo apt install -y iputils-ping net-tools python3-venv apt-utils make openssh-server gedit vim git git-lfs curl wget zsh gcc perl build-essential libfuse2 python3-pip screen tmux ncdu bat pipx xsel screenfetch neofetch p7zip-full unzip mosh nmap'
+
+[[items.essentials.recipes]]
+mode = "sudo"
+distros = ["fedora"]
+cmd = 'sudo dnf install -y python3 pipx gedit vim git git-lfs curl wget zsh gcc make perl screen tmux ncdu xsel unzip bat screenfetch neofetch fastfetch mosh iperf3 nmap btop'
+
+[[items.essentials.recipes]]
+mode = "sudo"
+distros = ["centos"]
+cmd = 'sudo yum install -y python3 dnf gedit vim git git-lfs curl wget zsh gcc make perl build-essential screen tmux ncdu xsel unzip iperf3 nmap'
+
+[[items.essentials.recipes]]
+mode = "sudo"
+distros = ["arch", "manjaro", "endeavouros"]
+cmd = 'sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel screenfetch fastfetch p7zip unzip mosh iperf3 nmap btop'
+
+[[items.essentials.recipes]]
+mode = "sudo"
+distros = ["opensuse", "opensuse-tumbleweed"]
+cmd = 'sudo zypper install -y python3 python3-pip gedit vim git git-lfs curl wget zsh gcc make perl screen tmux ncdu bat xsel screenfetch neofetch fastfetch p7zip unzip mosh iperf nmap btop'
+
+[[items.essentials.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v git && command -v curl && command -v wget && command -v tmux'
+
+[items.git-lfs]
+name = "Git LFS"
+desc = "Git Large File Storage support."
+depends_on = ["essentials"]
+
+[[items.git-lfs.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos"]
+cmd = 'sudo apt install -y git-lfs'
+
+[[items.git-lfs.recipes]]
+mode = "sudo"
+distros = ["fedora", "centos"]
+cmd = 'sudo dnf install -y git-lfs'
+
+[[items.git-lfs.recipes]]
+mode = "sudo"
+distros = ["arch", "manjaro", "endeavouros"]
+cmd = 'sudo pacman -Sy --noconfirm git-lfs'
+
+[[items.git-lfs.recipes]]
+mode = "sudo"
+distros = ["opensuse", "opensuse-tumbleweed"]
+cmd = 'sudo zypper install -y git-lfs'
+
+[[items.git-lfs.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v git-lfs'
+
+[items.bat]
+name = "bat"
+desc = "A cat clone with syntax highlighting and Git integration."
+depends_on = ["essentials"]
+
+[[items.bat.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos"]
+cmd = 'sudo apt install -y bat && mkdir -p ~/.local/bin && ln -sf /usr/bin/batcat ~/.local/bin/bat'
+
+[[items.bat.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'mkdir -p ~/.local/bin && wget -O bat.tar.gz https://github.com/sharkdp/bat/releases/download/v0.25.0/bat-v0.25.0-x86_64-unknown-linux-musl.tar.gz && tar -xvzf bat.tar.gz -C ~/.local/bin && mv ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl/bat ~/.local/bin/bat && rm -r ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl && rm bat.tar.gz'
+
+[[items.bat.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v bat || command -v batcat'
+
+[[items.bat.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v bat || command -v batcat'
+
+[items.ctop]
+name = "ctop"
+desc = "Top-like interface for container metrics."
+depends_on = ["essentials"]
+
+[[items.ctop.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'mkdir -p ~/.local/bin && wget https://github.com/bcicen/ctop/releases/download/v0.7.7/ctop-0.7.7-linux-amd64 -O ~/.local/bin/ctop && chmod +x ~/.local/bin/ctop'
+
+[[items.ctop.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v ctop'
+
+[items.fastfetch]
+name = "Fastfetch"
+desc = "Fast system information fetcher."
+depends_on = ["essentials"]
+
+[[items.fastfetch.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos"]
+cmd = 'sudo add-apt-repository -y ppa:zhangsongcui3371/fastfetch && sudo apt update && sudo apt install -y fastfetch'
+
+[[items.fastfetch.recipes]]
+mode = "sudo"
+distros = ["fedora", "centos"]
+cmd = 'sudo dnf install -y fastfetch'
+
+[[items.fastfetch.recipes]]
+mode = "sudo"
+distros = ["arch", "manjaro", "endeavouros"]
+cmd = 'sudo pacman -Sy --noconfirm fastfetch'
+
+[[items.fastfetch.recipes]]
+mode = "sudo"
+distros = ["opensuse", "opensuse-tumbleweed"]
+cmd = 'sudo zypper install -y fastfetch'
+
+[[items.fastfetch.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v fastfetch'
+
+[[items.fastfetch.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v fastfetch'
+
+[items.btop]
+name = "btop"
+desc = "Resource monitor."
+depends_on = ["essentials"]
+
+[[items.btop.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "fedora", "arch", "manjaro", "endeavouros", "opensuse", "opensuse-tumbleweed"]
+cmd = 'wget https://github.com/aristocratos/btop/releases/download/v1.4.5/btop-x86_64-linux-musl.tbz -O btop.tbz && tar -xvf btop.tbz && cd btop && ./install.sh && cd .. && rm -r btop && rm btop.tbz'
+
+[[items.btop.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'wget https://github.com/aristocratos/btop/releases/download/v1.4.5/btop-x86_64-linux-musl.tbz -O btop.tbz && tar -xvf btop.tbz && cp btop/bin/btop ~/.local/bin && rm -r btop && rm btop.tbz'
+
+[[items.btop.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v btop'
+
+[[items.btop.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v btop'
+
+[items.neofetch]
+name = "Neofetch"
+desc = "System information tool used in both legacy installers."
+depends_on = ["essentials"]
+
+[[items.neofetch.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'git clone --depth 1 --branch 7.1.0 https://github.com/dylanaraps/neofetch ~/neofetch && cd ~/neofetch && make PREFIX=~/.local install && cd ~ && rm -rf ~/neofetch'
+
+[[items.neofetch.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v neofetch'
+
+[items.ncdu]
+name = "ncdu"
+desc = "NCurses disk usage viewer."
+depends_on = ["essentials"]
+
+[[items.ncdu.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'mkdir -p ~/.local/bin && wget https://dev.yorhel.nl/download/ncdu-2.3-linux-x86_64.tar.gz && tar -xvzf ncdu-2.3-linux-x86_64.tar.gz -C ~/.local/bin && rm ncdu-2.3-linux-x86_64.tar.gz'
+
+[[items.ncdu.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v ncdu'
+
+[items.gitkraken]
+name = "GitKraken"
+desc = "Git GUI client installed in both system and user flows."
+depends_on = ["essentials"]
+
+[[items.gitkraken.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos"]
+cmd = 'wget https://release.gitkraken.com/linux/gitkraken-amd64.deb && sudo apt install -y ./gitkraken-amd64.deb && rm gitkraken-amd64.deb'
+
+[[items.gitkraken.recipes]]
+mode = "sudo"
+distros = ["fedora", "centos"]
+cmd = 'wget https://release.gitkraken.com/linux/gitkraken-amd64.rpm && sudo dnf install -y ./gitkraken-amd64.rpm && rm gitkraken-amd64.rpm'
+
+[[items.gitkraken.recipes]]
+mode = "sudo"
+distros = ["opensuse", "opensuse-tumbleweed"]
+cmd = 'wget https://release.gitkraken.com/linux/gitkraken-amd64.rpm && sudo zypper install --allow-unsigned-rpm -y ./gitkraken-amd64.rpm && rm gitkraken-amd64.rpm'
+
+[[items.gitkraken.recipes]]
+mode = "sudo"
+distros = ["arch", "manjaro", "endeavouros"]
+cmd = 'yay -Sy --noconfirm gitkraken'
+
+[[items.gitkraken.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'wget https://release.gitkraken.com/linux/gitkraken-amd64.tar.gz && tar -xvzf gitkraken-amd64.tar.gz && mv gitkraken ~/.gitkraken && rm gitkraken-amd64.tar.gz && ln -sf ~/.gitkraken/gitkraken ~/.local/bin/gitkraken'
+
+[[items.gitkraken.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v gitkraken'
+
+[[items.gitkraken.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v gitkraken'
+
+[items.meslo-font]
+name = "Meslo Nerd Font"
+desc = "Meslo Nerd Font installation used by the legacy system installer."
+depends_on = ["essentials"]
+
+[[items.meslo-font.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'wget https://github.com/ryanoasis/nerd-fonts/releases/download/v2.1.0/Meslo.zip && mkdir -p ~/.local/share/fonts && unzip Meslo.zip -d ~/.local/share/fonts && cd ~/.local/share/fonts && rm *Windows* && cd ~ && rm Meslo.zip && fc-cache -fv'
+
+[[items.meslo-font.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -d ~/.local/share/fonts'
+
+[items.oh-my-zsh]
+name = "Oh My Zsh"
+desc = "Zsh framework bootstrap used by the legacy installers."
+depends_on = ["essentials"]
+
+[[items.oh-my-zsh.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended'
+
+[[items.oh-my-zsh.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -d ~/.oh-my-zsh'
+
+[items.zsh-theme]
+name = "mzz-ys theme"
+desc = "Custom zsh theme referenced by the legacy installers."
+depends_on = ["oh-my-zsh"]
+
+[[items.zsh-theme.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/mzz-ys.zsh-theme > ~/.oh-my-zsh/themes/mzz-ys.zsh-theme'
+
+[[items.zsh-theme.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -f ~/.oh-my-zsh/themes/mzz-ys.zsh-theme'
+
+[items.zsh-plugins]
+name = "Zsh plugins"
+desc = "Autosuggestions and syntax highlighting plugins for zsh."
+depends_on = ["oh-my-zsh"]
+
+[[items.zsh-plugins.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions && git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting'
+
+[[items.zsh-plugins.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -d ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions && test -d ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting'
+
+[items.fzf]
+name = "fzf"
+desc = "Fuzzy finder with shell integration."
+depends_on = ["essentials"]
+
+[[items.fzf.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf && ~/.fzf/install --all'
+
+[[items.fzf.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v fzf'
+
+[items.pipx]
+name = "pipx"
+desc = "Python application installer used throughout the legacy scripts."
+depends_on = ["essentials"]
+
+[[items.pipx.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'if command -v pipx >/dev/null 2>&1; then pipx ensurepath --force || true; elif python3 -m pip --version >/dev/null 2>&1; then python3 -m pip install --user pipx && python3 -m pipx ensurepath --force || true; else echo "pip is unavailable; skipping pipx bootstrap"; fi'
+
+[[items.pipx.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v pipx'
+
+[items.miniconda]
+name = "Miniconda"
+desc = "Miniconda bootstrap and basic configuration."
+depends_on = ["essentials"]
+
+[[items.miniconda.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -s -L -o miniconda_installer.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && bash miniconda_installer.sh -b && rm miniconda_installer.sh && "$HOME/miniconda3/bin/conda" init zsh && echo "changeps1: false" >> ~/.condarc'
+
+[[items.miniconda.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -x "$HOME/miniconda3/bin/conda"'
+
+[items.rust-toolchain]
+name = "Rust toolchain"
+desc = "Rust toolchain installed with rustup."
+depends_on = ["essentials"]
+
+[[items.rust-toolchain.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl https://sh.rustup.rs -sSf | sh -s -- -y'
+
+[[items.rust-toolchain.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v cargo && command -v rustup'
+
+[items.go-toolchain]
+name = "Go toolchain"
+desc = "Go bootstrap used by the legacy installers."
+depends_on = ["essentials"]
+
+[[items.go-toolchain.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'wget -q -O - https://raw.githubusercontent.com/ControlNet/golang-tools-install-script/refs/heads/master/goinstall.sh | bash'
+
+[[items.go-toolchain.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v go && command -v gofmt'
+
+[items.fnm]
+name = "fnm"
+desc = "Fast Node Manager."
+depends_on = ["essentials"]
+
+[[items.fnm.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -o- https://fnm.vercel.app/install | bash'
+
+[[items.fnm.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -x "$HOME/.local/share/fnm/fnm" || command -v fnm'
+
+[items.nodejs]
+name = "Node.js"
+desc = "Node.js installed through fnm."
+depends_on = ["fnm"]
+
+[[items.nodejs.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'eval "$(fnm env --shell bash)" && fnm install --lts --use'
+
+[[items.nodejs.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v node && command -v npm'
+
+[items.neovim]
+name = "Neovim"
+desc = "Standalone Neovim installation."
+depends_on = ["essentials"]
+
+[[items.neovim.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -LO https://github.com/neovim/neovim/releases/download/v0.9.5/nvim-linux64.tar.gz && tar -xzf nvim-linux64.tar.gz && mv nvim-linux64 ~/.nvim && ln -sf $HOME/.nvim/bin/nvim $HOME/.local/bin/nvim && rm nvim-linux64.tar.gz'
+
+[[items.neovim.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v nvim'
+
+[items.lunarvim]
+name = "LunarVim"
+desc = "LunarVim distribution layered on top of Neovim."
+depends_on = ["neovim", "nodejs", "miniconda"]
+
+[[items.lunarvim.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'LV_BRANCH=release-1.4/neovim-0.9 bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y && "$HOME/miniconda3/bin/python" -m pip install neovim'
+
+[[items.lunarvim.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -x "$HOME/.local/bin/lvim" || command -v lvim'
+
+[items.jupyter]
+name = "Jupyter"
+desc = "Notebook and lab environment installed through conda."
+depends_on = ["miniconda"]
+
+[[items.jupyter.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = '"$HOME/miniconda3/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && "$HOME/miniconda3/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && "$HOME/miniconda3/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 && "$HOME/miniconda3/bin/conda" install -n base -y conda-libmamba-solver && "$HOME/miniconda3/bin/conda" config --set solver libmamba && "$HOME/miniconda3/bin/conda" install -y ipywidgets ipykernel jupyterlab jupyter'
+
+[[items.jupyter.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v jupyter'
+
+[items.vnc]
+name = "TigerVNC"
+desc = "VNC server packages across supported distros."
+depends_on = ["essentials"]
+
+[[items.vnc.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos"]
+cmd = 'sudo apt install -y tigervnc-standalone-server tigervnc-common tigervnc-xorg-extension'
+
+[[items.vnc.recipes]]
+mode = "sudo"
+distros = ["fedora", "centos"]
+cmd = 'sudo dnf install -y tigervnc-server'
+
+[[items.vnc.recipes]]
+mode = "sudo"
+distros = ["arch", "manjaro", "endeavouros"]
+cmd = 'sudo pacman -Sy --noconfirm tigervnc'
+
+[[items.vnc.recipes]]
+mode = "sudo"
+distros = ["opensuse", "opensuse-tumbleweed"]
+cmd = 'sudo zypper install -y tigervnc'
+
+[[items.vnc.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v vncserver'
+
+[items.docker]
+name = "Docker"
+desc = "Docker engine bootstrap and group setup."
+depends_on = ["essentials"]
+
+[[items.docker.recipes]]
+mode = "sudo"
+distros = ["ubuntu", "mint", "popos", "fedora", "centos"]
+cmd = 'sh -c "$(curl -fsSL https://get.docker.com)" && sudo groupadd docker || true && sudo usermod -aG docker $USER'
+
+[[items.docker.recipes]]
+mode = "sudo"
+distros = ["endeavouros"]
+cmd = 'yay -Sy --noconfirm docker && sudo systemctl enable docker && sudo systemctl start docker && sudo groupadd docker || true && sudo usermod -aG docker $USER'
+
+[[items.docker.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = 'command -v docker'
+
+[items.pm2]
+name = "PM2"
+desc = "Node process manager."
+depends_on = ["nodejs"]
+
+[[items.pm2.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'npm config set prefix "$HOME/.local" && npm install -g pm2'
+
+[[items.pm2.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v pm2'
+
+[items.lazygit]
+name = "lazygit"
+desc = "Simple terminal UI for Git commands."
+depends_on = ["essentials"]
+
+[[items.lazygit.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | python3 -c "import json,sys; print(json.load(sys.stdin)[\"tag_name\"][1:])") && curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz" && tar xf lazygit.tar.gz lazygit && install lazygit ~/.local/bin/lazygit && rm lazygit.tar.gz lazygit'
+
+[[items.lazygit.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v lazygit'
+
+[items.lazydocker]
+name = "lazydocker"
+desc = "Simple terminal UI for Docker."
+depends_on = ["docker"]
+
+[[items.lazydocker.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh | bash'
+
+[[items.lazydocker.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v lazydocker'
+
+[items.lemonade]
+name = "lemonade"
+desc = "Clipboard bridge for remote editor workflows."
+depends_on = ["go-toolchain"]
+
+[[items.lemonade.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'go install github.com/lemonade-command/lemonade@latest'
+
+[[items.lemonade.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v lemonade'
+
+[items.cargo-binstall]
+name = "cargo-binstall"
+desc = "Faster cargo package installer."
+depends_on = ["rust-toolchain"]
+
+[[items.cargo-binstall.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -L -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash'
+
+[[items.cargo-binstall.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v cargo-binstall'
+
+[items.zellij]
+name = "Zellij"
+desc = "Terminal workspace manager."
+depends_on = ["cargo-binstall"]
+
+[[items.zellij.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall zellij && curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3'
+
+[[items.zellij.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v zellij'
+
+[items.lsd]
+name = "lsd"
+desc = "Modern ls replacement."
+depends_on = ["cargo-binstall"]
+
+[[items.lsd.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall lsd'
+
+[[items.lsd.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v lsd'
+
+[items.cargo-cache]
+name = "cargo-cache"
+desc = "Cargo cache cleaning utility."
+depends_on = ["cargo-binstall"]
+
+[[items.cargo-cache.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall cargo-cache'
+
+[[items.cargo-cache.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v cargo-cache'
+
+[items.git-delta]
+name = "git-delta"
+desc = "Syntax-highlighting pager for git diffs."
+depends_on = ["cargo-binstall"]
+
+[[items.git-delta.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall git-delta'
+
+[[items.git-delta.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v delta'
+
+[items.duf]
+name = "duf"
+desc = "Better df output."
+depends_on = ["go-toolchain"]
+
+[[items.duf.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'go install github.com/muesli/duf@latest'
+
+[[items.duf.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v duf'
+
+[items.dust]
+name = "dust"
+desc = "Better du output."
+depends_on = ["cargo-binstall"]
+
+[[items.dust.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall du-dust'
+
+[[items.dust.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v dust'
+
+[items.fd]
+name = "fd"
+desc = "Simple find replacement."
+depends_on = ["cargo-binstall"]
+
+[[items.fd.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall fd-find'
+
+[[items.fd.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v fd'
+
+[items.ripgrep]
+name = "ripgrep"
+desc = "Fast grep replacement."
+depends_on = ["rust-toolchain"]
+
+[[items.ripgrep.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo install --features pcre2 ripgrep'
+
+[[items.ripgrep.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v rg'
+
+[items.gping]
+name = "gping"
+desc = "Graphical ping in the terminal."
+depends_on = ["cargo-binstall"]
+
+[[items.gping.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall gping'
+
+[[items.gping.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v gping'
+
+[items.procs]
+name = "procs"
+desc = "Modern process viewer."
+depends_on = ["cargo-binstall"]
+
+[[items.procs.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall procs'
+
+[[items.procs.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v procs'
+
+[items.xh]
+name = "xh"
+desc = "Friendly HTTP client."
+depends_on = ["cargo-binstall"]
+
+[[items.xh.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall xh'
+
+[[items.xh.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v xh'
+
+[items.uv]
+name = "uv"
+desc = "Fast Python package and environment manager."
+depends_on = ["pipx"]
+
+[[items.uv.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install uv'
+
+[[items.uv.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v uv'
+
+[items.pixi]
+name = "pixi"
+desc = "Conda + poetry style workflow manager."
+depends_on = ["essentials"]
+
+[[items.pixi.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://pixi.sh/install.sh | bash && mkdir -p ~/.config/pixi && printf "shell.change-ps1 = false\n" > ~/.config/pixi/config.toml'
+
+[[items.pixi.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v pixi'
+
+[items.speedtest-cli]
+name = "speedtest-cli"
+desc = "Internet speed test utility."
+depends_on = ["pipx"]
+
+[[items.speedtest-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install speedtest-cli'
+
+[[items.speedtest-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v speedtest-cli'
+
+[items.gdown]
+name = "gdown"
+desc = "Google Drive downloader."
+depends_on = ["pipx"]
+
+[[items.gdown.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install gdown'
+
+[[items.gdown.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v gdown'
+
+[items.archey4]
+name = "archey4"
+desc = "System information summary utility."
+depends_on = ["pipx"]
+
+[[items.archey4.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install archey4'
+
+[[items.archey4.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v archey4'
+
+[items.genact]
+name = "genact"
+desc = "Fake activity generator for demos."
+depends_on = ["rust-toolchain"]
+
+[[items.genact.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo install genact'
+
+[[items.genact.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v genact'
+
+[items.zoxide]
+name = "zoxide"
+desc = "Smarter cd command."
+depends_on = ["essentials"]
+
+[[items.zoxide.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -sS https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash'
+
+[[items.zoxide.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v zoxide'
+
+[items.micro]
+name = "micro"
+desc = "Terminal text editor."
+depends_on = ["essentials"]
+
+[[items.micro.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl https://getmic.ro | bash && mv micro ~/.local/bin'
+
+[[items.micro.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v micro'
+
+[items.scc]
+name = "scc"
+desc = "Source code counter."
+depends_on = ["go-toolchain"]
+
+[[items.scc.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'go install github.com/boyter/scc/v3@latest'
+
+[[items.scc.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v scc'
+
+[items.viu]
+name = "viu"
+desc = "Terminal image viewer."
+depends_on = ["cargo-binstall"]
+
+[[items.viu.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall viu'
+
+[[items.viu.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v viu'
+
+[items.dive]
+name = "dive"
+desc = "Explore Docker image layers."
+depends_on = ["go-toolchain"]
+
+[[items.dive.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'go install github.com/wagoodman/dive@latest'
+
+[[items.dive.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v dive'
+
+[items.tldr]
+name = "tldr"
+desc = "Community-maintained command help pages."
+depends_on = ["pipx"]
+
+[[items.tldr.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install tldr'
+
+[[items.tldr.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v tldr'
+
+[items.huggingface-cli]
+name = "Hugging Face CLI"
+desc = "Hugging Face command-line client."
+depends_on = ["pipx"]
+
+[[items.huggingface-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install "huggingface-hub[cli,hf_xet]"'
+
+[[items.huggingface-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v huggingface-cli'
+
+[items.superfile]
+name = "superfile"
+desc = "Terminal file manager."
+depends_on = ["essentials"]
+
+[[items.superfile.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)" && CFG="$HOME/.config/superfile/config.toml" && URL="https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml" && mkdir -p "$HOME/.config/superfile" && [ -f "$CFG" ] || curl -fsSL "$URL" -o "$CFG" && sed -i -E "s/^\s*auto_check_update\s*=.*/auto_check_update = false/" "$CFG"'
+
+[[items.superfile.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v superfile || command -v spf'
+
+[items.yazi]
+name = "yazi"
+desc = "Terminal file manager with theme setup."
+depends_on = ["rust-toolchain"]
+
+[[items.yazi.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo install yazi-build && mkdir -p ~/.config/yazi && ya pack -a BennyOe/onedark && printf "[flavor]\nuse = \"onedark\"\n" > ~/.config/yazi/theme.toml'
+
+[[items.yazi.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v yazi && command -v ya'
+
+[items.codex-cli]
+name = "Codex CLI"
+desc = "OpenAI Codex CLI."
+depends_on = ["nodejs"]
+
+[[items.codex-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'npm install -g @openai/codex@latest && mkdir -p ~/.codex && printf "network_access = true\n" >> ~/.codex/config.toml'
+
+[[items.codex-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v codex'
+
+[items.gemini-cli]
+name = "Gemini CLI"
+desc = "Google Gemini CLI."
+depends_on = ["nodejs"]
+
+[[items.gemini-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'npm install -g @google/gemini-cli'
+
+[[items.gemini-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v gemini'
+
+[items.cursor-cli]
+name = "Cursor CLI"
+desc = "Cursor shell installer."
+depends_on = ["essentials"]
+
+[[items.cursor-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://cursor.com/install | bash'
+
+[[items.cursor-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v cursor || command -v cursor-agent'
+
+[items.claude-cli]
+name = "Claude CLI"
+desc = "Claude shell installer."
+depends_on = ["essentials"]
+
+[[items.claude-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://claude.ai/install.sh | bash'
+
+[[items.claude-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v claude'
+
+[items.opencode-cli]
+name = "OpenCode CLI"
+desc = "OpenCode shell installer."
+depends_on = ["essentials"]
+
+[[items.opencode-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://opencode.ai/install | bash'
+
+[[items.opencode-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v opencode'
+
+[items.bun]
+name = "Bun"
+desc = "JavaScript runtime used by the agent toolchain."
+depends_on = ["essentials"]
+
+[[items.bun.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://bun.sh/install | bash'
+
+[[items.bun.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -x "$HOME/.bun/bin/bun" || command -v bun'
+
+[items.oh-my-opencode]
+name = "oh-my-opencode"
+desc = "OpenCode environment bootstrap."
+depends_on = ["bun"]
+
+[[items.oh-my-opencode.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = '~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no'
+
+[[items.oh-my-opencode.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -d ~/.config/opencode || command -v oh-my-opencode'
+
+[items.openchamber-web]
+name = "OpenChamber Web"
+desc = "OpenChamber web package installed with bun."
+depends_on = ["bun"]
+
+[[items.openchamber-web.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = '~/.bun/bin/bun add -g @openchamber/web'
+
+[[items.openchamber-web.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -x "$HOME/.bun/bin/openchamber-web" || command -v openchamber-web || command -v openchamber'
+
+[items.oh-my-pi]
+name = "oh-my-pi"
+desc = "oh-my-pi installer from the legacy AI-agent stack."
+depends_on = ["essentials"]
+
+[[items.oh-my-pi.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh'
+
+[[items.oh-my-pi.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'test -d ~/.oh-my-pi || command -v pi'
+
+[items.beads]
+name = "beads"
+desc = "beads installer from the agent add-on stack."
+depends_on = ["essentials"]
+
+[[items.beads.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash'
+
+[[items.beads.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v beads'
+
+[items.perles]
+name = "perles"
+desc = "perles installer from the agent add-on stack."
+depends_on = ["essentials"]
+
+[[items.perles.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -fsSL https://raw.githubusercontent.com/zjrosen/perles/main/install.sh | bash'
+
+[[items.perles.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v perles'
+
+[items.dolt]
+name = "dolt"
+desc = "SQL database with Git semantics, installed for beads."
+depends_on = ["essentials"]
+
+[[items.dolt.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'arch="$(uname -m)" && case "$arch" in x86_64|amd64) asset="dolt-linux-amd64.tar.gz" ;; aarch64|arm64) asset="dolt-linux-arm64.tar.gz" ;; *) echo "Unsupported arch: $arch" >&2; exit 1 ;; esac && tmpdir="$(mktemp -d)" && curl -L "https://github.com/dolthub/dolt/releases/latest/download/$asset" -o "$tmpdir/dolt.tgz" && tar -xzf "$tmpdir/dolt.tgz" -C "$tmpdir" && install -m 755 "$tmpdir"/*/bin/dolt ~/.local/bin/dolt && rm -rf "$tmpdir"'
+
+[[items.dolt.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v dolt'
+
+[items.rustscan]
+name = "rustscan"
+desc = "Fast port scanner."
+depends_on = ["cargo-binstall"]
+
+[[items.rustscan.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall rustscan'
+
+[[items.rustscan.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v rustscan'
+
+[items.gotify]
+name = "gotify"
+desc = "Gotify CLI client."
+depends_on = ["go-toolchain"]
+
+[[items.gotify.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'go install github.com/gotify/cli@latest && mv ~/go/bin/cli ~/go/bin/gotify'
+
+[[items.gotify.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v gotify'
+
+[items.bottom]
+name = "Bottom"
+desc = "System monitor."
+depends_on = ["cargo-binstall"]
+
+[[items.bottom.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall bottom'
+
+[[items.bottom.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v btm'
+
+[items.nvitop]
+name = "nvitop"
+desc = "NVIDIA GPU monitor."
+depends_on = ["pipx"]
+
+[[items.nvitop.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install nvitop'
+
+[[items.nvitop.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v nvitop'
+
+[items.nviwatch]
+name = "nviwatch"
+desc = "NVIDIA watch utility."
+depends_on = ["cargo-binstall"]
+
+[[items.nviwatch.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall nviwatch'
+
+[[items.nviwatch.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v nviwatch'
+
+[items.bandwhich]
+name = "bandwhich"
+desc = "Bandwidth utilization monitor."
+depends_on = ["cargo-binstall"]
+
+[[items.bandwhich.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'cargo binstall bandwhich'
+
+[[items.bandwhich.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v bandwhich'
+
+[items.rich-cli]
+name = "rich-cli"
+desc = "Rich text rendering for terminals."
+depends_on = ["pipx"]
+
+[[items.rich-cli.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'pipx install rich-cli'
+
+[[items.rich-cli.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v rich'
+
+[items.gh]
+name = "GitHub CLI"
+desc = "GitHub command-line interface."
+depends_on = ["essentials"]
+
+[[items.gh.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = 'curl -sS https://webi.sh/gh | sh'
+
+[[items.gh.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = 'command -v gh'
