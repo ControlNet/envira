@@ -6,9 +6,9 @@ use std::{
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use envira::{
-    catalog::{Catalog, TargetBackend},
+    catalog::{Catalog, CatalogError, TargetBackend},
     engine::{
-        CommandName, CommandPayload, CommandRequest, CommandResponse, InstallMode,
+        CommandName, CommandPayload, CommandRequest, CommandResponse, EngineError, InstallMode,
         InstallWorkflowFailure, InstallWorkflowOutcome, InstallWorkflowResult,
         InstallWorkflowStatus, InterfaceMode, OutputFormat, VerificationItemResult,
         VerificationWorkflowResult, VerificationWorkflowSummary,
@@ -25,6 +25,7 @@ use envira::{
     tui::{TuiApp, TuiEnginePort},
     verifier::{
         EvidenceRecord, EvidenceStatus, ObservedScope, ProbeKind, ProbeRequirement,
+        ServiceAssessment, ServiceKind, ServiceProbeEvidence, ServiceUsabilityState,
         VerificationHealth, VerificationProfile, VerificationStage, VerificationSummary,
         VerifierCheck, VerifierEvidence, VerifierResult,
     },
@@ -194,6 +195,171 @@ fn install_preview_dispatches_dry_run_request_and_uses_shared_engine_results() {
     assert!(snapshot.details.contains("Rationale:"));
 }
 
+#[test]
+fn implicit_default_bundles_drive_tui_selection_state_until_user_selects_explicitly() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::default();
+    let plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([(
+            "tool-a".to_string(),
+            missing_result(VerificationStage::Present),
+        )]),
+    );
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Plan,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Plan { action_plan: plan },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    let initial = app.snapshot();
+    assert!(initial.header.contains("implicit default_bundles"));
+    assert!(initial.bundles.contains("[-] Bundle A"));
+    assert!(initial.items.contains("[-] Tool A"));
+    assert!(initial.items.contains("[ ] Tool B"));
+    assert!(initial
+        .details
+        .contains("selected through implicit default_bundles bundle-a"));
+
+    assert!(!app.on_key(key(KeyCode::Char('p'))));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].command, CommandName::Plan);
+    assert_eq!(requests[1].planner_request, None);
+    assert!(app.snapshot().results.contains("Last action: plan"));
+}
+
+#[test]
+fn explicit_item_selection_replaces_implicit_default_bundles() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::item("tool-b");
+    let plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([(
+            "tool-b".to_string(),
+            missing_result(VerificationStage::Present),
+        )]),
+    );
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Plan,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Plan { action_plan: plan },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Down)));
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+
+    let selected = app.snapshot();
+    assert!(selected.header.contains("0 bundles + 1 item"));
+    assert!(selected.items.contains("[ ] Tool A"));
+    assert!(selected.items.contains("[x] Tool B"));
+    assert!(selected.details.contains("Selection: selected directly"));
+
+    assert!(!app.on_key(key(KeyCode::Char('p'))));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].planner_request, Some(request));
+}
+
+#[test]
+fn service_verification_outcomes_are_visible_in_tui_details() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::item("tool-a");
+    let verification = fixture_verification(
+        &catalog,
+        &request,
+        blocked_service_result(VerificationStage::Operational),
+    );
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Verify,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Verify { verification },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    assert!(!app.on_key(key(KeyCode::Char('v'))));
+
+    let snapshot = app.snapshot();
+    assert!(snapshot.details.contains("Service: docker blocked"));
+    assert!(snapshot
+        .details
+        .contains("Service summary: Docker is installed but blocked."));
+    assert!(snapshot
+        .details
+        .contains("Service detail: docker.service is missing."));
+    assert!(snapshot.details.contains("Service probes:"));
+    assert!(snapshot
+        .details
+        .contains("unit [missing] docker.service is missing"));
+    assert!(snapshot.results.contains("Last action: verify"));
+}
+
+#[test]
+fn gated_and_error_states_use_new_wording() {
+    let catalog = fixture_catalog();
+    let auto_update_engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog.clone())),
+        Err(EngineError::AutoUpdateFailed {
+            current_version: "0.1.0".to_string(),
+            required_version: "0.2.0".to_string(),
+            updater: "envira.sh".to_string(),
+            detail: "[ERROR] bootstrap failed".to_string(),
+            exit_code: Some(80),
+        }),
+    ]);
+
+    let mut auto_update_app = TuiApp::bootstrap(&auto_update_engine).expect("catalog should load");
+    assert!(!auto_update_app.on_key(key(KeyCode::Char('p'))));
+
+    let update_results = auto_update_app.snapshot().results;
+    assert!(update_results.contains("envira_auto_update_failed:"));
+    assert!(update_results.contains("approved update flow failed"));
+    assert!(update_results.contains("required_version: 0.2.0"));
+    assert!(update_results.contains("exit_code: 80"));
+    assert!(!update_results.contains("shared engine"));
+    assert!(!update_results.contains("catalog manifest"));
+
+    let legacy_catalog_engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Err(EngineError::LoadCatalog {
+            manifest_path: Some(PathBuf::from("/tmp/legacy-catalog.toml")),
+            source: CatalogError::Validation(
+                "legacy catalog shape is no longer supported; use `required_version`, `distros`, `shell`, `default_bundles`, and keyed `[bundles.<id>]` / `[items.<id>]` tables".to_string(),
+            ),
+        }),
+    ]);
+
+    let mut legacy_catalog_app =
+        TuiApp::bootstrap(&legacy_catalog_engine).expect("catalog should load");
+    assert!(!legacy_catalog_app.on_key(key(KeyCode::Char('r'))));
+
+    let legacy_results = legacy_catalog_app.snapshot().results;
+    assert!(legacy_results.contains("catalog_invalid:"));
+    assert!(legacy_results.contains("legacy catalog shape is no longer supported"));
+    assert!(legacy_results.contains("catalog_path: /tmp/legacy-catalog.toml"));
+    assert!(!legacy_results.contains("shared engine"));
+    assert!(!legacy_results.contains("catalog manifest"));
+}
+
 struct MockEngine {
     responses: RefCell<VecDeque<std::result::Result<CommandResponse, envira::engine::EngineError>>>,
     requests: RefCell<Vec<CommandRequest>>,
@@ -243,43 +409,50 @@ fn catalog_response(catalog: Catalog) -> CommandResponse {
 fn fixture_catalog() -> Catalog {
     Catalog::from_toml_str(
         r#"
-schema_version = 1
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
 default_bundles = ["bundle-a"]
 
-[[items]]
-id = "tool-a"
-display_name = "Tool A"
-category = "terminal_tool"
-scope = "user"
+[items.tool-a]
+name = "Tool A"
+desc = "Tool A"
 depends_on = []
-targets = [{ backend = "direct_binary", source = "github_release" }]
-success_threshold = "present"
-standalone = false
 
-  [[items.verifier.checks]]
-  requirement = "required"
-  kind = "command"
-  command = "tool-a"
+[[items.tool-a.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/tool-a -o ~/.local/bin/tool-a && chmod +x ~/.local/bin/tool-a"
 
-[[items]]
-id = "tool-b"
-display_name = "Tool B"
-category = "terminal_tool"
-scope = "user"
+[[items.tool-a.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v tool-a"
+
+[items.tool-b]
+name = "Tool B"
+desc = "Tool B"
 depends_on = []
-targets = [{ backend = "direct_binary", source = "github_release" }]
-success_threshold = "present"
-standalone = true
 
-  [[items.verifier.checks]]
-  requirement = "required"
-  kind = "command"
-  command = "tool-b"
+[[items.tool-b.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "curl -fsSL https://example.com/tool-b -o ~/.local/bin/tool-b && chmod +x ~/.local/bin/tool-b"
 
-[[bundles]]
-id = "bundle-a"
-display_name = "Bundle A"
+[[items.tool-b.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v tool-b"
+
+[bundles.bundle-a]
+name = "Bundle A"
+desc = "Bundle A"
 items = ["tool-a"]
+
+[bundles.bundle-b]
+name = "Bundle B"
+desc = "Bundle B"
+items = ["tool-b"]
 "#,
     )
     .expect("fixture catalog should parse")
@@ -365,6 +538,37 @@ fn missing_result(required_stage: VerificationStage) -> VerifierResult {
         service_evidence: Vec::new(),
         service: None,
     }
+}
+
+fn blocked_service_result(required_stage: VerificationStage) -> VerifierResult {
+    let mut result = missing_result(required_stage);
+    result.required_stage = required_stage;
+    result.health = VerificationHealth::Broken;
+    result.service_evidence = vec![ServiceProbeEvidence {
+        id: "unit".to_string(),
+        stage: VerificationStage::Configured,
+        probe: envira::verifier::ProbeSpec::ServiceUnit(envira::verifier::ServiceUnitProbe {
+            unit: "docker.service".to_string(),
+            scope: envira::verifier::ServiceManagerScope::System,
+            condition: envira::verifier::ServiceUnitCondition::Exists,
+            timeout_ms: None,
+        }),
+        record: EvidenceRecord {
+            status: EvidenceStatus::Missing,
+            observed_scope: ObservedScope::System,
+            summary: "docker.service is missing".to_string(),
+            detail: Some("The service unit was not found during verification.".to_string()),
+        },
+    }];
+    result.service = Some(ServiceAssessment {
+        kind: ServiceKind::Docker,
+        state: ServiceUsabilityState::Blocked,
+        achieved_stage: Some(VerificationStage::Present),
+        observed_scope: ObservedScope::System,
+        summary: "Docker is installed but blocked.".to_string(),
+        detail: Some("docker.service is missing.".to_string()),
+    });
+    result
 }
 
 fn platform_context() -> PlatformContext {

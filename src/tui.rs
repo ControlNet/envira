@@ -19,13 +19,15 @@ use ratatui::{
 use crate::{
     catalog::{Catalog, CatalogBundle, CatalogItem},
     engine::{
-        CommandName, CommandPayload, CommandRequest, CommandResponse, Engine, EngineError,
-        InstallMode, InstallWorkflowResult, InterfaceMode, OutputFormat,
+        CommandErrorResponse, CommandName, CommandPayload, CommandRequest, CommandResponse, Engine,
+        EngineError, InstallMode, InstallWorkflowResult, InterfaceMode, OutputFormat,
         VerificationWorkflowResult,
     },
     error::Result,
     planner::{ActionPlan, ActionPlanStep, PlanSelection, PlannedAction, PlannerRequest},
-    verifier::{EvidenceStatus, VerificationHealth, VerifierResult},
+    verifier::{
+        EvidenceStatus, ServiceKind, ServiceUsabilityState, VerificationHealth, VerifierResult,
+    },
 };
 
 const HEADER_HEIGHT: u16 = 3;
@@ -100,7 +102,7 @@ impl UiState {
         self.focus
     }
 
-    pub fn planner_request(&self) -> PlannerRequest {
+    pub fn planner_request(&self) -> Option<PlannerRequest> {
         let mut selections = Vec::new();
 
         for bundle in &self.catalog.bundles {
@@ -115,11 +117,7 @@ impl UiState {
             }
         }
 
-        if selections.is_empty() {
-            PlannerRequest::all_default()
-        } else {
-            PlannerRequest::new(selections)
-        }
+        (!selections.is_empty()).then(|| PlannerRequest::new(selections))
     }
 
     pub fn snapshot(&self) -> ViewSnapshot {
@@ -192,6 +190,7 @@ impl UiState {
                 );
             }
             CommandPayload::Plan { action_plan } => {
+                let item_count = action_plan.steps.len();
                 let install_steps = action_plan
                     .steps
                     .iter()
@@ -211,12 +210,15 @@ impl UiState {
                 self.cached_verification = None;
                 self.cached_install = None;
                 self.status_message = format!(
-                    "Planned selection through the shared engine: {install_steps} install, {repair_steps} repair, {blocked_steps} blocked."
+                    "Planned {item_count} catalog item{}: {install_steps} install, {repair_steps} repair, {blocked_steps} blocked.",
+                    plural_suffix(item_count)
                 );
             }
             CommandPayload::Verify { verification } => {
+                let item_count = verification.summary.total_steps;
                 self.status_message = format!(
-                    "Verified selection through the shared engine: {} met threshold, {} did not.",
+                    "Verified {item_count} catalog item{}: {} met the requested threshold and {} did not.",
+                    plural_suffix(item_count),
                     verification.summary.threshold_met_steps,
                     verification.summary.threshold_unmet_steps
                 );
@@ -225,10 +227,13 @@ impl UiState {
                 self.cached_install = None;
             }
             CommandPayload::Install { install } => {
+                let actionable_steps = install.outcome.actionable_steps;
                 self.status_message = format!(
-                    "Install preview ran through the shared engine in {} mode and finished as {}.",
-                    install_mode_name(install.install_mode),
-                    install_status_name(install.outcome.status)
+                    "Install preview finished as {}; execution succeeded={} and {} of {actionable_steps} actionable catalog item{} met the requested threshold.",
+                    install_status_name(install.outcome.status),
+                    yes_no(install.outcome.execution_succeeded),
+                    install.outcome.threshold_met_steps,
+                    plural_suffix(actionable_steps)
                 );
                 self.cached_plan = Some(install.action_plan.clone());
                 self.cached_verification = Some(install.post_verification.clone());
@@ -238,10 +243,13 @@ impl UiState {
     }
 
     fn apply_error(&mut self, command: CommandName, error: EngineError) {
-        let message = format!(
-            "{} failed through the shared engine: {error}",
-            command.as_str()
-        );
+        let message = CommandErrorResponse::new(
+            command,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            error.into_envelope(),
+        )
+        .render_text();
         self.last_error = Some(message.clone());
         self.status_message = message;
     }
@@ -267,7 +275,7 @@ impl UiState {
                 {
                     toggle_id(&mut self.selected_bundles, bundle_id.as_str());
                     self.status_message = format!(
-                        "Selection draft updated for bundle `{}`. Dispatch still flows through the engine.",
+                        "Selection draft updated for catalog bundle `{}`. Explicit selections replace implicit default_bundles.",
                         bundle_id
                     );
                 }
@@ -277,7 +285,7 @@ impl UiState {
                 {
                     toggle_id(&mut self.selected_items, item_id.as_str());
                     self.status_message = format!(
-                        "Selection draft updated for item `{}`. Dispatch still flows through the engine.",
+                        "Selection draft updated for catalog item `{}`. Explicit selections replace implicit default_bundles.",
                         item_id
                     );
                 }
@@ -292,7 +300,7 @@ impl UiState {
         self.selected_items.clear();
         self.invalidate_results();
         self.status_message =
-            "Selection draft cleared. New actions will fall back to the catalog default bundle expansion."
+            "Selection draft cleared. New actions will use the catalog default_bundles until you make an explicit selection."
                 .to_string();
     }
 
@@ -331,8 +339,8 @@ impl UiState {
                 format!(
                     "{} {} {} ({} item{})",
                     focus_marker(self.focus == FocusPane::Bundles && index == self.bundle_index),
-                    selection_marker(self.selected_bundles.contains(bundle.id.as_str())),
-                    bundle.display_name,
+                    bundle_selection_marker(self, bundle.id.as_str()),
+                    bundle.name,
                     bundle.items.len(),
                     plural_suffix(bundle.items.len())
                 )
@@ -364,7 +372,7 @@ impl UiState {
                     "{} {} {} [{action} | {verification}]",
                     focus_marker(self.focus == FocusPane::Items && index == self.item_index),
                     item_selection_marker(self, item.id.as_str()),
-                    item.display_name,
+                    item.name,
                 )
             })
             .collect::<Vec<_>>()
@@ -385,21 +393,17 @@ impl UiState {
         };
 
         let mut lines = vec![
-            format!("Bundle: {}", bundle.display_name),
+            format!("Bundle: {}", bundle.name),
             format!("ID: {}", bundle.id),
             format!(
-                "Selected: {}",
-                yes_no(self.selected_bundles.contains(bundle.id.as_str()))
+                "Selection: {}",
+                bundle_selection_description(self, bundle.id.as_str())
             ),
             "Members:".to_string(),
         ];
 
         for item_id in &bundle.items {
-            let marker = if self.selected_items.contains(item_id.as_str()) {
-                "[x]"
-            } else {
-                "[ ]"
-            };
+            let marker = item_selection_marker(self, item_id.as_str());
             lines.push(format!("- {marker} {item_id}"));
         }
 
@@ -418,11 +422,15 @@ impl UiState {
         };
 
         let mut lines = vec![
-            format!("Item: {}", item.display_name),
+            format!("Item: {}", item.name),
             format!("ID: {}", item.id),
-            format!("Category: {}", item_category_name(item.category)),
-            format!("Scope: {}", install_scope_name(item.scope)),
-            format!("Threshold: {}", stage_name(item.success_threshold)),
+            format!("Scope: {}", install_scope_name(item.install_scope())),
+            format!(
+                "Required stage: {}",
+                stage_name(crate::verifier::required_stage_for_catalog_commands(
+                    &item.verifiers,
+                ))
+            ),
             format!("Dependencies: {}", dependencies_text(&item.depends_on)),
             format!(
                 "Selection: {}",
@@ -464,6 +472,35 @@ impl UiState {
                 "Evidence: {} total, {} required failures",
                 verifier.summary.total_checks, verifier.summary.required_failures
             ));
+
+            if let Some(service) = verifier.service.as_ref() {
+                lines.push(format!(
+                    "Service: {} {}",
+                    service_kind_name(service.kind),
+                    service_state_name(service.state)
+                ));
+                lines.push(format!("Service summary: {}", service.summary));
+
+                if let Some(detail) = service.detail.as_ref() {
+                    if !detail.trim().is_empty() {
+                        lines.push(format!("Service detail: {detail}"));
+                    }
+                }
+
+                if !verifier.service_evidence.is_empty() {
+                    lines.push("Service probes:".to_string());
+
+                    for evidence in verifier.service_evidence.iter().take(4) {
+                        lines.push(format!(
+                            "- {} [{}] {}",
+                            evidence.id,
+                            evidence_status_name(evidence.record.status),
+                            evidence.record.summary
+                        ));
+                    }
+                }
+            }
+
             lines.push(String::new());
             lines.push("Verifier Evidence:".to_string());
 
@@ -577,7 +614,10 @@ impl UiState {
         let item_count = self.selected_items.len();
 
         if bundle_count == 0 && item_count == 0 {
-            "all-default bundle expansion".to_string()
+            format!(
+                "implicit default_bundles ({})",
+                default_bundle_summary(&self.catalog)
+            )
         } else {
             format!(
                 "{} bundle{} + {} item{}",
@@ -691,15 +731,15 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
             CommandName::Catalog => {
                 CommandRequest::new(CommandName::Catalog, InterfaceMode::Tui, OutputFormat::Text)
             }
-            CommandName::Plan | CommandName::Verify => {
-                CommandRequest::new(command, InterfaceMode::Tui, OutputFormat::Text)
-                    .with_planner_request(self.state.planner_request())
-            }
-            CommandName::Install => {
+            CommandName::Plan | CommandName::Verify => planner_request_command(
+                CommandRequest::new(command, InterfaceMode::Tui, OutputFormat::Text),
+                self.state.planner_request(),
+            ),
+            CommandName::Install => planner_request_command(
                 CommandRequest::new(CommandName::Install, InterfaceMode::Tui, OutputFormat::Text)
-                    .with_planner_request(self.state.planner_request())
-                    .with_install_mode(InstallMode::DryRun)
-            }
+                    .with_install_mode(InstallMode::DryRun),
+                self.state.planner_request(),
+            ),
             CommandName::Tui => return,
         };
 
@@ -837,10 +877,28 @@ fn selection_marker(selected: bool) -> &'static str {
     }
 }
 
+fn derived_selection_marker(selected: bool) -> &'static str {
+    if selected {
+        "[-]"
+    } else {
+        "[ ]"
+    }
+}
+
+fn bundle_selection_marker(state: &UiState, bundle_id: &str) -> &'static str {
+    if state.selected_bundles.contains(bundle_id) {
+        selection_marker(true)
+    } else {
+        derived_selection_marker(bundle_selected_via_default(state, bundle_id))
+    }
+}
+
 fn item_selection_marker(state: &UiState, item_id: &str) -> &'static str {
     if state.selected_items.contains(item_id) {
         "[x]"
-    } else if item_selected_via_bundle(state, item_id) {
+    } else if item_selected_via_bundle(state, item_id)
+        || item_selected_via_default_bundle(state, item_id)
+    {
         "[-]"
     } else {
         "[ ]"
@@ -852,7 +910,40 @@ fn item_selection_description(state: &UiState, item_id: &str) -> String {
         return "selected directly".to_string();
     }
 
-    let selected_bundles = state
+    let selected_bundles = explicit_bundle_memberships(state, item_id);
+
+    if !selected_bundles.is_empty() {
+        return format!(
+            "selected through bundle{} {}",
+            plural_suffix(selected_bundles.len()),
+            selected_bundles.join(", ")
+        );
+    }
+
+    let default_bundles = implicit_default_bundle_memberships(state, item_id);
+
+    if default_bundles.is_empty() {
+        "not selected".to_string()
+    } else {
+        format!(
+            "selected through implicit default_bundles {}",
+            default_bundles.join(", ")
+        )
+    }
+}
+
+fn bundle_selection_description(state: &UiState, bundle_id: &str) -> String {
+    if state.selected_bundles.contains(bundle_id) {
+        "selected directly".to_string()
+    } else if bundle_selected_via_default(state, bundle_id) {
+        "selected through implicit default_bundles".to_string()
+    } else {
+        "not selected".to_string()
+    }
+}
+
+fn explicit_bundle_memberships(state: &UiState, item_id: &str) -> Vec<String> {
+    state
         .catalog
         .bundles
         .iter()
@@ -864,17 +955,7 @@ fn item_selection_description(state: &UiState, item_id: &str) -> String {
                     .any(|candidate| candidate.as_str() == item_id)
         })
         .map(|bundle| bundle.id.as_str().to_string())
-        .collect::<Vec<_>>();
-
-    if selected_bundles.is_empty() {
-        "not selected".to_string()
-    } else {
-        format!(
-            "selected through bundle{} {}",
-            plural_suffix(selected_bundles.len()),
-            selected_bundles.join(", ")
-        )
-    }
+        .collect()
 }
 
 fn item_selected_via_bundle(state: &UiState, item_id: &str) -> bool {
@@ -885,6 +966,73 @@ fn item_selected_via_bundle(state: &UiState, item_id: &str) -> bool {
                 .iter()
                 .any(|candidate| candidate.as_str() == item_id)
     })
+}
+
+fn bundle_selected_via_default(state: &UiState, bundle_id: &str) -> bool {
+    !has_explicit_selection(state)
+        && state
+            .catalog
+            .default_bundles
+            .iter()
+            .any(|candidate| candidate.as_str() == bundle_id)
+}
+
+fn item_selected_via_default_bundle(state: &UiState, item_id: &str) -> bool {
+    !has_explicit_selection(state)
+        && state.catalog.bundles.iter().any(|bundle| {
+            state
+                .catalog
+                .default_bundles
+                .iter()
+                .any(|candidate| candidate.as_str() == bundle.id.as_str())
+                && bundle
+                    .items
+                    .iter()
+                    .any(|candidate| candidate.as_str() == item_id)
+        })
+}
+
+fn implicit_default_bundle_memberships(state: &UiState, item_id: &str) -> Vec<String> {
+    if has_explicit_selection(state) {
+        return Vec::new();
+    }
+
+    state
+        .catalog
+        .bundles
+        .iter()
+        .filter(|bundle| {
+            state
+                .catalog
+                .default_bundles
+                .iter()
+                .any(|candidate| candidate.as_str() == bundle.id.as_str())
+                && bundle
+                    .items
+                    .iter()
+                    .any(|candidate| candidate.as_str() == item_id)
+        })
+        .map(|bundle| bundle.id.as_str().to_string())
+        .collect()
+}
+
+fn has_explicit_selection(state: &UiState) -> bool {
+    !(state.selected_bundles.is_empty() && state.selected_items.is_empty())
+}
+
+fn default_bundle_summary(catalog: &Catalog) -> String {
+    let bundle_count = catalog.default_bundles.len();
+    let item_count = catalog
+        .expand_default_bundles()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    format!(
+        "{} bundle{} / {} item{}",
+        bundle_count,
+        plural_suffix(bundle_count),
+        item_count,
+        plural_suffix(item_count)
+    )
 }
 
 fn plural_suffix(count: usize) -> &'static str {
@@ -983,21 +1131,43 @@ fn install_mode_name(mode: InstallMode) -> &'static str {
     }
 }
 
-fn item_category_name(category: crate::catalog::ItemCategory) -> &'static str {
-    match category {
-        crate::catalog::ItemCategory::Foundation => "foundation",
-        crate::catalog::ItemCategory::TerminalTool => "terminal_tool",
-        crate::catalog::ItemCategory::ContainerTool => "container_tool",
-        crate::catalog::ItemCategory::SystemMonitor => "system_monitor",
-        crate::catalog::ItemCategory::RemoteAccess => "remote_access",
-    }
-}
-
 fn install_scope_name(scope: crate::catalog::InstallScope) -> &'static str {
     match scope {
         crate::catalog::InstallScope::System => "system",
         crate::catalog::InstallScope::User => "user",
         crate::catalog::InstallScope::Hybrid => "hybrid",
+    }
+}
+
+fn service_kind_name(kind: ServiceKind) -> &'static str {
+    match kind {
+        ServiceKind::Docker => "docker",
+        ServiceKind::Jupyter => "jupyter",
+        ServiceKind::Pm2 => "pm2",
+        ServiceKind::Syncthing => "syncthing",
+        ServiceKind::Vnc => "vnc",
+    }
+}
+
+fn service_state_name(state: ServiceUsabilityState) -> &'static str {
+    match state {
+        ServiceUsabilityState::Operational => "operational",
+        ServiceUsabilityState::OnDemand => "on_demand",
+        ServiceUsabilityState::Blocked => "blocked",
+        ServiceUsabilityState::NonUsable => "non_usable",
+        ServiceUsabilityState::Missing => "missing",
+        ServiceUsabilityState::Unknown => "unknown",
+    }
+}
+
+fn planner_request_command(
+    request: CommandRequest,
+    planner_request: Option<PlannerRequest>,
+) -> CommandRequest {
+    if let Some(planner_request) = planner_request {
+        request.with_planner_request(planner_request)
+    } else {
+        request
     }
 }
 
