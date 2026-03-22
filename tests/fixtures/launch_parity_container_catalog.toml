@@ -1,27 +1,24 @@
-schema_version = 1
-default_bundles = ["launch-parity-container"]
+required_version = "0.1.0"
+distros = ["ubuntu", "fedora", "arch", "opensuse-tumbleweed"]
+shell = "bash"
+default_bundles = ["launch-parity"]
 
-[[items]]
-id = "shell-path"
-display_name = "Shell Path"
-category = "foundation"
-scope = "hybrid"
-depends_on = []
-targets = [
-  { backend = "apt", source = "distribution_package" },
-  { backend = "dnf", source = "distribution_package" },
-  { backend = "pacman", source = "distribution_package" },
-  { backend = "zypper", source = "distribution_package" },
-]
-success_threshold = "present"
-standalone = false
-
-  [[items.verifier.checks]]
-  requirement = "required"
-  kind = "command"
-  command = "sh"
-
-[[bundles]]
-id = "launch-parity-container"
-display_name = "Launch Parity Container"
+[bundles.launch-parity]
+name = "Launch Parity"
+desc = "Keyed TOML fixture for launch parity regression coverage."
 items = ["shell-path"]
+
+[items.shell-path]
+name = "Shell Path"
+desc = "Ensures launch parity validates keyed TOML catalogs end to end."
+depends_on = []
+
+[[items.shell-path.recipes]]
+mode = "user"
+distros = ["*"]
+cmd = "mkdir -p ~/.local/bin && install -m 755 /bin/sh ~/.local/bin/envira-launch-parity-tool"
+
+[[items.shell-path.verifiers]]
+mode = "user"
+distros = ["*"]
+cmd = "command -v envira-launch-parity-tool"

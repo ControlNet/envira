@@ -1,4 +1,4 @@
-name: Test
+name: Catalog Contract Test
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
   workflow_call:
 
 jobs:
-  launch-parity:
+  launch-parity-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,11 +17,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run launch catalog parity matrix
+      - name: Run keyed TOML launch parity matrix
         run: ./scripts/run-launch-parity-matrix.sh
 
-      - name: Upload parity evidence artifacts
+      - name: Upload keyed TOML parity evidence artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: launch-catalog-parity-evidence
+          name: launch-parity-contract-evidence
           path: .sisyphus/evidence/
