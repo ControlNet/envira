@@ -1,0 +1,16 @@
+[package]
+name = "envira"
+version = "0.1.0"
+edition = "2021"
+description = "A software environment management tool"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+ratatui = "0.29"
+crossterm = "0.28"
+users = "0.11"
+regex = "1"
