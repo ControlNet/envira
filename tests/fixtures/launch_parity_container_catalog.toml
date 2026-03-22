@@ -1,0 +1,27 @@
+schema_version = 1
+default_bundles = ["launch-parity-container"]
+
+[[items]]
+id = "shell-path"
+display_name = "Shell Path"
+category = "foundation"
+scope = "hybrid"
+depends_on = []
+targets = [
+  { backend = "apt", source = "distribution_package" },
+  { backend = "dnf", source = "distribution_package" },
+  { backend = "pacman", source = "distribution_package" },
+  { backend = "zypper", source = "distribution_package" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.verifier.checks]]
+  requirement = "required"
+  kind = "command"
+  command = "sh"
+
+[[bundles]]
+id = "launch-parity-container"
+display_name = "Launch Parity Container"
+items = ["shell-path"]

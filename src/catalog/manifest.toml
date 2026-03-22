@@ -1,0 +1,2015 @@
+schema_version = 1
+default_bundles = ["core", "terminal-tools", "observability"]
+
+[[items]]
+id = "essentials"
+display_name = "Essentials"
+category = "foundation"
+scope = "hybrid"
+depends_on = []
+targets = [
+  { backend = "apt", source = "distribution_package" },
+  { backend = "pacman", source = "distribution_package" },
+  { backend = "dnf", source = "distribution_package" },
+  { backend = "zypper", source = "distribution_package" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "apt"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = [
+    "iputils-ping",
+    "net-tools",
+    "python3-venv",
+    "apt-utils",
+    "make",
+    "openssh-server",
+    "gedit",
+    "vim",
+    "git",
+    "git-lfs",
+    "curl",
+    "wget",
+    "zsh",
+    "gcc",
+    "perl",
+    "build-essential",
+    "libfuse2",
+    "python3-pip",
+    "screen",
+    "tmux",
+    "ncdu",
+    "pipx",
+    "xsel",
+    "screenfetch",
+    "neofetch",
+    "p7zip-full",
+    "unzip",
+    "mosh",
+    "nmap",
+  ]
+
+  [[items.recipes]]
+  backend = "pacman"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = [
+    "gedit",
+    "vim",
+    "git",
+    "git-lfs",
+    "curl",
+    "wget",
+    "zsh",
+    "gcc",
+    "make",
+    "perl",
+    "base-devel",
+    "binutils",
+    "screen",
+    "tmux",
+    "ncdu",
+    "python-pipx",
+    "xsel",
+    "screenfetch",
+    "p7zip",
+    "unzip",
+    "mosh",
+    "iperf3",
+    "nmap",
+  ]
+
+  [[items.recipes]]
+  backend = "dnf"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = [
+    "python3",
+    "pipx",
+    "gedit",
+    "vim",
+    "git",
+    "git-lfs",
+    "curl",
+    "wget",
+    "zsh",
+    "gcc",
+    "make",
+    "perl",
+    "screen",
+    "tmux",
+    "ncdu",
+    "xsel",
+    "unzip",
+    "screenfetch",
+    "neofetch",
+    "mosh",
+    "iperf3",
+    "nmap",
+  ]
+
+  [[items.recipes]]
+  backend = "zypper"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = [
+    "python3",
+    "python3-pip",
+    "gedit",
+    "vim",
+    "git",
+    "git-lfs",
+    "curl",
+    "wget",
+    "zsh",
+    "gcc",
+    "make",
+    "perl",
+    "screen",
+    "tmux",
+    "ncdu",
+    "xsel",
+    "screenfetch",
+    "neofetch",
+    "p7zip",
+    "unzip",
+    "mosh",
+    "iperf",
+    "nmap",
+  ]
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "git"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "curl"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "wget"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "ncdu"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "command"
+  command = "zsh"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "command"
+  command = "tmux"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "command"
+  command = "neofetch"
+
+[[items]]
+id = "bat"
+display_name = "bat"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "apt", source = "distribution_package" },
+  { backend = "pacman", source = "distribution_package" },
+  { backend = "dnf", source = "distribution_package" },
+  { backend = "zypper", source = "distribution_package" },
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "apt"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["bat"]
+
+  [[items.recipes]]
+  backend = "pacman"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["bat"]
+
+  [[items.recipes]]
+  backend = "dnf"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["bat"]
+
+  [[items.recipes]]
+  backend = "zypper"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["bat"]
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/sharkdp/bat/releases/download/v0.25.0/bat-v0.25.0-x86_64-unknown-linux-musl.tar.gz"
+  format = "tar_gz"
+  binary_name = "bat"
+  member_path = "bat-v0.25.0-x86_64-unknown-linux-musl/bat"
+  strip_components = 1
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "any_command"
+  commands = ["bat", "batcat"]
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "file"
+  path = "/usr/bin/bat"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "file"
+  path = "/usr/bin/batcat"
+
+[[items]]
+id = "ctop"
+display_name = "ctop"
+category = "container_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "direct_binary", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "direct_binary"
+  source = "github_release"
+  recipe = "direct_binary"
+  url = "https://github.com/bcicen/ctop/releases/download/v0.7.7/ctop-0.7.7-linux-amd64"
+  binary_name = "ctop"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "ctop"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "file"
+  path = "/usr/local/bin/ctop"
+
+[[items]]
+id = "fastfetch"
+display_name = "Fastfetch"
+category = "system_monitor"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "apt", source = "distribution_package" },
+  { backend = "pacman", source = "distribution_package" },
+  { backend = "dnf", source = "distribution_package" },
+  { backend = "zypper", source = "distribution_package" },
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "apt"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["fastfetch"]
+
+  [[items.recipes]]
+  backend = "pacman"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["fastfetch"]
+
+  [[items.recipes]]
+  backend = "dnf"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["fastfetch"]
+
+  [[items.recipes]]
+  backend = "zypper"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["fastfetch"]
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/fastfetch-cli/fastfetch/releases/download/2.44.0/fastfetch-linux-amd64.zip"
+  format = "zip"
+  binary_name = "fastfetch"
+  member_path = "fastfetch-linux-amd64/usr/bin/fastfetch"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "fastfetch"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "file"
+  path = "/usr/bin/fastfetch"
+
+[[items]]
+id = "btop"
+display_name = "btop"
+category = "system_monitor"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/aristocratos/btop"
+  build_system = "make"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "btop"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "file"
+  path = "/usr/local/bin/btop"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "optional"
+  min_profile = "standard"
+  kind = "file"
+  path = "/usr/bin/btop"
+
+[[items]]
+id = "vnc"
+display_name = "TigerVNC"
+category = "remote_access"
+scope = "system"
+depends_on = ["essentials"]
+targets = [
+  { backend = "apt", source = "distribution_package" },
+  { backend = "pacman", source = "distribution_package" },
+  { backend = "dnf", source = "distribution_package" },
+  { backend = "zypper", source = "distribution_package" },
+]
+success_threshold = "operational"
+standalone = false
+
+  [[items.recipes]]
+  backend = "apt"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["tigervnc-standalone-server", "tigervnc-common", "tigervnc-xorg-extension"]
+
+  [[items.recipes]]
+  backend = "pacman"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["tigervnc"]
+
+  [[items.recipes]]
+  backend = "dnf"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["tigervnc-server"]
+
+  [[items.recipes]]
+  backend = "zypper"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["tigervnc"]
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "any_command"
+  commands = ["tigervncserver", "vncserver", "Xvnc"]
+
+  [items.verifier.service]
+  kind = "vnc"
+  commands = ["tigervncserver", "vncserver", "Xvnc"]
+
+[[items]]
+id = "lazygit"
+display_name = "Lazygit"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/lazygit/releases/latest/download/lazygit.tar.gz"
+  format = "tar_gz"
+  binary_name = "lazygit"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "lazygit"
+
+[[items]]
+id = "gitkraken"
+display_name = "GitKraken"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/gitkraken/releases/latest/download/gitkraken.tar.gz"
+  format = "tar_gz"
+  binary_name = "gitkraken"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gitkraken"
+
+[[items]]
+id = "github-cli"
+display_name = "GitHub CLI"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/github-cli/releases/latest/download/gh.tar.gz"
+  format = "tar_gz"
+  binary_name = "gh"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gh"
+
+[[items]]
+id = "miniconda"
+display_name = "Miniconda"
+category = "foundation"
+scope = "user"
+depends_on = []
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://repo.anaconda.com/pkgs/main/linux-64/conda-24.11.3-py312h06a4308_0.tar.bz2"
+  format = "tar_bz2"
+  binary_name = "conda"
+  member_path = "bin/conda"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "conda"
+
+[[items]]
+id = "rust-toolchain"
+display_name = "Rust toolchain"
+category = "foundation"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/rust-lang/rustup"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "rustup"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "cargo"
+
+[[items]]
+id = "cargo-binstall"
+display_name = "cargo-binstall"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["rust-toolchain"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.12.3/cargo-binstall-x86_64-unknown-linux-musl.tgz"
+  format = "tar_gz"
+  binary_name = "cargo-binstall"
+  member_path = "cargo-binstall"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "cargo-binstall"
+
+[[items]]
+id = "cargo-cache"
+display_name = "cargo-cache"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/matthiaskrgr/cargo-cache"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "cargo-cache"
+
+[[items]]
+id = "go-toolchain"
+display_name = "Go toolchain"
+category = "foundation"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/golang/go"
+  build_system = "make"
+  working_subdir = "src"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "go"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gofmt"
+
+[[items]]
+id = "nodejs"
+display_name = "Node.js"
+category = "foundation"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.xz"
+  format = "tar_xz"
+  binary_name = "node"
+  member_path = "node-v22.14.0-linux-x64/bin/node"
+  strip_components = 2
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "fnm"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "node"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "npm"
+
+[[items]]
+id = "pixi"
+display_name = "pixi"
+category = "foundation"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/prefix-dev/pixi/releases/download/v0.41.4/pixi-x86_64-unknown-linux-musl.tar.gz"
+  format = "tar_gz"
+  binary_name = "pixi"
+  member_path = "pixi-x86_64-unknown-linux-musl/pixi"
+  strip_components = 1
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "pixi"
+
+[[items]]
+id = "jupyter"
+display_name = "Jupyter"
+category = "foundation"
+scope = "user"
+depends_on = ["miniconda"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "operational"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://repo.anaconda.com/pkgs/main/linux-64/jupyter_core-5.7.2-py312h06a4308_0.tar.bz2"
+  format = "tar_bz2"
+  binary_name = "jupyter"
+  member_path = "bin/jupyter"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "jupyter"
+
+  [items.verifier.service]
+  kind = "jupyter"
+  command = "jupyter"
+  service_unit = "jupyter.service"
+  service_scope = "user"
+  http_url = "http://127.0.0.1:8888/"
+
+[[items]]
+id = "neovim"
+display_name = "Neovim"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/neovim/releases/latest/download/nvim.tar.gz"
+  format = "tar_gz"
+  binary_name = "nvim"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "nvim"
+
+[[items]]
+id = "fzf"
+display_name = "fzf"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/fzf/releases/latest/download/fzf.tar.gz"
+  format = "tar_gz"
+  binary_name = "fzf"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "fzf"
+
+[[items]]
+id = "lunarvim"
+display_name = "LunarVim"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["neovim", "nodejs", "miniconda"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/lunarvim/releases/latest/download/lvim.tar.gz"
+  format = "tar_gz"
+  binary_name = "lvim"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "lvim"
+
+[[items]]
+id = "docker"
+display_name = "Docker"
+category = "container_tool"
+scope = "system"
+depends_on = ["essentials"]
+targets = [
+  { backend = "apt", source = "distribution_package" },
+  { backend = "pacman", source = "distribution_package" },
+  { backend = "dnf", source = "distribution_package" },
+]
+success_threshold = "operational"
+standalone = false
+
+  [[items.recipes]]
+  backend = "apt"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["docker.io"]
+
+  [[items.recipes]]
+  backend = "pacman"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["docker"]
+
+  [[items.recipes]]
+  backend = "dnf"
+  source = "distribution_package"
+  recipe = "native_package"
+  packages = ["docker"]
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "docker"
+
+  [items.verifier.service]
+  kind = "docker"
+  command = "docker"
+  service_unit = "docker.service"
+  service_scope = "system"
+  access_group = "docker"
+
+[[items]]
+id = "lazydocker"
+display_name = "Lazydocker"
+category = "container_tool"
+scope = "user"
+depends_on = ["docker"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/lazydocker/releases/latest/download/lazydocker.tar.gz"
+  format = "tar_gz"
+  binary_name = "lazydocker"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "lazydocker"
+
+[[items]]
+id = "lemonade"
+display_name = "Lemonade"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["go-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/lemonade"
+  build_system = "go"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "lemonade"
+
+[[items]]
+id = "zellij"
+display_name = "Zellij"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/zellij"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "zellij"
+
+[[items]]
+id = "lsd"
+display_name = "lsd"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/lsd"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "lsd"
+
+[[items]]
+id = "git-delta"
+display_name = "git-delta"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/git-delta"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "delta"
+
+[[items]]
+id = "duf"
+display_name = "duf"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["go-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/duf"
+  build_system = "go"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "duf"
+
+[[items]]
+id = "dust"
+display_name = "dust"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/dust"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "dust"
+
+[[items]]
+id = "fd"
+display_name = "fd"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/fd"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "fd"
+
+[[items]]
+id = "ripgrep"
+display_name = "ripgrep"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["rust-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/ripgrep"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "rg"
+
+[[items]]
+id = "gping"
+display_name = "gping"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/gping"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gping"
+
+[[items]]
+id = "procs"
+display_name = "procs"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/procs"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "procs"
+
+[[items]]
+id = "xh"
+display_name = "xh"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/xh"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "xh"
+
+[[items]]
+id = "genact"
+display_name = "genact"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["rust-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/genact"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "genact"
+
+[[items]]
+id = "viu"
+display_name = "viu"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/viu"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "viu"
+
+[[items]]
+id = "rustscan"
+display_name = "rustscan"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/rustscan"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "rustscan"
+
+[[items]]
+id = "uv"
+display_name = "uv"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/uv/releases/latest/download/uv.tar.gz"
+  format = "tar_gz"
+  binary_name = "uv"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "uv"
+
+[[items]]
+id = "speedtest-cli"
+display_name = "speedtest-cli"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/speedtest-cli/releases/latest/download/speedtest-cli.tar.gz"
+  format = "tar_gz"
+  binary_name = "speedtest-cli"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "any_command"
+  commands = ["speedtest", "speedtest-cli"]
+
+[[items]]
+id = "gdown"
+display_name = "gdown"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/gdown/releases/latest/download/gdown.tar.gz"
+  format = "tar_gz"
+  binary_name = "gdown"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gdown"
+
+[[items]]
+id = "archey4"
+display_name = "Archey4"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/archey4/releases/latest/download/archey4.tar.gz"
+  format = "tar_gz"
+  binary_name = "archey4"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "any_command"
+  commands = ["archey", "archey4"]
+
+[[items]]
+id = "tldr"
+display_name = "tldr"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/tldr/releases/latest/download/tldr.tar.gz"
+  format = "tar_gz"
+  binary_name = "tldr"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "tldr"
+
+[[items]]
+id = "huggingface-cli"
+display_name = "Hugging Face CLI"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/huggingface-cli/releases/latest/download/huggingface-cli.tar.gz"
+  format = "tar_gz"
+  binary_name = "huggingface-cli"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "any_command"
+  commands = ["huggingface-cli", "hf"]
+
+[[items]]
+id = "rich-cli"
+display_name = "Rich CLI"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/rich-cli/releases/latest/download/rich.tar.gz"
+  format = "tar_gz"
+  binary_name = "rich"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "rich"
+
+[[items]]
+id = "zoxide"
+display_name = "zoxide"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/zoxide/releases/latest/download/zoxide.tar.gz"
+  format = "tar_gz"
+  binary_name = "zoxide"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "zoxide"
+
+[[items]]
+id = "micro"
+display_name = "micro"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/micro/releases/latest/download/micro.tar.gz"
+  format = "tar_gz"
+  binary_name = "micro"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "micro"
+
+[[items]]
+id = "scc"
+display_name = "scc"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["go-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/scc"
+  build_system = "go"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "scc"
+
+[[items]]
+id = "dive"
+display_name = "dive"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["go-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/dive"
+  build_system = "go"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "dive"
+
+[[items]]
+id = "gotify"
+display_name = "Gotify CLI"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["go-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/gotify"
+  build_system = "go"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gotify"
+
+[[items]]
+id = "superfile"
+display_name = "Superfile"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/superfile/releases/latest/download/superfile.tar.gz"
+  format = "tar_gz"
+  binary_name = "superfile"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "any_command"
+  commands = ["spf", "superfile"]
+
+[[items]]
+id = "yazi"
+display_name = "Yazi"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["rust-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/yazi"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "yazi"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "ya"
+
+[[items]]
+id = "pm2"
+display_name = "PM2"
+category = "terminal_tool"
+scope = "hybrid"
+depends_on = ["nodejs"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "operational"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/pm2/releases/latest/download/pm2.tar.gz"
+  format = "tar_gz"
+  binary_name = "pm2"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "pm2"
+
+  [items.verifier.service]
+  kind = "pm2"
+  command = "pm2"
+
+[[items]]
+id = "codex"
+display_name = "Codex CLI"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["nodejs"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/codex/releases/latest/download/codex.tar.gz"
+  format = "tar_gz"
+  binary_name = "codex"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "codex"
+
+[[items]]
+id = "gemini"
+display_name = "Gemini CLI"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["nodejs"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/gemini/releases/latest/download/gemini.tar.gz"
+  format = "tar_gz"
+  binary_name = "gemini"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "gemini"
+
+[[items]]
+id = "claude"
+display_name = "Claude CLI"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/claude/releases/latest/download/claude.tar.gz"
+  format = "tar_gz"
+  binary_name = "claude"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "claude"
+
+[[items]]
+id = "opencode"
+display_name = "OpenCode CLI"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/opencode/releases/latest/download/opencode.tar.gz"
+  format = "tar_gz"
+  binary_name = "opencode"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "opencode"
+
+[[items]]
+id = "bun"
+display_name = "Bun"
+category = "terminal_tool"
+scope = "user"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/bun/releases/latest/download/bun.tar.gz"
+  format = "tar_gz"
+  binary_name = "bun"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "bun"
+
+[[items]]
+id = "bottom"
+display_name = "bottom"
+category = "system_monitor"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/bottom"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "btm"
+
+[[items]]
+id = "nvitop"
+display_name = "nvitop"
+category = "system_monitor"
+scope = "hybrid"
+depends_on = ["essentials"]
+targets = [
+  { backend = "archive", source = "github_release" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "archive"
+  source = "github_release"
+  recipe = "archive"
+  url = "https://github.com/envira-catalog/nvitop/releases/latest/download/nvitop.tar.gz"
+  format = "tar_gz"
+  binary_name = "nvitop"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "nvitop"
+
+[[items]]
+id = "nviwatch"
+display_name = "nviwatch"
+category = "system_monitor"
+scope = "hybrid"
+depends_on = ["cargo-binstall"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/nviwatch"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "nviwatch"
+
+[[items]]
+id = "bandwhich"
+display_name = "bandwhich"
+category = "system_monitor"
+scope = "system"
+depends_on = ["rust-toolchain"]
+targets = [
+  { backend = "source_build", source = "git_repository" },
+]
+success_threshold = "present"
+standalone = false
+
+  [[items.recipes]]
+  backend = "source_build"
+  source = "git_repository"
+  recipe = "source_build"
+  source_url = "https://github.com/envira-catalog/bandwhich"
+  build_system = "cargo"
+
+  [[items.verifier.checks]]
+  stage = "present"
+  threshold = "required"
+  min_profile = "quick"
+  kind = "command"
+  command = "bandwhich"
+
+[[bundles]]
+id = "core"
+display_name = "Core"
+items = ["essentials"]
+
+[[bundles]]
+id = "terminal-tools"
+display_name = "Terminal tools"
+items = ["bat", "ctop"]
+
+[[bundles]]
+id = "observability"
+display_name = "Observability"
+items = ["fastfetch", "btop"]
+
+[[bundles]]
+id = "git-tooling"
+display_name = "Git tooling"
+items = ["lazygit", "gitkraken", "github-cli"]
+
+[[bundles]]
+id = "toolchains"
+display_name = "Toolchains"
+items = ["miniconda", "rust-toolchain", "cargo-binstall", "cargo-cache", "go-toolchain", "nodejs", "pixi", "jupyter"]
+
+[[bundles]]
+id = "editors"
+display_name = "Editors"
+items = ["neovim", "fzf", "lunarvim"]
+
+[[bundles]]
+id = "containers"
+display_name = "Containers"
+items = ["docker", "lazydocker"]
+
+[[bundles]]
+id = "remote-access"
+display_name = "Remote access"
+items = ["vnc", "lemonade"]
+
+[[bundles]]
+id = "cli-suites"
+display_name = "CLI suites"
+items = ["zellij", "lsd", "git-delta", "duf", "dust", "fd", "ripgrep", "gping", "procs", "xh", "genact", "viu", "rustscan", "uv", "speedtest-cli", "gdown", "archey4", "tldr", "huggingface-cli", "rich-cli", "zoxide", "micro", "scc", "dive", "gotify", "superfile", "yazi"]
+
+[[bundles]]
+id = "services"
+display_name = "Services"
+items = ["pm2"]
+
+[[bundles]]
+id = "agents"
+display_name = "Agent CLIs"
+items = ["codex", "gemini", "claude", "opencode", "bun"]
+
+[[bundles]]
+id = "advanced-observability"
+display_name = "Advanced observability"
+items = ["bottom", "nvitop", "nviwatch", "bandwhich"]
