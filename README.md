@@ -23,8 +23,6 @@ curl -fsSL https://boot.controlnet.space/user | bash  # if you don't have sudo p
 curl -fsSL https://boot.controlnet.space/verify | bash  # verify the installation
 # new scripts (still in development)
 curl -fsSL https://boot.controlnet.space/envira | bash && ~/.local/bin/envira
-# or you can install via pipx
-pipx install envira && envira
 ```
 
 ### For docker
