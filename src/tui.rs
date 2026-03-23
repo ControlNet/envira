@@ -10,9 +10,9 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 
@@ -77,6 +77,13 @@ pub struct UiState {
     cached_install: Option<InstallWorkflowResult>,
     status_message: String,
     last_error: Option<String>,
+    confirmation_dialog: Option<ConfirmationDialog>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConfirmationDialog {
+    command: CommandName,
+    prompt: String,
 }
 
 impl UiState {
@@ -92,9 +99,10 @@ impl UiState {
             cached_verification: None,
             cached_install: None,
             status_message:
-                "Loaded catalog. Use Tab to switch panes, Space to toggle, v to verify, p to plan, i to preview install (dry-run), and q to quit."
+                "Loaded catalog. Use Tab to switch panes, Space to toggle, Enter to confirm install, v to verify, p to plan, i to preview install (dry-run), and q to quit."
                     .to_string(),
             last_error: None,
+            confirmation_dialog: None,
         }
     }
 
@@ -135,6 +143,25 @@ impl UiState {
             return TuiAction::None;
         }
 
+        if self.confirmation_dialog.is_some() {
+            return match key.code {
+                KeyCode::Enter => {
+                    self.confirmation_dialog
+                        .take()
+                        .expect("confirmation dialog should exist while handling confirmation");
+                    TuiAction::DispatchInstall(InstallMode::Apply)
+                }
+                KeyCode::Esc => {
+                    self.confirmation_dialog = None;
+                    self.status_message =
+                        "Install cancelled. Space still toggles bundles/items; press Enter again when ready."
+                            .to_string();
+                    TuiAction::None
+                }
+                _ => TuiAction::None,
+            };
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => TuiAction::Exit,
             KeyCode::Tab | KeyCode::Right => {
@@ -163,6 +190,10 @@ impl UiState {
                 self.toggle_focused_selection();
                 TuiAction::None
             }
+            KeyCode::Enter => {
+                self.open_install_confirmation();
+                TuiAction::None
+            }
             KeyCode::Char('c') => {
                 self.clear_selection();
                 TuiAction::None
@@ -170,7 +201,7 @@ impl UiState {
             KeyCode::Char('r') => TuiAction::Dispatch(CommandName::Catalog),
             KeyCode::Char('p') => TuiAction::Dispatch(CommandName::Plan),
             KeyCode::Char('v') => TuiAction::Dispatch(CommandName::Verify),
-            KeyCode::Char('i') => TuiAction::Dispatch(CommandName::Install),
+            KeyCode::Char('i') => TuiAction::DispatchInstall(InstallMode::DryRun),
             _ => TuiAction::None,
         }
     }
@@ -229,7 +260,8 @@ impl UiState {
             CommandPayload::Install { install } => {
                 let actionable_steps = install.outcome.actionable_steps;
                 self.status_message = format!(
-                    "Install preview finished as {}; execution succeeded={} and {} of {actionable_steps} actionable catalog item{} met the requested threshold.",
+                    "Install {} finished as {}; execution succeeded={} and {} of {actionable_steps} actionable catalog item{} met the requested threshold.",
+                    install_mode_name(install.install_mode),
                     install_status_name(install.outcome.status),
                     yes_no(install.outcome.execution_succeeded),
                     install.outcome.threshold_met_steps,
@@ -264,6 +296,18 @@ impl UiState {
                 self.item_index = move_index(self.item_index, self.catalog.items.len(), delta);
             }
         }
+    }
+
+    fn open_install_confirmation(&mut self) {
+        let selection = self.selection_summary();
+        self.confirmation_dialog = Some(ConfirmationDialog {
+            command: CommandName::Install,
+            prompt: format!(
+                "Install the current selection ({selection})? Press Enter to confirm or Esc to cancel."
+            ),
+        });
+        self.status_message =
+            "Install confirmation is open. Press Enter to apply or Esc to cancel.".to_string();
     }
 
     fn toggle_focused_selection(&mut self) {
@@ -321,7 +365,7 @@ impl UiState {
 
     fn header_text(&self) -> String {
         format!(
-            "Envira Ratatui\nDraft: {}\nKeys: Tab switch pane | Space toggle | v verify | p plan | i install preview (dry-run) | c clear | r reload | q quit",
+            "Envira Ratatui\nDraft: {}\nKeys: Tab switch pane | Space toggle | Enter confirm install | v verify | p plan | i install preview (dry-run) | c clear | r reload | q quit",
             self.selection_summary()
         )
     }
@@ -338,7 +382,7 @@ impl UiState {
             .map(|(index, bundle)| {
                 format!(
                     "{} {} {} ({} item{})",
-                    focus_marker(self.focus == FocusPane::Bundles && index == self.bundle_index),
+                    focus_marker(index == self.bundle_index),
                     bundle_selection_marker(self, bundle.id.as_str()),
                     bundle.name,
                     bundle.items.len(),
@@ -370,7 +414,7 @@ impl UiState {
 
                 format!(
                     "{} {} {} [{action} | {verification}]",
-                    focus_marker(self.focus == FocusPane::Items && index == self.item_index),
+                    focus_marker(index == self.item_index),
                     item_selection_marker(self, item.id.as_str()),
                     item.name,
                 )
@@ -528,7 +572,7 @@ impl UiState {
         } else {
             lines.push(String::new());
             lines.push(
-                "No verifier snapshot cached for this item yet. Press v to inspect evidence, p to inspect planner actions, or i to inspect install preview results."
+                "No verifier snapshot cached for this item yet. Press v to inspect evidence, p to inspect planner actions, i to inspect install preview results, or Enter to install with confirmation."
                     .to_string(),
             );
         }
@@ -545,7 +589,7 @@ impl UiState {
             let mut lines = vec![
                 "Status".to_string(),
                 format!(
-                    "Last action: install preview ({} request, {})",
+                    "Last action: install ({} request, {})",
                     install_mode_name(install.install_mode),
                     install_status_name(install.outcome.status)
                 ),
@@ -671,6 +715,10 @@ impl UiState {
                     .map(|step| step.rationale.verifier)
             })
     }
+
+    fn confirmation_dialog(&self) -> Option<&ConfirmationDialog> {
+        self.confirmation_dialog.as_ref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -678,6 +726,7 @@ enum TuiAction {
     None,
     Exit,
     Dispatch(CommandName),
+    DispatchInstall(InstallMode),
 }
 
 pub struct TuiApp<'a, E: TuiEnginePort> {
@@ -719,6 +768,10 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
                 self.dispatch(command);
                 false
             }
+            TuiAction::DispatchInstall(install_mode) => {
+                self.dispatch_install(install_mode);
+                false
+            }
         }
     }
 
@@ -735,17 +788,28 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
                 CommandRequest::new(command, InterfaceMode::Tui, OutputFormat::Text),
                 self.state.planner_request(),
             ),
-            CommandName::Install => planner_request_command(
-                CommandRequest::new(CommandName::Install, InterfaceMode::Tui, OutputFormat::Text)
-                    .with_install_mode(InstallMode::DryRun),
-                self.state.planner_request(),
-            ),
+            CommandName::Install => {
+                unreachable!("install dispatch is handled with an explicit mode")
+            }
             CommandName::Tui => return,
         };
 
         match self.engine.execute(request) {
             Ok(response) => self.state.apply_response(response),
             Err(error) => self.state.apply_error(command, error),
+        }
+    }
+
+    fn dispatch_install(&mut self, install_mode: InstallMode) {
+        let request = planner_request_command(
+            CommandRequest::new(CommandName::Install, InterfaceMode::Tui, OutputFormat::Text)
+                .with_install_mode(install_mode),
+            self.state.planner_request(),
+        );
+
+        match self.engine.execute(request) {
+            Ok(response) => self.state.apply_response(response),
+            Err(error) => self.state.apply_error(CommandName::Install, error),
         }
     }
 }
@@ -794,18 +858,20 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
         vertical[0],
     );
     frame.render_widget(
-        paragraph(
+        browser_paragraph(
             snapshot.bundles,
             "bundles",
             pane_title_style(state.focus == FocusPane::Bundles),
+            scroll_offset_for_selection(state.bundle_index, browser[0].height),
         ),
         browser[0],
     );
     frame.render_widget(
-        paragraph(
+        browser_paragraph(
             snapshot.items,
             "items",
             pane_title_style(state.focus == FocusPane::Items),
+            scroll_offset_for_selection(state.item_index, browser[1].height),
         ),
         browser[1],
     );
@@ -825,9 +891,22 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
         ),
         vertical[2],
     );
+
+    if let Some(dialog) = state.confirmation_dialog() {
+        render_confirmation_dialog(frame, dialog);
+    }
 }
 
 fn paragraph<'a>(text: String, title: &'a str, title_style: Style) -> Paragraph<'a> {
+    paragraph_with_scroll(text, title, title_style, 0)
+}
+
+fn browser_paragraph<'a>(
+    text: String,
+    title: &'a str,
+    title_style: Style,
+    scroll: u16,
+) -> Paragraph<'a> {
     Paragraph::new(text)
         .block(
             Block::default()
@@ -835,7 +914,71 @@ fn paragraph<'a>(text: String, title: &'a str, title_style: Style) -> Paragraph<
                 .title_style(title_style.add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL),
         )
+        .scroll((scroll, 0))
+}
+
+fn paragraph_with_scroll<'a>(
+    text: String,
+    title: &'a str,
+    title_style: Style,
+    scroll: u16,
+) -> Paragraph<'a> {
+    Paragraph::new(text)
+        .block(
+            Block::default()
+                .title(title)
+                .title_style(title_style.add_modifier(Modifier::BOLD))
+                .borders(Borders::ALL),
+        )
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
+}
+
+fn scroll_offset_for_selection(selected_index: usize, pane_height: u16) -> u16 {
+    let inner_height = pane_height.saturating_sub(2).max(1) as usize;
+    selected_index
+        .saturating_sub(inner_height.saturating_sub(1))
+        .min(u16::MAX as usize) as u16
+}
+
+fn render_confirmation_dialog(frame: &mut Frame<'_>, dialog: &ConfirmationDialog) {
+    let area = centered_rect(60, 20, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(dialog.prompt.clone())
+            .block(
+                Block::default()
+                    .title("confirm install")
+                    .title_style(
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn pane_title_style(active: bool) -> Style {

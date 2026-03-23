@@ -17,7 +17,9 @@ use envira::{
         ExecutionDisposition, ExecutionPlan, ExecutionPlanReport, ExecutionPlanSummary,
         ExecutionStep, ExecutionStepReport, ExecutionTarget,
     },
-    planner::{build_install_plan, classify_install_plan, PlannedAction, PlannerRequest},
+    planner::{
+        build_install_plan, classify_install_plan, PlanSelection, PlannedAction, PlannerRequest,
+    },
     platform::{
         ArchitectureIdentity, ArchitectureKind, DistroIdentity, DistroKind, InvocationKind,
         PlatformContext, RuntimeScope, UserAccount,
@@ -30,6 +32,7 @@ use envira::{
         VerifierCheck, VerifierEvidence, VerifierResult,
     },
 };
+use ratatui::{backend::TestBackend, Terminal};
 
 #[test]
 fn bundle_selection_dispatches_shared_plan_request_without_expanding_items() {
@@ -190,9 +193,534 @@ fn install_preview_dispatches_dry_run_request_and_uses_shared_engine_results() {
     assert!(snapshot.header.contains("i install preview (dry-run)"));
     assert!(snapshot
         .results
-        .contains("install preview (dry-run request, dry_run)"));
+        .contains("Last action: install (dry-run request, dry_run)"));
     assert!(snapshot.details.contains("Execution: success"));
     assert!(snapshot.details.contains("Rationale:"));
+}
+
+#[test]
+fn enter_opens_confirmation_before_dispatching_install() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::item("tool-a");
+    let verification_result = missing_result(VerificationStage::Present);
+    let verification = fixture_verification(&catalog, &request, verification_result.clone());
+    let action_plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([("tool-a".to_string(), verification_result.clone())]),
+    );
+    let execution_plan = ExecutionPlan {
+        request: action_plan.request.clone(),
+        platform: action_plan.platform.clone(),
+        steps: action_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|action_step| ExecutionStep {
+                action_step,
+                execution_target: ExecutionTarget::CurrentProcess,
+                recipe: None,
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let execution = ExecutionPlanReport {
+        summary: ExecutionPlanSummary {
+            total_steps: 1,
+            actionable_steps: 1,
+            successful_steps: 1,
+            failed_steps: 0,
+            skipped_steps: 0,
+        },
+        steps: execution_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|step| ExecutionStepReport {
+                step,
+                disposition: ExecutionDisposition::Success,
+                message: "Executed install after confirmation.".to_string(),
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let install = InstallWorkflowResult {
+        install_mode: InstallMode::Apply,
+        action_plan: action_plan.clone(),
+        execution_plan,
+        execution,
+        post_verification: verification,
+        outcome: InstallWorkflowOutcome {
+            status: InstallWorkflowStatus::Success,
+            execution_succeeded: true,
+            actionable_steps: 1,
+            blocked_steps: 0,
+            threshold_met_steps: 0,
+            failures: vec![InstallWorkflowFailure {
+                item_id: "tool-a".to_string(),
+                action: PlannedAction::Install,
+                execution_disposition: ExecutionDisposition::Success,
+                verifier: verification_result,
+            }],
+        },
+    };
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Install,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Install { install },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    assert_eq!(
+        engine.requests().len(),
+        1,
+        "first Enter should only open confirmation"
+    );
+
+    let confirmation = render_app_text(&app, 100, 30);
+    assert!(
+        confirmation.contains("confirm install"),
+        "rendered confirmation dialog:\n{confirmation}"
+    );
+    assert!(
+        confirmation.contains("Install the current selection"),
+        "rendered confirmation dialog:\n{confirmation}"
+    );
+    assert!(
+        confirmation.contains("Press Enter"),
+        "rendered confirmation dialog:\n{confirmation}"
+    );
+    assert!(
+        confirmation.contains("Esc to cancel."),
+        "rendered confirmation dialog:\n{confirmation}"
+    );
+
+    assert!(!app.on_key(key(KeyCode::Enter)));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].command, CommandName::Install);
+    assert_eq!(requests[1].install_mode, InstallMode::Apply);
+    assert_eq!(requests[1].planner_request, Some(request));
+    assert!(app
+        .snapshot()
+        .results
+        .contains("Last action: install (apply request, success)"));
+}
+
+#[test]
+fn enter_confirmation_can_be_cancelled_with_escape() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(fixture_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    assert!(!app.on_key(key(KeyCode::Esc)));
+
+    assert_eq!(engine.requests().len(), 1);
+    assert!(app.snapshot().results.contains("Install cancelled"));
+}
+
+#[test]
+fn space_toggles_focused_item_selection_marker() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(fixture_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    let initial = app.snapshot();
+    assert!(initial.items.contains("> [-] Tool A [idle | unverified]"));
+
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    let selected = app.snapshot();
+    assert!(selected.items.contains("> [x] Tool A [idle | unverified]"));
+
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    let cleared = app.snapshot();
+    assert!(cleared.items.contains("> [-] Tool A [idle | unverified]"));
+}
+
+#[test]
+fn space_toggles_focused_bundle_selection_marker() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(fixture_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    assert!(!app.on_key(key(KeyCode::Tab)));
+
+    let initial = app.snapshot();
+    assert!(initial.bundles.contains("> [-] Bundle A (1 item)"));
+
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    let selected = app.snapshot();
+    assert!(selected.bundles.contains("> [x] Bundle A (1 item)"));
+
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    let cleared = app.snapshot();
+    assert!(cleared.bundles.contains("> [-] Bundle A (1 item)"));
+}
+
+#[test]
+fn default_bundle_confirmation_dispatches_apply_install_without_explicit_selection() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::default();
+    let verification_result = missing_result(VerificationStage::Present);
+    let verification = fixture_verification(&catalog, &request, verification_result.clone());
+    let action_plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([("tool-a".to_string(), verification_result.clone())]),
+    );
+    let execution_plan = ExecutionPlan {
+        request: action_plan.request.clone(),
+        platform: action_plan.platform.clone(),
+        steps: action_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|action_step| ExecutionStep {
+                action_step,
+                execution_target: ExecutionTarget::CurrentProcess,
+                recipe: None,
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let execution = ExecutionPlanReport {
+        summary: ExecutionPlanSummary {
+            total_steps: 1,
+            actionable_steps: 1,
+            successful_steps: 1,
+            failed_steps: 0,
+            skipped_steps: 0,
+        },
+        steps: execution_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|step| ExecutionStepReport {
+                step,
+                disposition: ExecutionDisposition::Success,
+                message: "Executed default-bundle install after confirmation.".to_string(),
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let install = InstallWorkflowResult {
+        install_mode: InstallMode::Apply,
+        action_plan,
+        execution_plan,
+        execution,
+        post_verification: verification,
+        outcome: InstallWorkflowOutcome {
+            status: InstallWorkflowStatus::Success,
+            execution_succeeded: true,
+            actionable_steps: 1,
+            blocked_steps: 0,
+            threshold_met_steps: 0,
+            failures: vec![InstallWorkflowFailure {
+                item_id: "tool-a".to_string(),
+                action: PlannedAction::Install,
+                execution_disposition: ExecutionDisposition::Success,
+                verifier: verification_result,
+            }],
+        },
+    };
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Install,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Install { install },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    assert!(!app.on_key(key(KeyCode::Enter)));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].command, CommandName::Install);
+    assert_eq!(requests[1].install_mode, InstallMode::Apply);
+    assert_eq!(requests[1].planner_request, None);
+}
+
+#[test]
+fn bundle_selection_confirmation_dispatches_apply_install() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::bundle("bundle-a");
+    let verification_result = missing_result(VerificationStage::Present);
+    let verification = fixture_verification(
+        &catalog,
+        &PlannerRequest::item("tool-a"),
+        verification_result.clone(),
+    );
+    let action_plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([("tool-a".to_string(), verification_result.clone())]),
+    );
+    let execution_plan = ExecutionPlan {
+        request: action_plan.request.clone(),
+        platform: action_plan.platform.clone(),
+        steps: action_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|action_step| ExecutionStep {
+                action_step,
+                execution_target: ExecutionTarget::CurrentProcess,
+                recipe: None,
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let execution = ExecutionPlanReport {
+        summary: ExecutionPlanSummary {
+            total_steps: 1,
+            actionable_steps: 1,
+            successful_steps: 1,
+            failed_steps: 0,
+            skipped_steps: 0,
+        },
+        steps: execution_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|step| ExecutionStepReport {
+                step,
+                disposition: ExecutionDisposition::Success,
+                message: "Executed bundle install after confirmation.".to_string(),
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let install = InstallWorkflowResult {
+        install_mode: InstallMode::Apply,
+        action_plan,
+        execution_plan,
+        execution,
+        post_verification: verification,
+        outcome: InstallWorkflowOutcome {
+            status: InstallWorkflowStatus::Success,
+            execution_succeeded: true,
+            actionable_steps: 1,
+            blocked_steps: 0,
+            threshold_met_steps: 0,
+            failures: vec![InstallWorkflowFailure {
+                item_id: "tool-a".to_string(),
+                action: PlannedAction::Install,
+                execution_disposition: ExecutionDisposition::Success,
+                verifier: verification_result,
+            }],
+        },
+    };
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Install,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Install { install },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Tab)));
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    assert!(!app.on_key(key(KeyCode::Enter)));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].command, CommandName::Install);
+    assert_eq!(requests[1].install_mode, InstallMode::Apply);
+    assert_eq!(requests[1].planner_request, Some(request));
+}
+
+#[test]
+fn mixed_bundle_and_item_confirmation_dispatches_combined_apply_install() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::new(vec![
+        PlanSelection::bundle("bundle-a"),
+        PlanSelection::item("tool-b"),
+    ]);
+    let verification_result = missing_result(VerificationStage::Present);
+    let verification = fixture_verification(&catalog, &request, verification_result.clone());
+    let action_plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([
+            ("tool-a".to_string(), verification_result.clone()),
+            ("tool-b".to_string(), verification_result.clone()),
+        ]),
+    );
+    let execution_plan = ExecutionPlan {
+        request: action_plan.request.clone(),
+        platform: action_plan.platform.clone(),
+        steps: action_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|action_step| ExecutionStep {
+                action_step,
+                execution_target: ExecutionTarget::CurrentProcess,
+                recipe: None,
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let execution = ExecutionPlanReport {
+        summary: ExecutionPlanSummary {
+            total_steps: 2,
+            actionable_steps: 2,
+            successful_steps: 2,
+            failed_steps: 0,
+            skipped_steps: 0,
+        },
+        steps: execution_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|step| ExecutionStepReport {
+                step,
+                disposition: ExecutionDisposition::Success,
+                message: "Executed mixed bundle+item install after confirmation.".to_string(),
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let install = InstallWorkflowResult {
+        install_mode: InstallMode::Apply,
+        action_plan,
+        execution_plan,
+        execution,
+        post_verification: verification,
+        outcome: InstallWorkflowOutcome {
+            status: InstallWorkflowStatus::Success,
+            execution_succeeded: true,
+            actionable_steps: 2,
+            blocked_steps: 0,
+            threshold_met_steps: 0,
+            failures: vec![
+                InstallWorkflowFailure {
+                    item_id: "tool-a".to_string(),
+                    action: PlannedAction::Install,
+                    execution_disposition: ExecutionDisposition::Success,
+                    verifier: verification_result.clone(),
+                },
+                InstallWorkflowFailure {
+                    item_id: "tool-b".to_string(),
+                    action: PlannedAction::Install,
+                    execution_disposition: ExecutionDisposition::Success,
+                    verifier: verification_result,
+                },
+            ],
+        },
+    };
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Install,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Install { install },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Tab)));
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    assert!(!app.on_key(key(KeyCode::Tab)));
+    assert!(!app.on_key(key(KeyCode::Down)));
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+
+    let snapshot = app.snapshot();
+    assert!(snapshot.header.contains("Draft: 1 bundle + 1 item"));
+
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    let dialog = render_app_text(&app, 100, 30);
+    assert!(dialog.contains("Install the current selection (1 bundle + 1 item)?"));
+
+    assert!(!app.on_key(key(KeyCode::Enter)));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].command, CommandName::Install);
+    assert_eq!(requests[1].install_mode, InstallMode::Apply);
+    assert_eq!(requests[1].planner_request, Some(request));
+}
+
+#[test]
+fn mixed_bundle_and_item_confirmation_can_be_cancelled_without_dispatch() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(fixture_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    assert!(!app.on_key(key(KeyCode::Tab)));
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+    assert!(!app.on_key(key(KeyCode::Tab)));
+    assert!(!app.on_key(key(KeyCode::Down)));
+    assert!(!app.on_key(key(KeyCode::Char(' '))));
+
+    let snapshot = app.snapshot();
+    assert!(snapshot.header.contains("Draft: 1 bundle + 1 item"));
+
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    let dialog = render_app_text(&app, 100, 30);
+    assert!(dialog.contains("Install the current selection (1 bundle + 1 item)?"));
+
+    assert!(!app.on_key(key(KeyCode::Esc)));
+
+    let requests = engine.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(app.snapshot().results.contains("Install cancelled"));
+}
+
+#[test]
+fn long_item_lists_keep_selected_entry_visible_after_focus_moves() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(long_list_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    for _ in 0..11 {
+        assert!(!app.on_key(key(KeyCode::Down)));
+    }
+    assert!(!app.on_key(key(KeyCode::Tab)));
+
+    let rendered = render_app_text(&app, 100, 30);
+    assert!(
+        rendered.contains("> [-] Item 12 very long scroll target"),
+        "rendered list:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("[-] Item 1 very long scroll target"),
+        "rendered list:\n{rendered}"
+    );
+}
+
+#[test]
+fn long_bundle_lists_keep_selected_entry_visible_after_focus_moves() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(long_bundle_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    assert!(!app.on_key(key(KeyCode::Tab)));
+    for _ in 0..11 {
+        assert!(!app.on_key(key(KeyCode::Down)));
+    }
+    assert!(!app.on_key(key(KeyCode::Tab)));
+
+    let rendered = render_app_text(&app, 100, 30);
+    assert!(
+        rendered.contains("> [ ] Bundle 12 very long scroll targe"),
+        "rendered list:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Bundle 1 very long scroll target"),
+        "rendered list:\n{rendered}"
+    );
 }
 
 #[test]
@@ -397,6 +925,28 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn render_app_text(app: &TuiApp<'_, MockEngine>, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal should build");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("render should succeed");
+
+    let backend = terminal.backend();
+    let buffer = backend.buffer();
+    let mut lines = Vec::new();
+
+    for y in 0..buffer.area.height {
+        let mut line = String::new();
+        for x in 0..buffer.area.width {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        lines.push(line);
+    }
+
+    lines.join("\n")
+}
+
 fn catalog_response(catalog: Catalog) -> CommandResponse {
     CommandResponse::success(
         CommandName::Catalog,
@@ -456,6 +1006,90 @@ items = ["tool-b"]
 "#,
     )
     .expect("fixture catalog should parse")
+}
+
+fn long_list_catalog() -> Catalog {
+    let mut manifest = vec![
+        "required_version = \"0.1.0\"".to_string(),
+        "distros = [\"ubuntu\"]".to_string(),
+        "shell = \"bash\"".to_string(),
+        "default_bundles = [\"bundle-a\"]".to_string(),
+        String::new(),
+        "[bundles.bundle-a]".to_string(),
+        "name = \"Bundle A\"".to_string(),
+        "desc = \"Bundle A\"".to_string(),
+        "items = [".to_string(),
+    ];
+
+    for index in 1..=16 {
+        let suffix = if index == 16 { "" } else { "," };
+        manifest.push(format!("  \"item-{index:02}\"{suffix}"));
+    }
+
+    manifest.push("]".to_string());
+
+    for index in 1..=16 {
+        manifest.push(String::new());
+        manifest.push(format!("[items.item-{index:02}]"));
+        manifest.push(format!(
+            "name = \"Item {index} very long scroll target label for visibility checks\""
+        ));
+        manifest.push(format!("desc = \"Item {index}\""));
+        manifest.push("depends_on = []".to_string());
+        manifest.push(String::new());
+        manifest.push(format!("[[items.item-{index:02}.recipes]]"));
+        manifest.push("mode = \"user\"".to_string());
+        manifest.push("distros = [\"ubuntu\"]".to_string());
+        manifest.push(format!(
+            "cmd = \"printf item-{index:02} > ~/.local/bin/item-{index:02}\""
+        ));
+        manifest.push(String::new());
+        manifest.push(format!("[[items.item-{index:02}.verifiers]]"));
+        manifest.push("mode = \"user\"".to_string());
+        manifest.push("distros = [\"ubuntu\"]".to_string());
+        manifest.push(format!("cmd = \"command -v item-{index:02}\""));
+    }
+
+    Catalog::from_toml_str(&manifest.join("\n")).expect("long list catalog should parse")
+}
+
+fn long_bundle_catalog() -> Catalog {
+    let mut manifest = vec![
+        "required_version = \"0.1.0\"".to_string(),
+        "distros = [\"ubuntu\"]".to_string(),
+        "shell = \"bash\"".to_string(),
+        "default_bundles = [\"bundle-01\"]".to_string(),
+    ];
+
+    for index in 1..=16 {
+        manifest.push(String::new());
+        manifest.push(format!("[items.item-{index:02}]"));
+        manifest.push(format!("name = \"Item {index}\""));
+        manifest.push(format!("desc = \"Item {index}\""));
+        manifest.push("depends_on = []".to_string());
+        manifest.push(String::new());
+        manifest.push(format!("[[items.item-{index:02}.recipes]]"));
+        manifest.push("mode = \"user\"".to_string());
+        manifest.push("distros = [\"ubuntu\"]".to_string());
+        manifest.push(format!(
+            "cmd = \"printf item-{index:02} > ~/.local/bin/item-{index:02}\""
+        ));
+        manifest.push(String::new());
+        manifest.push(format!("[[items.item-{index:02}.verifiers]]"));
+        manifest.push("mode = \"user\"".to_string());
+        manifest.push("distros = [\"ubuntu\"]".to_string());
+        manifest.push(format!("cmd = \"command -v item-{index:02}\""));
+
+        manifest.push(String::new());
+        manifest.push(format!("[bundles.bundle-{index:02}]"));
+        manifest.push(format!(
+            "name = \"Bundle {index} very long scroll target label for visibility checks\""
+        ));
+        manifest.push(format!("desc = \"Bundle {index}\""));
+        manifest.push(format!("items = [\"item-{index:02}\"]"));
+    }
+
+    Catalog::from_toml_str(&manifest.join("\n")).expect("long bundle catalog should parse")
 }
 
 fn fixture_action_plan(
