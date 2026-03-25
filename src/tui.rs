@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::{self, Stdout},
 };
 
@@ -24,16 +24,22 @@ use crate::{
         VerificationWorkflowResult,
     },
     error::Result,
-    planner::{ActionPlan, ActionPlanStep, PlanSelection, PlannedAction, PlannerRequest},
+    planner::{
+        ActionPlan, ActionPlanStep, InstallTargetPreference, PlanSelection, PlannedAction,
+        PlannerRequest,
+    },
+    platform::PlatformContext,
     verifier::{
-        EvidenceStatus, ServiceKind, ServiceUsabilityState, VerificationHealth, VerifierResult,
+        EvidenceStatus, ObservedScope, ServiceKind, ServiceUsabilityState, VerificationHealth,
+        VerifierResult,
     },
 };
 
-const HEADER_HEIGHT: u16 = 3;
-const RESULT_HEIGHT: u16 = 10;
+const HEADER_HEIGHT: u16 = 6;
+const RESULT_HEIGHT: u16 = 7;
 const BUNDLE_HEIGHT: u16 = 10;
-const BROWSER_WIDTH: u16 = 40;
+const DRAFT_HEIGHT: u16 = 10;
+const BROWSER_WIDTH: u16 = 48;
 
 pub trait TuiEnginePort {
     fn execute(&self, request: CommandRequest)
@@ -61,6 +67,7 @@ pub struct ViewSnapshot {
     pub bundles: String,
     pub items: String,
     pub details: String,
+    pub draft: String,
     pub results: String,
 }
 
@@ -72,9 +79,12 @@ pub struct UiState {
     item_index: usize,
     selected_bundles: BTreeSet<String>,
     selected_items: BTreeSet<String>,
+    install_target: InstallTargetPreference,
     cached_plan: Option<ActionPlan>,
     cached_verification: Option<VerificationWorkflowResult>,
     cached_install: Option<InstallWorkflowResult>,
+    verification_by_item: BTreeMap<String, VerifierResult>,
+    platform: Option<PlatformContext>,
     status_message: String,
     last_error: Option<String>,
     confirmation_dialog: Option<ConfirmationDialog>,
@@ -95,11 +105,14 @@ impl UiState {
             item_index: 0,
             selected_bundles: BTreeSet::new(),
             selected_items: BTreeSet::new(),
+            install_target: InstallTargetPreference::Auto,
             cached_plan: None,
             cached_verification: None,
             cached_install: None,
+            verification_by_item: BTreeMap::new(),
+            platform: None,
             status_message:
-                "Loaded catalog. Use Tab to switch panes, Space to toggle, Enter to confirm install, v to verify, p to plan, i to preview install (dry-run), and q to quit."
+                "Loaded catalog. Refreshing installation state and preparing the new draft view."
                     .to_string(),
             last_error: None,
             confirmation_dialog: None,
@@ -134,6 +147,7 @@ impl UiState {
             bundles: self.bundle_browser_text(),
             items: self.item_browser_text(),
             details: self.detail_text(),
+            draft: self.draft_text(),
             results: self.result_text(),
         }
     }
@@ -190,6 +204,18 @@ impl UiState {
                 self.toggle_focused_selection();
                 TuiAction::None
             }
+            KeyCode::Char('a') => {
+                self.set_install_target(InstallTargetPreference::Auto);
+                TuiAction::None
+            }
+            KeyCode::Char('u') => {
+                self.set_install_target(InstallTargetPreference::User);
+                TuiAction::None
+            }
+            KeyCode::Char('s') => {
+                self.set_install_target(InstallTargetPreference::System);
+                TuiAction::None
+            }
             KeyCode::Enter => {
                 self.open_install_confirmation();
                 TuiAction::None
@@ -198,9 +224,9 @@ impl UiState {
                 self.clear_selection();
                 TuiAction::None
             }
-            KeyCode::Char('r') => TuiAction::Dispatch(CommandName::Catalog),
+            KeyCode::Char('r') => TuiAction::RefreshCatalogState,
             KeyCode::Char('p') => TuiAction::Dispatch(CommandName::Plan),
-            KeyCode::Char('v') => TuiAction::Dispatch(CommandName::Verify),
+            KeyCode::Char('v') => TuiAction::VerifyCatalogState,
             KeyCode::Char('i') => TuiAction::DispatchInstall(InstallMode::DryRun),
             _ => TuiAction::None,
         }
@@ -217,7 +243,7 @@ impl UiState {
                 self.bundle_index = self.bundle_index.min(bundle_count.saturating_sub(1));
                 self.item_index = self.item_index.min(item_count.saturating_sub(1));
                 self.status_message = format!(
-                    "Catalog refreshed with {item_count} items across {bundle_count} bundles."
+                    "Catalog refreshed with {item_count} items across {bundle_count} bundles. Refreshing installation state keeps inline status accurate."
                 );
             }
             CommandPayload::Plan { action_plan } => {
@@ -246,22 +272,25 @@ impl UiState {
                 );
             }
             CommandPayload::Verify { verification } => {
+                self.merge_verification(&verification);
                 let item_count = verification.summary.total_steps;
                 self.status_message = format!(
-                    "Verified {item_count} catalog item{}: {} met the requested threshold and {} did not.",
+                    "State refreshed for {item_count} catalog item{}: {} met the requested threshold and {} did not.",
                     plural_suffix(item_count),
                     verification.summary.threshold_met_steps,
                     verification.summary.threshold_unmet_steps
                 );
                 self.cached_plan = None;
-                self.cached_verification = Some(verification);
                 self.cached_install = None;
+                self.cached_verification = Some(verification);
             }
             CommandPayload::Install { install } => {
+                self.merge_verification(&install.post_verification);
                 let actionable_steps = install.outcome.actionable_steps;
                 self.status_message = format!(
-                    "Install {} finished as {}; execution succeeded={} and {} of {actionable_steps} actionable catalog item{} met the requested threshold.",
+                    "Install {} to {} finished as {}; execution succeeded={} and {} of {actionable_steps} actionable catalog item{} met the requested threshold.",
                     install_mode_name(install.install_mode),
+                    install_target_name(self.install_target),
                     install_status_name(install.outcome.status),
                     yes_no(install.outcome.execution_succeeded),
                     install.outcome.threshold_met_steps,
@@ -303,11 +332,42 @@ impl UiState {
         self.confirmation_dialog = Some(ConfirmationDialog {
             command: CommandName::Install,
             prompt: format!(
-                "Install the current selection ({selection})? Press Enter to confirm or Esc to cancel."
+                "Install the current selection ({selection}) to {}? Press Enter to confirm or Esc to cancel.",
+                install_target_name(self.install_target)
             ),
         });
-        self.status_message =
-            "Install confirmation is open. Press Enter to apply or Esc to cancel.".to_string();
+        self.status_message = format!(
+            "Install confirmation is open for target {}. Press Enter to apply or Esc to cancel.",
+            install_target_name(self.install_target)
+        );
+    }
+
+    fn merge_verification(&mut self, verification: &VerificationWorkflowResult) {
+        self.platform = Some(verification.platform.clone());
+
+        for result in &verification.results {
+            self.verification_by_item
+                .insert(result.step.item_id.clone(), result.result.clone());
+        }
+    }
+
+    fn set_install_target(&mut self, install_target: InstallTargetPreference) {
+        if !self.supports_install_target(install_target) {
+            self.status_message = format!(
+                "Install target `{}` is unavailable in the current runtime. Use auto or system instead.",
+                install_target_name(install_target)
+            );
+            return;
+        }
+
+        self.install_target = install_target;
+        self.cached_plan = None;
+        self.cached_install = None;
+        self.last_error = None;
+        self.status_message = format!(
+            "Install target set to {}. Plan, dry-run, and apply actions will use this target.",
+            install_target_name(self.install_target)
+        );
     }
 
     fn toggle_focused_selection(&mut self) {
@@ -336,21 +396,20 @@ impl UiState {
             }
         }
 
-        self.invalidate_results();
+        self.invalidate_action_caches();
     }
 
     fn clear_selection(&mut self) {
         self.selected_bundles.clear();
         self.selected_items.clear();
-        self.invalidate_results();
+        self.invalidate_action_caches();
         self.status_message =
             "Selection draft cleared. New actions will use the catalog default_bundles until you make an explicit selection."
                 .to_string();
     }
 
-    fn invalidate_results(&mut self) {
+    fn invalidate_action_caches(&mut self) {
         self.cached_plan = None;
-        self.cached_verification = None;
         self.cached_install = None;
         self.last_error = None;
     }
@@ -365,8 +424,10 @@ impl UiState {
 
     fn header_text(&self) -> String {
         format!(
-            "Envira Ratatui\nDraft: {}\nKeys: Tab switch pane | Space toggle | Enter confirm install | v verify | p plan | i install preview (dry-run) | c clear | r reload | q quit",
-            self.selection_summary()
+            "Envira TUI\nDraft: {}\nTarget: {} | Available: {}\nKeys: Tab switch pane | Space toggle | u user | s system | a auto | Enter confirm install | i dry-run | v refresh state | p plan | c clear | r reload | q quit",
+            self.selection_summary(),
+            install_target_name(self.install_target),
+            self.available_install_targets_summary()
         )
     }
 
@@ -380,13 +441,17 @@ impl UiState {
             .iter()
             .enumerate()
             .map(|(index, bundle)| {
+                let status = self.bundle_status_badge(bundle);
+                let scope = self.bundle_scope_badge(bundle);
                 format!(
-                    "{} {} {} ({} item{})",
+                    "{} {} {} [{} | {} item{} | {}]",
                     focus_marker(index == self.bundle_index),
                     bundle_selection_marker(self, bundle.id.as_str()),
                     bundle.name,
+                    status,
                     bundle.items.len(),
-                    plural_suffix(bundle.items.len())
+                    plural_suffix(bundle.items.len()),
+                    scope,
                 )
             })
             .collect::<Vec<_>>()
@@ -403,24 +468,87 @@ impl UiState {
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let action = self
-                    .action_step(item.id.as_str())
-                    .map(|step| planned_action_name(step.action).to_string())
-                    .unwrap_or_else(|| "idle".to_string());
-                let verification = self
-                    .verifier_result(item.id.as_str())
-                    .map(|result| verifier_badge(&result))
-                    .unwrap_or_else(|| "unverified".to_string());
+                let state = self.item_state_badge(item.id.as_str());
+                let scope = self.item_scope_badge(item.id.as_str());
+                let capability = install_scope_name(item.install_scope());
 
                 format!(
-                    "{} {} {} [{action} | {verification}]",
+                    "{} {} {} [{} | {} | cap:{}]",
                     focus_marker(index == self.item_index),
                     item_selection_marker(self, item.id.as_str()),
                     item.name,
+                    state,
+                    scope,
+                    capability,
                 )
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn draft_text(&self) -> String {
+        let mut lines = vec![
+            format!("Selection: {}", self.selection_summary()),
+            format!(
+                "Install target: {}",
+                install_target_name(self.install_target)
+            ),
+            format!(
+                "Available targets: {}",
+                self.available_install_targets_summary()
+            ),
+        ];
+
+        if let Some(item) = self.focused_item() {
+            lines.push(format!(
+                "Focused item capability: {}",
+                install_scope_name(item.install_scope())
+            ));
+            lines.push(format!(
+                "Focused item target support: {}",
+                yes_no(item_supports_install_target(item, self.install_target))
+            ));
+        }
+
+        if let Some(plan) = self.cached_plan.as_ref() {
+            let install_steps = plan
+                .steps
+                .iter()
+                .filter(|step| step.action == PlannedAction::Install)
+                .count();
+            let repair_steps = plan
+                .steps
+                .iter()
+                .filter(|step| step.action == PlannedAction::Repair)
+                .count();
+            let blocked_steps = plan
+                .steps
+                .iter()
+                .filter(|step| step.action == PlannedAction::Blocked)
+                .count();
+
+            lines.push(String::new());
+            lines.push(format!(
+                "Plan: {} install, {} repair, {} blocked",
+                install_steps, repair_steps, blocked_steps
+            ));
+        }
+
+        if let Some(install) = self.cached_install.as_ref() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Last install: {} to {} ({})",
+                install_mode_name(install.install_mode),
+                install_target_name(self.install_target),
+                install_status_name(install.outcome.status)
+            ));
+            lines.push(format!(
+                "Execution succeeded: {}",
+                yes_no(install.outcome.execution_succeeded)
+            ));
+        }
+
+        lines.join("\n")
     }
 
     fn detail_text(&self) -> String {
@@ -439,6 +567,8 @@ impl UiState {
         let mut lines = vec![
             format!("Bundle: {}", bundle.name),
             format!("ID: {}", bundle.id),
+            format!("Installed summary: {}", self.bundle_status_badge(bundle)),
+            format!("Observed location: {}", self.bundle_scope_badge(bundle)),
             format!(
                 "Selection: {}",
                 bundle_selection_description(self, bundle.id.as_str())
@@ -448,7 +578,11 @@ impl UiState {
 
         for item_id in &bundle.items {
             let marker = item_selection_marker(self, item_id.as_str());
-            lines.push(format!("- {marker} {item_id}"));
+            lines.push(format!(
+                "- {marker} {item_id} [{} | {}]",
+                self.item_state_badge(item_id.as_str()),
+                self.item_scope_badge(item_id.as_str())
+            ));
         }
 
         lines.push(String::new());
@@ -468,7 +602,20 @@ impl UiState {
         let mut lines = vec![
             format!("Item: {}", item.name),
             format!("ID: {}", item.id),
-            format!("Scope: {}", install_scope_name(item.install_scope())),
+            format!("Capability: {}", install_scope_name(item.install_scope())),
+            format!(
+                "Observed state: {}",
+                self.item_state_badge(item.id.as_str())
+            ),
+            format!(
+                "Observed location: {}",
+                self.item_scope_badge(item.id.as_str())
+            ),
+            format!("Draft target: {}", install_target_name(self.install_target)),
+            format!(
+                "Draft target supported: {}",
+                yes_no(item_supports_install_target(item, self.install_target))
+            ),
             format!(
                 "Required stage: {}",
                 stage_name(crate::verifier::required_stage_for_catalog_commands(
@@ -511,6 +658,10 @@ impl UiState {
                 verifier.achieved_stage.map(stage_name).unwrap_or("none"),
                 threshold_text(verifier.threshold_met),
                 verification_health_name(verifier.health),
+            ));
+            lines.push(format!(
+                "Observed scope model: {}",
+                observed_scope_name(verifier.observed_scope)
             ));
             lines.push(format!(
                 "Evidence: {} total, {} required failures",
@@ -572,7 +723,7 @@ impl UiState {
         } else {
             lines.push(String::new());
             lines.push(
-                "No verifier snapshot cached for this item yet. Press v to inspect evidence, p to inspect planner actions, i to inspect install preview results, or Enter to install with confirmation."
+                "No verifier snapshot cached for this item yet. Press v to refresh catalog state, p to inspect planner actions, i to inspect install preview results, or Enter to install with confirmation."
                     .to_string(),
             );
         }
@@ -589,8 +740,9 @@ impl UiState {
             let mut lines = vec![
                 "Status".to_string(),
                 format!(
-                    "Last action: install ({} request, {})",
+                    "Last action: install ({} request to {}, {})",
                     install_mode_name(install.install_mode),
+                    install_target_name(self.install_target),
                     install_status_name(install.outcome.status)
                 ),
                 format!(
@@ -632,7 +784,8 @@ impl UiState {
                 .count();
 
             return format!(
-                "Status\nLast action: plan\n{} step{} => {} install, {} repair, {} blocked",
+                "Status\nLast action: plan ({})\n{} step{} => {} install, {} repair, {} blocked",
+                install_target_name(self.install_target),
                 plan.steps.len(),
                 plural_suffix(plan.steps.len()),
                 install_steps,
@@ -641,9 +794,15 @@ impl UiState {
             );
         }
 
+        if !self.status_message.starts_with("State refreshed")
+            && !self.status_message.starts_with("Loaded catalog")
+        {
+            return format!("Status\n{}", self.status_message);
+        }
+
         if let Some(verification) = self.cached_verification.as_ref() {
             return format!(
-                "Status\nLast action: verify\n{} total | {} threshold met | {} threshold unmet",
+                "Status\nLast action: verify all item states\n{} total | {} threshold met | {} threshold unmet",
                 verification.summary.total_steps,
                 verification.summary.threshold_met_steps,
                 verification.summary.threshold_unmet_steps,
@@ -695,13 +854,16 @@ impl UiState {
     }
 
     fn verifier_result(&self, item_id: &str) -> Option<VerifierResult> {
-        self.cached_install
-            .as_ref()
-            .and_then(|install| {
-                install
-                    .post_verification
-                    .result_for(item_id)
-                    .map(|result| result.result.clone())
+        self.verification_by_item
+            .get(item_id)
+            .cloned()
+            .or_else(|| {
+                self.cached_install.as_ref().and_then(|install| {
+                    install
+                        .post_verification
+                        .result_for(item_id)
+                        .map(|result| result.result.clone())
+                })
             })
             .or_else(|| {
                 self.cached_verification.as_ref().and_then(|verification| {
@@ -716,6 +878,97 @@ impl UiState {
             })
     }
 
+    fn item_state_badge(&self, item_id: &str) -> &'static str {
+        self.verifier_result(item_id)
+            .as_ref()
+            .map(item_state_from_verifier)
+            .unwrap_or("unknown")
+    }
+
+    fn item_scope_badge(&self, item_id: &str) -> &'static str {
+        self.verifier_result(item_id)
+            .map(|result| observed_scope_name(result.observed_scope))
+            .unwrap_or("unknown")
+    }
+
+    fn bundle_status_badge(&self, bundle: &CatalogBundle) -> String {
+        let total = bundle.items.len();
+        let installed = bundle
+            .items
+            .iter()
+            .filter(|item_id| self.item_state_badge(item_id.as_str()) == "installed")
+            .count();
+
+        if total == 0 {
+            return "empty".to_string();
+        }
+
+        let label = if installed == total {
+            "installed"
+        } else if installed > 0 {
+            "partial"
+        } else if bundle
+            .items
+            .iter()
+            .any(|item_id| self.item_state_badge(item_id.as_str()) == "missing")
+        {
+            "missing"
+        } else {
+            "unknown"
+        };
+
+        format!("{label} {installed}/{total}")
+    }
+
+    fn bundle_scope_badge(&self, bundle: &CatalogBundle) -> &'static str {
+        let mut saw_user = false;
+        let mut saw_system = false;
+
+        for item_id in &bundle.items {
+            match self
+                .verifier_result(item_id.as_str())
+                .map(|result| result.observed_scope)
+                .unwrap_or(ObservedScope::Unknown)
+            {
+                ObservedScope::User => saw_user = true,
+                ObservedScope::System => saw_system = true,
+                ObservedScope::Both => {
+                    saw_user = true;
+                    saw_system = true;
+                }
+                ObservedScope::Unknown => {}
+            }
+        }
+
+        match (saw_user, saw_system) {
+            (true, true) => "mixed",
+            (true, false) => "user",
+            (false, true) => "system",
+            (false, false) => "unknown",
+        }
+    }
+
+    fn supports_install_target(&self, install_target: InstallTargetPreference) -> bool {
+        match install_target {
+            InstallTargetPreference::Auto | InstallTargetPreference::System => true,
+            InstallTargetPreference::User => self
+                .platform
+                .as_ref()
+                .map(platform_supports_user_target)
+                .unwrap_or(true),
+        }
+    }
+
+    fn available_install_targets_summary(&self) -> String {
+        let mut targets = vec!["auto", "system"];
+
+        if self.supports_install_target(InstallTargetPreference::User) {
+            targets.insert(1, "user");
+        }
+
+        targets.join(", ")
+    }
+
     fn confirmation_dialog(&self) -> Option<&ConfirmationDialog> {
         self.confirmation_dialog.as_ref()
     }
@@ -727,6 +980,8 @@ enum TuiAction {
     Exit,
     Dispatch(CommandName),
     DispatchInstall(InstallMode),
+    RefreshCatalogState,
+    VerifyCatalogState,
 }
 
 pub struct TuiApp<'a, E: TuiEnginePort> {
@@ -746,10 +1001,14 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
             unreachable!("catalog command must return a catalog payload")
         };
 
-        Ok(Self {
+        let mut app = Self {
             engine,
             state: UiState::new(catalog),
-        })
+        };
+
+        app.verify_catalog_state();
+
+        Ok(app)
     }
 
     pub fn state(&self) -> &UiState {
@@ -772,6 +1031,14 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
                 self.dispatch_install(install_mode);
                 false
             }
+            TuiAction::RefreshCatalogState => {
+                self.refresh_catalog_state();
+                false
+            }
+            TuiAction::VerifyCatalogState => {
+                self.verify_catalog_state();
+                false
+            }
         }
     }
 
@@ -785,7 +1052,8 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
                 CommandRequest::new(CommandName::Catalog, InterfaceMode::Tui, OutputFormat::Text)
             }
             CommandName::Plan | CommandName::Verify => planner_request_command(
-                CommandRequest::new(command, InterfaceMode::Tui, OutputFormat::Text),
+                CommandRequest::new(command, InterfaceMode::Tui, OutputFormat::Text)
+                    .with_install_target(self.state.install_target),
                 self.state.planner_request(),
             ),
             CommandName::Install => {
@@ -803,6 +1071,7 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
     fn dispatch_install(&mut self, install_mode: InstallMode) {
         let request = planner_request_command(
             CommandRequest::new(CommandName::Install, InterfaceMode::Tui, OutputFormat::Text)
+                .with_install_target(self.state.install_target)
                 .with_install_mode(install_mode),
             self.state.planner_request(),
         );
@@ -811,6 +1080,32 @@ impl<'a, E: TuiEnginePort> TuiApp<'a, E> {
             Ok(response) => self.state.apply_response(response),
             Err(error) => self.state.apply_error(CommandName::Install, error),
         }
+    }
+
+    fn verify_catalog_state(&mut self) {
+        let request =
+            CommandRequest::new(CommandName::Verify, InterfaceMode::Tui, OutputFormat::Text)
+                .with_planner_request(PlannerRequest::all_items());
+
+        match self.engine.execute(request) {
+            Ok(response) => self.state.apply_response(response),
+            Err(error) => self.state.apply_error(CommandName::Verify, error),
+        }
+    }
+
+    fn refresh_catalog_state(&mut self) {
+        let catalog_request =
+            CommandRequest::new(CommandName::Catalog, InterfaceMode::Tui, OutputFormat::Text);
+
+        match self.engine.execute(catalog_request) {
+            Ok(response) => self.state.apply_response(response),
+            Err(error) => {
+                self.state.apply_error(CommandName::Catalog, error);
+                return;
+            }
+        }
+
+        self.verify_catalog_state();
     }
 }
 
@@ -848,6 +1143,10 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(BROWSER_WIDTH), Constraint::Min(0)])
         .split(vertical[1]);
+    let sidebar = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(DRAFT_HEIGHT)])
+        .split(main[1]);
     let browser = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(BUNDLE_HEIGHT), Constraint::Min(0)])
@@ -881,7 +1180,15 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
             "details",
             Style::default().fg(Color::Yellow),
         ),
-        main[1],
+        sidebar[0],
+    );
+    frame.render_widget(
+        paragraph(
+            snapshot.draft,
+            "draft",
+            Style::default().fg(Color::LightMagenta),
+        ),
+        sidebar[1],
     );
     frame.render_widget(
         paragraph(
@@ -1228,18 +1535,6 @@ fn verification_health_name(health: VerificationHealth) -> &'static str {
     }
 }
 
-fn verifier_badge(result: &VerifierResult) -> String {
-    let achieved = result.achieved_stage.map(stage_name).unwrap_or("none");
-    format!(
-        "{achieved}/{}",
-        if result.threshold_met {
-            "met"
-        } else {
-            verification_health_name(result.health)
-        }
-    )
-}
-
 fn evidence_status_name(status: EvidenceStatus) -> &'static str {
     match status {
         EvidenceStatus::Satisfied => "satisfied",
@@ -1272,6 +1567,55 @@ fn install_mode_name(mode: InstallMode) -> &'static str {
         InstallMode::Apply => "apply",
         InstallMode::DryRun => "dry-run",
     }
+}
+
+fn install_target_name(target: InstallTargetPreference) -> &'static str {
+    match target {
+        InstallTargetPreference::Auto => "auto",
+        InstallTargetPreference::User => "user",
+        InstallTargetPreference::System => "system",
+    }
+}
+
+fn observed_scope_name(scope: ObservedScope) -> &'static str {
+    match scope {
+        ObservedScope::Unknown => "unknown",
+        ObservedScope::System => "system",
+        ObservedScope::User => "user",
+        ObservedScope::Both => "both",
+    }
+}
+
+fn item_state_from_verifier(result: &VerifierResult) -> &'static str {
+    match result.health {
+        VerificationHealth::Broken => "broken",
+        VerificationHealth::Missing if result.achieved_stage.is_none() => "missing",
+        _ if result.achieved_stage.is_some() => "installed",
+        VerificationHealth::Unknown => "unknown",
+        VerificationHealth::Missing => "missing",
+        VerificationHealth::Healthy => "unknown",
+    }
+}
+
+fn item_supports_install_target(
+    item: &CatalogItem,
+    install_target: InstallTargetPreference,
+) -> bool {
+    match install_target {
+        InstallTargetPreference::Auto => true,
+        InstallTargetPreference::User => matches!(
+            item.install_scope(),
+            crate::catalog::InstallScope::User | crate::catalog::InstallScope::Hybrid
+        ),
+        InstallTargetPreference::System => matches!(
+            item.install_scope(),
+            crate::catalog::InstallScope::System | crate::catalog::InstallScope::Hybrid
+        ),
+    }
+}
+
+fn platform_supports_user_target(platform: &PlatformContext) -> bool {
+    platform.target_user.is_some() || !platform.effective_user.is_root()
 }
 
 fn install_scope_name(scope: crate::catalog::InstallScope) -> &'static str {

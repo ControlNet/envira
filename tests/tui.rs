@@ -18,7 +18,8 @@ use envira::{
         ExecutionStep, ExecutionStepReport, ExecutionTarget,
     },
     planner::{
-        build_install_plan, classify_install_plan, PlanSelection, PlannedAction, PlannerRequest,
+        build_install_plan, classify_install_plan, InstallTargetPreference, PlanSelection,
+        PlannedAction, PlannerRequest,
     },
     platform::{
         ArchitectureIdentity, ArchitectureKind, DistroIdentity, DistroKind, InvocationKind,
@@ -61,7 +62,7 @@ fn bundle_selection_dispatches_shared_plan_request_without_expanding_items() {
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     assert!(!app.on_key(key(KeyCode::Char('p'))));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Plan);
     assert_eq!(requests[1].mode, InterfaceMode::Tui);
@@ -92,15 +93,20 @@ fn item_selection_dispatches_shared_verify_request_and_surfaces_evidence() {
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     assert!(!app.on_key(key(KeyCode::Char('v'))));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Verify);
-    assert_eq!(requests[1].planner_request, Some(request));
+    assert_eq!(
+        requests[1].planner_request,
+        Some(PlannerRequest::all_items())
+    );
 
     let snapshot = app.snapshot();
     assert!(snapshot.details.contains("Verifier Evidence:"));
     assert!(snapshot.details.contains("missing"));
-    assert!(snapshot.results.contains("Last action: verify"));
+    assert!(snapshot
+        .results
+        .contains("Last action: verify all item states"));
 }
 
 #[test]
@@ -183,19 +189,123 @@ fn install_preview_dispatches_dry_run_request_and_uses_shared_engine_results() {
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     assert!(!app.on_key(key(KeyCode::Char('i'))));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Install);
     assert_eq!(requests[1].planner_request, Some(request));
     assert_eq!(requests[1].install_mode, InstallMode::DryRun);
 
     let snapshot = app.snapshot();
-    assert!(snapshot.header.contains("i install preview (dry-run)"));
+    assert!(snapshot.header.contains("Target: auto"));
     assert!(snapshot
         .results
-        .contains("Last action: install (dry-run request, dry_run)"));
+        .contains("Last action: install (dry-run request to auto, dry_run)"));
     assert!(snapshot.details.contains("Execution: success"));
     assert!(snapshot.details.contains("Rationale:"));
+}
+
+#[test]
+fn install_target_toggle_updates_draft_and_install_request() {
+    let catalog = fixture_catalog();
+    let request = PlannerRequest::item("tool-a");
+    let verification_result = missing_result(VerificationStage::Present);
+    let verification = fixture_verification(&catalog, &request, verification_result.clone());
+    let action_plan = fixture_action_plan(
+        &catalog,
+        &request,
+        &BTreeMap::from([("tool-a".to_string(), verification_result.clone())]),
+    );
+    let execution_plan = ExecutionPlan {
+        request: action_plan.request.clone(),
+        platform: action_plan.platform.clone(),
+        steps: action_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|action_step| ExecutionStep {
+                action_step,
+                execution_target: ExecutionTarget::CurrentProcess,
+                recipe: None,
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let execution = ExecutionPlanReport {
+        summary: ExecutionPlanSummary {
+            total_steps: 1,
+            actionable_steps: 1,
+            successful_steps: 1,
+            failed_steps: 0,
+            skipped_steps: 0,
+        },
+        steps: execution_plan
+            .steps
+            .iter()
+            .cloned()
+            .map(|step| ExecutionStepReport {
+                step,
+                disposition: ExecutionDisposition::Success,
+                message: "Executed user-target install after confirmation.".to_string(),
+                operations: Vec::new(),
+            })
+            .collect(),
+    };
+    let install = InstallWorkflowResult {
+        install_mode: InstallMode::Apply,
+        action_plan,
+        execution_plan,
+        execution,
+        post_verification: verification,
+        outcome: InstallWorkflowOutcome {
+            status: InstallWorkflowStatus::Success,
+            execution_succeeded: true,
+            actionable_steps: 1,
+            blocked_steps: 0,
+            threshold_met_steps: 0,
+            failures: vec![InstallWorkflowFailure {
+                item_id: "tool-a".to_string(),
+                action: PlannedAction::Install,
+                execution_disposition: ExecutionDisposition::Success,
+                verifier: verification_result,
+            }],
+        },
+    };
+    let engine = MockEngine::new(vec![
+        Ok(catalog_response(catalog)),
+        Ok(CommandResponse::success(
+            CommandName::Install,
+            InterfaceMode::Tui,
+            OutputFormat::Text,
+            CommandPayload::Install { install },
+        )),
+    ]);
+
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+    assert!(!app.on_key(key(KeyCode::Char('u'))));
+
+    let snapshot = app.snapshot();
+    assert!(snapshot.header.contains("Target: user"));
+    assert!(snapshot.details.contains("Draft target: user"));
+    assert!(snapshot.details.contains("Draft target supported: yes"));
+
+    assert!(!app.on_key(key(KeyCode::Enter)));
+    assert!(!app.on_key(key(KeyCode::Enter)));
+
+    let requests = interactive_requests(&engine);
+    assert_eq!(requests[1].install_target, InstallTargetPreference::User);
+}
+
+#[test]
+fn unsupported_target_is_visible_in_item_details() {
+    let engine = MockEngine::new(vec![Ok(catalog_response(fixture_catalog()))]);
+    let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
+
+    assert!(!app.on_key(key(KeyCode::Char('s'))));
+
+    let snapshot = app.snapshot();
+    assert!(snapshot.header.contains("Target: system"));
+    assert!(snapshot.details.contains("Draft target: system"));
+    assert!(snapshot.details.contains("Draft target supported: no"));
 }
 
 #[test]
@@ -278,7 +388,7 @@ fn enter_opens_confirmation_before_dispatching_install() {
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     assert!(!app.on_key(key(KeyCode::Enter)));
     assert_eq!(
-        engine.requests().len(),
+        interactive_requests(&engine).len(),
         1,
         "first Enter should only open confirmation"
     );
@@ -303,7 +413,7 @@ fn enter_opens_confirmation_before_dispatching_install() {
 
     assert!(!app.on_key(key(KeyCode::Enter)));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Install);
     assert_eq!(requests[1].install_mode, InstallMode::Apply);
@@ -311,7 +421,7 @@ fn enter_opens_confirmation_before_dispatching_install() {
     assert!(app
         .snapshot()
         .results
-        .contains("Last action: install (apply request, success)"));
+        .contains("Last action: install (apply request to auto, success)"));
 }
 
 #[test]
@@ -322,7 +432,7 @@ fn enter_confirmation_can_be_cancelled_with_escape() {
     assert!(!app.on_key(key(KeyCode::Enter)));
     assert!(!app.on_key(key(KeyCode::Esc)));
 
-    assert_eq!(engine.requests().len(), 1);
+    assert_eq!(interactive_requests(&engine).len(), 1);
     assert!(app.snapshot().results.contains("Install cancelled"));
 }
 
@@ -332,15 +442,21 @@ fn space_toggles_focused_item_selection_marker() {
     let mut app = TuiApp::bootstrap(&engine).expect("catalog should load");
 
     let initial = app.snapshot();
-    assert!(initial.items.contains("> [-] Tool A [idle | unverified]"));
+    assert!(initial
+        .items
+        .contains("> [-] Tool A [missing | unknown | cap:user]"));
 
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     let selected = app.snapshot();
-    assert!(selected.items.contains("> [x] Tool A [idle | unverified]"));
+    assert!(selected
+        .items
+        .contains("> [x] Tool A [missing | unknown | cap:user]"));
 
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     let cleared = app.snapshot();
-    assert!(cleared.items.contains("> [-] Tool A [idle | unverified]"));
+    assert!(cleared
+        .items
+        .contains("> [-] Tool A [missing | unknown | cap:user]"));
 }
 
 #[test]
@@ -351,15 +467,21 @@ fn space_toggles_focused_bundle_selection_marker() {
     assert!(!app.on_key(key(KeyCode::Tab)));
 
     let initial = app.snapshot();
-    assert!(initial.bundles.contains("> [-] Bundle A (1 item)"));
+    assert!(initial
+        .bundles
+        .contains("> [-] Bundle A [missing 0/1 | 1 item | unknown]"));
 
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     let selected = app.snapshot();
-    assert!(selected.bundles.contains("> [x] Bundle A (1 item)"));
+    assert!(selected
+        .bundles
+        .contains("> [x] Bundle A [missing 0/1 | 1 item | unknown]"));
 
     assert!(!app.on_key(key(KeyCode::Char(' '))));
     let cleared = app.snapshot();
-    assert!(cleared.bundles.contains("> [-] Bundle A (1 item)"));
+    assert!(cleared
+        .bundles
+        .contains("> [-] Bundle A [missing 0/1 | 1 item | unknown]"));
 }
 
 #[test]
@@ -442,7 +564,7 @@ fn default_bundle_confirmation_dispatches_apply_install_without_explicit_selecti
     assert!(!app.on_key(key(KeyCode::Enter)));
     assert!(!app.on_key(key(KeyCode::Enter)));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Install);
     assert_eq!(requests[1].install_mode, InstallMode::Apply);
@@ -535,7 +657,7 @@ fn bundle_selection_confirmation_dispatches_apply_install() {
     assert!(!app.on_key(key(KeyCode::Enter)));
     assert!(!app.on_key(key(KeyCode::Enter)));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Install);
     assert_eq!(requests[1].install_mode, InstallMode::Apply);
@@ -644,11 +766,11 @@ fn mixed_bundle_and_item_confirmation_dispatches_combined_apply_install() {
 
     assert!(!app.on_key(key(KeyCode::Enter)));
     let dialog = render_app_text(&app, 100, 30);
-    assert!(dialog.contains("Install the current selection (1 bundle + 1 item)?"));
+    assert!(dialog.contains("Install the current selection (1 bundle + 1 item) to auto?"));
 
     assert!(!app.on_key(key(KeyCode::Enter)));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Install);
     assert_eq!(requests[1].install_mode, InstallMode::Apply);
@@ -671,11 +793,11 @@ fn mixed_bundle_and_item_confirmation_can_be_cancelled_without_dispatch() {
 
     assert!(!app.on_key(key(KeyCode::Enter)));
     let dialog = render_app_text(&app, 100, 30);
-    assert!(dialog.contains("Install the current selection (1 bundle + 1 item)?"));
+    assert!(dialog.contains("Install the current selection (1 bundle + 1 item) to auto?"));
 
     assert!(!app.on_key(key(KeyCode::Esc)));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 1);
     assert!(app.snapshot().results.contains("Install cancelled"));
 }
@@ -757,7 +879,7 @@ fn implicit_default_bundles_drive_tui_selection_state_until_user_selects_explici
 
     assert!(!app.on_key(key(KeyCode::Char('p'))));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].command, CommandName::Plan);
     assert_eq!(requests[1].planner_request, None);
@@ -798,7 +920,7 @@ fn explicit_item_selection_replaces_implicit_default_bundles() {
 
     assert!(!app.on_key(key(KeyCode::Char('p'))));
 
-    let requests = engine.requests();
+    let requests = interactive_requests(&engine);
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].planner_request, Some(request));
 }
@@ -891,15 +1013,27 @@ fn gated_and_error_states_use_new_wording() {
 struct MockEngine {
     responses: RefCell<VecDeque<std::result::Result<CommandResponse, envira::engine::EngineError>>>,
     requests: RefCell<Vec<CommandRequest>>,
+    bootstrap_catalog: Option<Catalog>,
+    bootstrap_state_served: RefCell<bool>,
 }
 
 impl MockEngine {
     fn new(
         responses: Vec<std::result::Result<CommandResponse, envira::engine::EngineError>>,
     ) -> Self {
+        let bootstrap_catalog = responses.iter().find_map(|response| match response {
+            Ok(CommandResponse {
+                payload: CommandPayload::Catalog { catalog },
+                ..
+            }) => Some(catalog.clone()),
+            _ => None,
+        });
+
         Self {
             responses: RefCell::new(responses.into()),
             requests: RefCell::new(Vec::new()),
+            bootstrap_catalog,
+            bootstrap_state_served: RefCell::new(false),
         }
     }
 
@@ -914,11 +1048,58 @@ impl TuiEnginePort for MockEngine {
         request: CommandRequest,
     ) -> std::result::Result<CommandResponse, envira::engine::EngineError> {
         self.requests.borrow_mut().push(request);
+
+        if self
+            .requests
+            .borrow()
+            .last()
+            .is_some_and(is_bootstrap_state_request)
+            && !*self.bootstrap_state_served.borrow()
+        {
+            *self.bootstrap_state_served.borrow_mut() = true;
+            let catalog = self
+                .bootstrap_catalog
+                .clone()
+                .expect("bootstrap state refresh requires a catalog fixture");
+            return Ok(CommandResponse::success(
+                CommandName::Verify,
+                InterfaceMode::Tui,
+                OutputFormat::Text,
+                CommandPayload::Verify {
+                    verification: catalog_state_verification(&catalog),
+                },
+            ));
+        }
+
         self.responses
             .borrow_mut()
             .pop_front()
             .expect("test should queue enough responses")
     }
+}
+
+fn is_bootstrap_state_request(request: &CommandRequest) -> bool {
+    request.command == CommandName::Verify
+        && request.mode == InterfaceMode::Tui
+        && request.install_mode == InstallMode::Apply
+        && request.planner_request == Some(PlannerRequest::all_items())
+}
+
+fn interactive_requests(engine: &MockEngine) -> Vec<CommandRequest> {
+    let mut skipped_bootstrap_verify = false;
+
+    engine
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            if !skipped_bootstrap_verify && is_bootstrap_state_request(request) {
+                skipped_bootstrap_verify = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -1124,6 +1305,39 @@ fn fixture_verification(
             step,
             result: verifier_result,
         }],
+    }
+}
+
+fn catalog_state_verification(catalog: &Catalog) -> VerificationWorkflowResult {
+    let request = PlannerRequest::all_items();
+    let plan =
+        build_install_plan(catalog, &platform_context(), &request).expect("plan should build");
+    let results = plan
+        .steps
+        .iter()
+        .cloned()
+        .map(|step| VerificationItemResult {
+            step,
+            result: missing_result(VerificationStage::Present),
+        })
+        .collect::<Vec<_>>();
+
+    let threshold_met_steps = results
+        .iter()
+        .filter(|result| result.result.threshold_met)
+        .count();
+    let total_steps = results.len();
+
+    VerificationWorkflowResult {
+        request,
+        profile: VerificationProfile::Quick,
+        platform: platform_context(),
+        summary: VerificationWorkflowSummary {
+            total_steps,
+            threshold_met_steps,
+            threshold_unmet_steps: total_steps.saturating_sub(threshold_met_steps),
+        },
+        results,
     }
 }
 
