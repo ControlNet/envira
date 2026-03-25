@@ -11,7 +11,7 @@ use crate::{
         ExecutionDisposition, ExecutionPlan, ExecutionPlanReport, ExecutionRecipe,
         ExecutionStepReport, OperationExecutionReport, OperationSpec,
     },
-    planner::{ActionPlan, PlanStep, PlannedAction, PlannerRequest},
+    planner::{ActionPlan, InstallTargetPreference, PlanStep, PlannedAction, PlannerRequest},
     platform::PlatformContext,
     verifier::{
         ServiceAssessment, ServiceProbeEvidence, VerificationHealth, VerificationProfile,
@@ -73,6 +73,8 @@ pub struct CommandRequest {
     pub planner_request: Option<PlannerRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_profile: Option<VerificationProfile>,
+    #[serde(default, skip_serializing_if = "install_target_is_auto")]
+    pub install_target: InstallTargetPreference,
     #[serde(default)]
     pub install_mode: InstallMode,
 }
@@ -85,6 +87,7 @@ impl CommandRequest {
             format,
             planner_request: None,
             verification_profile: None,
+            install_target: InstallTargetPreference::Auto,
             install_mode: InstallMode::Apply,
         }
     }
@@ -96,6 +99,11 @@ impl CommandRequest {
 
     pub fn with_verification_profile(mut self, verification_profile: VerificationProfile) -> Self {
         self.verification_profile = Some(verification_profile);
+        self
+    }
+
+    pub fn with_install_target(mut self, install_target: InstallTargetPreference) -> Self {
+        self.install_target = install_target;
         self
     }
 
@@ -112,6 +120,10 @@ impl CommandRequest {
         self.verification_profile
             .unwrap_or(VerificationProfile::Quick)
     }
+}
+
+fn install_target_is_auto(install_target: &InstallTargetPreference) -> bool {
+    *install_target == InstallTargetPreference::Auto
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

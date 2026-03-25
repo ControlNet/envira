@@ -16,8 +16,8 @@ use crate::{
         OperationState,
     },
     planner::{
-        build_install_plan, classify_install_plan, ActionPlan, ActionPlanError, InstallPlan,
-        PlannedAction, PlannerError,
+        build_install_plan, build_install_plan_with_target, classify_install_plan, ActionPlan,
+        ActionPlanError, InstallPlan, PlannedAction, PlannerError,
     },
     platform::{PlatformContext, PlatformError, RuntimeScope},
     verifier::{
@@ -367,6 +367,7 @@ impl Engine {
             &catalog,
             &platform,
             &planner_request,
+            request.install_target,
         )?;
         let verification =
             self.verify_install_plan(&catalog, &platform, &install_plan, verification_profile)?;
@@ -389,8 +390,9 @@ impl Engine {
         catalog: &Catalog,
         platform: &PlatformContext,
         planner_request: &crate::planner::PlannerRequest,
+        install_target: crate::planner::InstallTargetPreference,
     ) -> Result<InstallPlan, EngineError> {
-        match build_install_plan(catalog, platform, planner_request) {
+        match build_install_plan_with_target(catalog, platform, planner_request, install_target) {
             Ok(install_plan) => Ok(install_plan),
             Err(PlannerError::UnsupportedScope { .. }) if command == CommandName::Verify => {
                 let mut verification_platform = platform.clone();

@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use envira::catalog::{Catalog, InstallScope, TargetBackend};
 use envira::planner::{
-    build_install_plan, PlanSelection, PlannedScope, PlannerError, PlannerRequest,
+    build_install_plan, build_install_plan_with_target, InstallTargetPreference, PlanSelection,
+    PlannedScope, PlannerError, PlannerRequest,
 };
 use envira::platform::{
     ArchitectureIdentity, ArchitectureKind, DistroIdentity, DistroKind, InvocationKind,
@@ -275,6 +276,78 @@ fn planner_rejects_containers_bundle_in_user_runtime_because_docker_is_system_sc
     }
 }
 
+#[test]
+fn explicit_install_target_overrides_auto_scope_for_hybrid_items() {
+    let catalog =
+        Catalog::from_toml_str(explicit_target_manifest()).expect("fixture catalog should parse");
+    let platform = platform_context(Some(TargetBackend::Apt), RuntimeScope::User);
+    let request = PlannerRequest::item("hybrid-tool");
+
+    let user_plan = build_install_plan_with_target(
+        &catalog,
+        &platform,
+        &request,
+        InstallTargetPreference::User,
+    )
+    .expect("user-target plan should build");
+    let system_plan = build_install_plan_with_target(
+        &catalog,
+        &platform,
+        &request,
+        InstallTargetPreference::System,
+    )
+    .expect("system-target plan should build");
+
+    assert_eq!(user_plan.steps[0].planned_scope, PlannedScope::User);
+    assert_eq!(system_plan.steps[0].planned_scope, PlannedScope::System);
+}
+
+#[test]
+fn explicit_install_target_rejects_items_without_matching_scope() {
+    let catalog =
+        Catalog::from_toml_str(explicit_target_manifest()).expect("fixture catalog should parse");
+    let platform = platform_context(Some(TargetBackend::Apt), RuntimeScope::Both);
+
+    let user_error = build_install_plan_with_target(
+        &catalog,
+        &platform,
+        &PlannerRequest::item("system-only"),
+        InstallTargetPreference::User,
+    )
+    .expect_err("system-only item should reject explicit user target");
+    let system_error = build_install_plan_with_target(
+        &catalog,
+        &platform,
+        &PlannerRequest::item("user-only"),
+        InstallTargetPreference::System,
+    )
+    .expect_err("user-only item should reject explicit system target");
+
+    match user_error {
+        PlannerError::UnsupportedInstallTarget {
+            item_id,
+            install_target,
+            ..
+        } => {
+            assert_eq!(item_id, "system-only");
+            assert_eq!(install_target, InstallTargetPreference::User);
+        }
+        other => panic!("expected unsupported install target error, got {other}"),
+    }
+
+    match system_error {
+        PlannerError::UnsupportedInstallTarget {
+            item_id,
+            install_target,
+            ..
+        } => {
+            assert_eq!(item_id, "user-only");
+            assert_eq!(install_target, InstallTargetPreference::System);
+        }
+        other => panic!("expected unsupported install target error, got {other}"),
+    }
+}
+
 fn step_ids(plan: &envira::planner::InstallPlan) -> Vec<&str> {
     plan.steps
         .iter()
@@ -394,6 +467,75 @@ items = ["base", "tool-a"]
 name = "Bundle B"
 desc = "Bundle B"
 items = ["tool-a", "tool-b"]
+"#
+}
+
+fn explicit_target_manifest() -> &'static str {
+    r#"
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
+default_bundles = ["default"]
+
+[bundles.default]
+name = "Default"
+desc = "Default"
+items = ["hybrid-tool"]
+
+[items.hybrid-tool]
+name = "Hybrid Tool"
+desc = "Hybrid Tool"
+depends_on = []
+
+[[items.hybrid-tool.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "mkdir -p ~/.local/bin && touch ~/.local/bin/hybrid-tool"
+
+[[items.hybrid-tool.recipes]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "sudo apt install -y hybrid-tool"
+
+[[items.hybrid-tool.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v hybrid-tool"
+
+[[items.hybrid-tool.verifiers]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "command -v hybrid-tool"
+
+[items.system-only]
+name = "System Only"
+desc = "System Only"
+depends_on = []
+
+[[items.system-only.recipes]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "sudo apt install -y system-only"
+
+[[items.system-only.verifiers]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "command -v system-only"
+
+[items.user-only]
+name = "User Only"
+desc = "User Only"
+depends_on = []
+
+[[items.user-only.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "mkdir -p ~/.local/bin && touch ~/.local/bin/user-only"
+
+[[items.user-only.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v user-only"
 "#
 }
 

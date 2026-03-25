@@ -71,6 +71,15 @@ pub struct PlanPlatformSnapshot {
     pub runtime_scope: RuntimeScope,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallTargetPreference {
+    #[default]
+    Auto,
+    User,
+    System,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlanStep {
     pub item_id: String,
@@ -124,6 +133,14 @@ pub enum PlannerError {
         item_scope: InstallScope,
         runtime_scope: RuntimeScope,
     },
+    #[error(
+        "item `{item_id}` with catalog scope `{item_scope:?}` does not support explicit install target `{install_target:?}`"
+    )]
+    UnsupportedInstallTarget {
+        item_id: String,
+        item_scope: InstallScope,
+        install_target: InstallTargetPreference,
+    },
     #[error("dependency cycle detected: {cycle:?}")]
     DependencyCycle { cycle: Vec<String> },
 }
@@ -139,6 +156,15 @@ pub fn build_install_plan(
     platform: &PlatformContext,
     request: &PlannerRequest,
 ) -> Result<InstallPlan, PlannerError> {
+    build_install_plan_with_target(catalog, platform, request, InstallTargetPreference::Auto)
+}
+
+pub fn build_install_plan_with_target(
+    catalog: &Catalog,
+    platform: &PlatformContext,
+    request: &PlannerRequest,
+    install_target: InstallTargetPreference,
+) -> Result<InstallPlan, PlannerError> {
     let requested_items = expand_requested_items(catalog, request)?;
     let requested_ids = requested_items
         .iter()
@@ -152,6 +178,7 @@ pub fn build_install_plan(
         visit_item(
             catalog,
             platform,
+            install_target,
             item,
             &requested_ids,
             &mut states,
@@ -233,6 +260,7 @@ fn expand_requested_items<'a>(
 fn visit_item(
     catalog: &Catalog,
     platform: &PlatformContext,
+    install_target: InstallTargetPreference,
     item: &CatalogItem,
     requested_ids: &BTreeSet<String>,
     states: &mut BTreeMap<String, VisitState>,
@@ -264,6 +292,7 @@ fn visit_item(
         visit_item(
             catalog,
             platform,
+            install_target,
             dependency,
             requested_ids,
             states,
@@ -287,6 +316,7 @@ fn visit_item(
         item_scope,
         platform.runtime_scope,
         selected_target.backend,
+        install_target,
     )?;
     supported_commands(
         item,
@@ -464,7 +494,32 @@ fn resolve_scope(
     item_scope: InstallScope,
     runtime_scope: RuntimeScope,
     selected_backend: TargetBackend,
+    install_target: InstallTargetPreference,
 ) -> Result<PlannedScope, PlannerError> {
+    match install_target {
+        InstallTargetPreference::Auto => {}
+        InstallTargetPreference::User => {
+            return match item_scope {
+                InstallScope::User | InstallScope::Hybrid => Ok(PlannedScope::User),
+                InstallScope::System => Err(PlannerError::UnsupportedInstallTarget {
+                    item_id: item_id.to_string(),
+                    item_scope,
+                    install_target,
+                }),
+            };
+        }
+        InstallTargetPreference::System => {
+            return match item_scope {
+                InstallScope::System | InstallScope::Hybrid => Ok(PlannedScope::System),
+                InstallScope::User => Err(PlannerError::UnsupportedInstallTarget {
+                    item_id: item_id.to_string(),
+                    item_scope,
+                    install_target,
+                }),
+            };
+        }
+    }
+
     match (item_scope, runtime_scope) {
         (InstallScope::System, RuntimeScope::System | RuntimeScope::Both) => {
             Ok(PlannedScope::System)
