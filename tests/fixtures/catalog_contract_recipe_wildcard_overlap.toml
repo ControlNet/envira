@@ -1,0 +1,29 @@
+required_version = "0.1.0"
+distros = ["ubuntu", "fedora"]
+shell = "bash"
+default_bundles = ["essentials"]
+
+[bundles.essentials]
+name = "Essentials"
+desc = "Essentials bundle."
+items = ["git"]
+
+[items.git]
+name = "Git"
+desc = "Git is a distributed version control system."
+depends_on = []
+
+[[items.git.recipes]]
+mode = "sudo"
+distros = ["*"]
+cmd = "install git for every supported distro"
+
+[[items.git.recipes]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "install git for ubuntu again"
+
+[[items.git.verifiers]]
+mode = "sudo"
+distros = ["*"]
+cmd = "command -v git"

@@ -376,3 +376,4 @@ $RECYCLE.BIN/
 .cursorignore
 envira/_version.py
 pybuild
+.sisyphus/

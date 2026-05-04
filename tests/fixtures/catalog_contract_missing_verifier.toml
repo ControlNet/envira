@@ -1,0 +1,19 @@
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
+default_bundles = ["essentials"]
+
+[bundles.essentials]
+name = "Essentials"
+desc = "Essentials bundle."
+items = ["git"]
+
+[items.git]
+name = "Git"
+desc = "Git is a distributed version control system."
+depends_on = []
+
+[[items.git.recipes]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "sudo apt install -y git"

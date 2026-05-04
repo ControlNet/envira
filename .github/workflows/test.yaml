@@ -1,4 +1,4 @@
-name: Test
+name: Catalog Contract Test
 
 on:
   push:
@@ -8,16 +8,20 @@ on:
   workflow_call:
 
 jobs:
-  test:
+  launch-parity-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: prefix-dev/setup-pixi@v0.8.3
-        with:
-          pixi-version: v0.47.0
-          cache: true
-          manifest-path: pyproject.toml
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Run tests
-        run: pixi run test
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run keyed TOML launch parity matrix
+        run: ./scripts/run-launch-parity-matrix.sh
+
+      - name: Upload keyed TOML parity evidence artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-parity-contract-evidence
+          path: .sisyphus/evidence/
