@@ -353,6 +353,9 @@ echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> ~/.zshrc
 # install rustscan
 cargo binstall rustscan
 
+# install texlab
+cargo binstall texlab
+
 # install gotify
 go install github.com/gotify/cli@latest
 mv ~/go/bin/cli ~/go/bin/gotify

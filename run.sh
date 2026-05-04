@@ -563,6 +563,10 @@ echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> ~/.zshrc
 cargo binstall rustscan
 sudo install "$HOME/.cargo/bin/rustscan" /usr/local/bin/rustscan
 
+# install texlab
+cargo binstall texlab
+sudo install "$HOME/.cargo/bin/texlab" /usr/local/bin/texlab
+
 # install gotify
 go install github.com/gotify/cli@latest
 mv ~/go/bin/cli ~/go/bin/gotify
