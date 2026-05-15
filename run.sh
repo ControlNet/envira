@@ -150,12 +150,12 @@ elif cat /etc/issue | grep -qiE "Mint|Ubuntu|Pop\!_OS"; then
     sudo apt install -y fastfetch
 
     # install btop
-    wget https://github.com/aristocratos/btop/releases/download/v1.4.5/btop-x86_64-linux-musl.tbz -O btop.tbz
-    tar -xvf btop.tbz
+    wget https://github.com/aristocratos/btop/releases/download/v1.4.7/btop-x86_64-unknown-linux-musl.tar.gz -O btop.tar.gz
+    tar -xvf btop.tar.gz
     cd btop && ./install.sh
     cd ..
     rm -r btop
-    rm btop.tbz
+    rm btop.tar.gz
 
 # if openSUSE
 elif cat /etc/os-release | grep -qiE "openSUSE"; then
