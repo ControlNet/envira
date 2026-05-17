@@ -1,4 +1,4 @@
-name: Lagacy Test
+name: Legacy Installer Test
 on:
   workflow_call:
   push:
@@ -26,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu, fedora, manjaro, arch]
         mode: [sudo, user]
-    name: ${{ matrix.os }} ${{ matrix.mode }} test
+    name: Legacy ${{ matrix.os }} ${{ matrix.mode }} installer test
     
     steps:
       - name: Checkout

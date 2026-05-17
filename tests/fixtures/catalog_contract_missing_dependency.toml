@@ -1,0 +1,24 @@
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
+default_bundles = ["essentials"]
+
+[bundles.essentials]
+name = "Essentials"
+desc = "Essentials bundle."
+items = ["bat"]
+
+[items.bat]
+name = "bat"
+desc = "bat is a better cat."
+depends_on = ["wget"]
+
+[[items.bat.recipes]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "sudo apt install -y bat"
+
+[[items.bat.verifiers]]
+mode = "sudo"
+distros = ["ubuntu"]
+cmd = "command -v bat"

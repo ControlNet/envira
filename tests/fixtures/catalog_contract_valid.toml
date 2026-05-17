@@ -1,0 +1,24 @@
+required_version = "0.1.0"
+distros = ["ubuntu"]
+shell = "bash"
+default_bundles = ["essentials"]
+
+[bundles.essentials]
+name = "Essentials"
+desc = "Essentials is a bundle of essential tools for the system."
+items = ["git"]
+
+[items.git]
+name = "Git"
+desc = "Git is a distributed version control system."
+depends_on = []
+
+[[items.git.recipes]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "mkdir -p ~/.local/bin && ln -sf \"$(command -v git)\" ~/.local/bin/git"
+
+[[items.git.verifiers]]
+mode = "user"
+distros = ["ubuntu"]
+cmd = "command -v git"
