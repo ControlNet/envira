@@ -602,6 +602,19 @@ pipx install rich-cli
 # install github CLI
 curl -sS https://webi.sh/gh | sh
 
+# install infisical CLI
+mkdir -p "$HOME/.local/share/infisical"
+chmod 700 "$HOME/.local/share/infisical"
+npm install -g @infisical/cli
+wget https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/ienv.sh -O ~/.local/share/infisical/ienv.sh
+chmod 600 "$HOME/.local/share/infisical/ienv.sh"
+
+echo 'export INFISICAL_CLIENT_ID=' >> ~/.zshrc
+echo 'export INFISICAL_CLIENT_SECRET=' >> ~/.zshrc
+echo 'export INFISICAL_PROJECT_ID=' >> ~/.zshrc
+echo '[ -f "$HOME/.local/share/infisical/ienv.sh" ] && . "$HOME/.local/share/infisical/ienv.sh"' >> ~/.zshrc
+echo 'command -v ienv >/dev/null 2>&1 && ienv --quiet || true' >> ~/.zshrc
+
 # install syncthing (file sync)
 # curl -sS https://webinstall.dev/syncthing | bash
 # mkdir -p ~/.config/systemd/user
