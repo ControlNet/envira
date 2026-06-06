@@ -7,6 +7,28 @@ prepend_path() {
     esac
 }
 
+run_with_retries() {
+    local command="$1"
+    local max_attempts="${2:-3}"
+    local delay="${3:-5}"
+    local attempt=1
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if bash -c "$command"; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            echo "Command failed; retrying ($attempt/$max_attempts): $command" >&2
+            sleep "$delay"
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
 cleanup_sudo_heartbeat() {
     if [ -n "${SUDO_HEARTBEAT_PID:-}" ] && [ -e "${SUDO_HEARTBEAT_MARKER:-}" ]; then
         kill "$SUDO_HEARTBEAT_PID" >/dev/null 2>&1 || true
@@ -222,7 +244,7 @@ sudo update-pciids
 echo "fs.inotify.max_user_watches=524288" | sudo tee -a /etc/sysctl.conf
 
 # install fnm for nodejs
-curl -o- https://fnm.vercel.app/install | bash
+run_with_retries "curl -fsSL https://fnm.vercel.app/install | bash"
 
 # set tmux color
 echo "set -g default-terminal \"screen-256color\"" >> ~/.tmux.conf
