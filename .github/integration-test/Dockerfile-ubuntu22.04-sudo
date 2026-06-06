@@ -1,0 +1,36 @@
+# The Dockerfile to build ubuntu with a sudo user
+FROM ubuntu:22.04
+
+# Set the environment variables
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install the required packages
+RUN apt update
+RUN apt install -y sudo
+RUN echo 'debconf debconf/frontend select Noninteractive' | sudo debconf-set-selections
+RUN TZ=Etc/UTC apt install -o DPkg::Options::="--force-confnew" -y tzdata
+
+# Create a new user
+RUN useradd -m -s /bin/bash user && \
+    usermod -aG sudo user && \
+    echo "user ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Set the working directory
+WORKDIR /home/user
+COPY run.sh /home/user/run.sh
+
+# remove the last `zsh` in the script to prevent the endless runtime
+RUN echo "" >> ./run.sh
+RUN tac run.sh | awk '/^zsh$/ && !found { found = 1; next } 1' | tac > run.sh.tmp && mv run.sh.tmp run.sh
+
+# remove the line `systemctl --user start syncthing.service`
+RUN tac run.sh | awk '/^systemctl --user start syncthing.service$/ && !found { found = 1; next } 1' | tac > run.sh.tmp && mv run.sh.tmp run.sh
+
+# remove the line `docker run -d -p 9001:9001 --name portainer_agent --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/docker/volumes:/var/lib/docker/volumes portainer/agent:latest`
+RUN tac run.sh | awk '/^docker run -d -p 9001:9001 --name portainer_agent --restart=always -v \/var\/run\/docker.sock:\/var\/run\/docker.sock -v \/var\/lib\/docker\/volumes:\/var\/lib\/docker\/volumes portainer\/agent:latest$/ && !found { found = 1; next } 1' | tac > run.sh.tmp && mv run.sh.tmp run.sh
+
+# Set the user
+USER user
+
+# Set the entrypoint
+CMD bash run.sh
