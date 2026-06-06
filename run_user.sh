@@ -7,6 +7,28 @@ prepend_path() {
     esac
 }
 
+run_with_retries() {
+    local command="$1"
+    local max_attempts="${2:-3}"
+    local delay="${3:-5}"
+    local attempt=1
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if bash -c "$command"; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            echo "Command failed; retrying ($attempt/$max_attempts): $command" >&2
+            sleep "$delay"
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
 refresh_go_toolchain_path() {
     if [ -x "$HOME/.go/bin/go" ]; then
         export GOROOT="$HOME/.go"
@@ -60,7 +82,7 @@ rm -r ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl
 rm bat.zip
 
 # install fnm for nodejs
-curl -o- https://fnm.vercel.app/install | bash
+run_with_retries "curl -fsSL https://fnm.vercel.app/install | bash"
 
 # install neofetch
 git clone --depth 1 --branch "7.1.0" https://github.com/dylanaraps/neofetch ~/neofetch
