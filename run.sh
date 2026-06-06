@@ -178,14 +178,14 @@ elif cat /etc/os-release | grep -qiE "openSUSE"; then
     rm gitkraken-amd64.rpm
 
 # if manjaro
-elif cat /etc/issue | grep -qiE "Manjaro"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch neofetch fastfetch p7zip unzip yay mosh iperf3 nmap btop
+elif cat /etc/os-release | grep -qiE "^ID=manjaro$"; then
+    sudo pacman -Syu --noconfirm --needed gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip yay mosh iperf3 nmap btop
 
     # install vncserver
-    sudo pacman -Sy --noconfirm tigervnc
+    sudo pacman -S --noconfirm --needed tigervnc
 
     # install gitkraken
-    yay -Sy --noconfirm gitkraken
+    yay -S --noconfirm --needed gitkraken
 
 # if arch
 elif cat /etc/os-release | grep -qiE "Arch"; then
