@@ -151,6 +151,11 @@ elif cat /etc/issue | grep -qiE "Mint|Ubuntu|Pop\!_OS"; then
     # update and install
     sudo apt update
     sudo apt install -y iputils-ping net-tools python3-venv apt-utils software-properties-common make openssh-server gedit vim git git-lfs curl wget zsh gcc make perl build-essential libfuse2 python3-pip screen tmux ncdu bat pipx xsel screenfetch p7zip-full unzip mosh nmap pciutils fontconfig
+
+    if apt-cache show neofetch >/dev/null 2>&1; then
+        sudo apt install -y neofetch
+    fi
+
     # create a system-wide symlink for batcat to bat
     sudo ln -sf /usr/bin/batcat /usr/local/bin/bat
 

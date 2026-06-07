@@ -36,3 +36,12 @@ class TestLegacyScripts(unittest.TestCase):
         self.assertIn("software-properties-common", packages)
         self.assertIn("pciutils", packages)
         self.assertIn("fontconfig", packages)
+
+    def test_run_sh_installs_neofetch_when_ubuntu_repo_provides_it(self):
+        script_text = (REPO_ROOT / "run.sh").read_text()
+
+        self.assertIn(
+            "if apt-cache show neofetch >/dev/null 2>&1; then",
+            script_text,
+        )
+        self.assertIn("sudo apt install -y neofetch", script_text)
