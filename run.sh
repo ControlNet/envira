@@ -398,6 +398,9 @@ cargo binstall zellij
 echo "alias zel='zellij'" >> ~/.zshrc
 curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3
 
+# install herdr
+curl -fsSL https://herdr.dev/install.sh | sh
+
 # install lsd with alias to ls
 cargo binstall lsd
 sudo install "$HOME/.cargo/bin/lsd" /usr/local/bin/lsd
