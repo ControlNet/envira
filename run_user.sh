@@ -94,13 +94,6 @@ wget https://dev.yorhel.nl/download/ncdu-2.3-linux-x86_64.tar.gz
 tar -xvzf ncdu-2.3-linux-x86_64.tar.gz -C ~/.local/bin
 rm ncdu-2.3-linux-x86_64.tar.gz
 
-# install gitkraken
-wget https://release.gitkraken.com/linux/gitkraken-amd64.tar.gz
-tar -xvzf gitkraken-amd64.tar.gz
-mv gitkraken ~/.gitkraken
-rm gitkraken-amd64.tar.gz
-ln -s ~/.gitkraken/gitkraken ~/.local/bin/gitkraken
-
 # set tmux color
 echo "set -g default-terminal \"screen-256color\"" >> ~/.tmux.conf
 

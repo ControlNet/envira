@@ -168,12 +168,10 @@ check_cmd "git"
 check_cmd "curl"
 check_cmd "wget"
 
-section "bat / neofetch / ncdu / gitkraken"
+section "bat / neofetch / ncdu"
 check_cmd "bat"
 check_optional_cmd "neofetch"
 check_cmd "ncdu"
-# gitkraken is an app; envira symlinks a launcher
-check_optional_cmd "gitkraken"
 
 section "Conda (miniconda3)"
 check_dir "$HOME/miniconda3"

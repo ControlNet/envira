@@ -140,11 +140,6 @@ if [[ -f /etc/redhat-release ]]; then
     # install vnc
     sudo dnf install -y tigervnc-server
 
-    # install gitkraken
-    wget https://release.gitkraken.com/linux/gitkraken-amd64.rpm
-    sudo dnf install ./gitkraken-amd64.rpm
-    rm gitkraken-amd64.rpm
-
 # if ubuntu or mint
 elif cat /etc/issue | grep -qiE "Mint|Ubuntu|Pop\!_OS"; then
     export DEBIAN_FRONTEND=noninteractive
@@ -165,11 +160,6 @@ elif cat /etc/issue | grep -qiE "Mint|Ubuntu|Pop\!_OS"; then
 
     # install vnc
     sudo apt install -y tigervnc-standalone-server tigervnc-common tigervnc-xorg-extension
-
-    # install gitkraken
-    wget https://release.gitkraken.com/linux/gitkraken-amd64.deb
-    sudo apt install -y ./gitkraken-amd64.deb
-    rm gitkraken-amd64.deb
 
     # install fastfetch
     sudo add-apt-repository -y ppa:zhangsongcui3371/fastfetch
@@ -199,20 +189,12 @@ elif cat /etc/os-release | grep -qiE "openSUSE"; then
     # install vnc
     sudo zypper install -y tigervnc
 
-    # install gitkraken
-    wget https://release.gitkraken.com/linux/gitkraken-amd64.rpm
-    sudo zypper install --allow-unsigned-rpm -y ./gitkraken-amd64.rpm
-    rm gitkraken-amd64.rpm
-
 # if manjaro
 elif cat /etc/os-release | grep -qiE "^ID=manjaro$"; then
     sudo pacman -Syu --noconfirm --needed gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip yay mosh iperf3 nmap btop
 
     # install vncserver
     sudo pacman -S --noconfirm --needed tigervnc
-
-    # install gitkraken
-    yay -S --noconfirm --needed gitkraken
 
 # if arch
 elif cat /etc/os-release | grep -qiE "Arch"; then
@@ -224,16 +206,12 @@ elif cat /etc/os-release | grep -qiE "Arch"; then
     cd ..
     rm -rf yay
 
-    # install gitkraken
-    yay -Sy --noconfirm gitkraken
-
 # if endeavour os
 elif cat /etc/os-release | grep -qiE "EndeavourOS"; then
     sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
 
-    # install gitkraken
     # considering endeavour os cannot use officila docker install script, so we install it here
-    yay -Sy --noconfirm gitkraken docker
+    yay -Sy --noconfirm docker
     sudo systemctl enable docker
     sudo systemctl start docker
 
