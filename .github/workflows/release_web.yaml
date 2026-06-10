@@ -27,6 +27,10 @@ jobs:
         name: executable
         path: ~/dist/files
 
+    - name: Generate executable checksum
+      run: sha256sum envira > envira.sha256
+      working-directory: /home/runner/dist/files
+
     - name: Clean files
       run: |
         mv run.sh ~/dist/index.html
