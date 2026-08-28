@@ -145,6 +145,25 @@ check_optional_contains() {
   fi
 }
 
+check_codex_network_access() {
+  local f="$HOME/.codex/config.toml"
+  if [[ -f "$f" ]] && awk '
+    /^[[:space:]]*\[/ {
+      section = $0
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", section)
+    }
+    section == "[sandbox_workspace_write]" &&
+      /^[[:space:]]*network_access[[:space:]]*=[[:space:]]*true([[:space:]]*(#.*)?)?$/ {
+        found = 1
+      }
+    END { exit(found ? 0 : 1) }
+  ' "$f"; then
+    ok "codex config: sandbox_workspace_write.network_access=true"
+  else
+    bad "codex config: sandbox_workspace_write.network_access=true"
+  fi
+}
+
 section() {
   echo
   echo "== $1 =="
@@ -242,8 +261,7 @@ check_optional_cmd "speedtest"
 check_optional_cmd "gdown"
 check_any_cmd optional "archey (or archey4)" archey archey4
 check_optional_cmd "tldr"
-# huggingface-hub[cli,...] provides huggingface-cli and/or hf
-check_any_cmd optional "huggingface-cli (or hf)" huggingface-cli hf
+check_optional_cmd "hf"
 check_optional_cmd "nvitop"
 check_optional_cmd "rich"
 
@@ -258,7 +276,7 @@ check_file "$HOME/.config/pixi/config.toml"
 
 section "superfile"
 # superfile installs the 'spf' binary and writes config
-check_any_cmd optional "spf (or superfile)" spf superfile
+check_optional_cmd "spf"
 check_optional_file "$HOME/.config/superfile/config.toml"
 check_optional_contains "$HOME/.config/superfile/config.toml" 'auto_check_update\s*=\s*false' "superfile: auto_check_update=false"
 
@@ -267,7 +285,7 @@ check_cmd "yazi"
 check_cmd "ya"
 check_file "$HOME/.config/yazi/theme.toml"
 check_contains "$HOME/.config/yazi/theme.toml" '^\[flavor\]' "yazi theme: [flavor] present"
-check_contains "$HOME/.config/yazi/theme.toml" '^use\s*=\s*"onedark"' "yazi theme: use=\"onedark\""
+check_contains "$HOME/.config/yazi/theme.toml" '^dark\s*=\s*"onedark"' "yazi theme: dark=\"onedark\""
 
 section "Node / npm / pm2 / agent CLIs"
 check_cmd "fnm"
@@ -282,8 +300,8 @@ fi
 # @openai/codex -> usually `codex`
 check_optional_cmd "codex"
 
-# @google/gemini-cli -> usually `gemini`
-check_optional_cmd "gemini"
+# Antigravity CLI
+check_optional_cmd "agy"
 
 # Cursor / Claude / OpenCode / Bun
 # These installers may vary by distro; we only check presence.
@@ -297,7 +315,7 @@ section "OpenCode path & Codex config"
 check_optional_dir "$HOME/.config/opencode"
 check_dir "$HOME/.codex"
 check_file "$HOME/.codex/config.toml"
-check_contains "$HOME/.codex/config.toml" 'network_access\s*=\s*true' "codex config: network_access=true"
+check_codex_network_access
 
 section "GitHub CLI"
 check_cmd "gh"

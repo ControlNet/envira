@@ -75,10 +75,10 @@ mkdir -p ~/.local/bin
 ensure_pipx
 
 # install bat
-wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.25.0/bat-v0.25.0-x86_64-unknown-linux-musl.tar.gz
+wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz
 tar -xvzf bat.zip -C ~/.local/bin
-mv ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl/bat ~/.local/bin/bat
-rm -r ~/.local/bin/bat-v0.25.0-x86_64-unknown-linux-musl
+mv ~/.local/bin/bat-v0.26.1-x86_64-unknown-linux-musl/bat ~/.local/bin/bat
+rm -r ~/.local/bin/bat-v0.26.1-x86_64-unknown-linux-musl
 rm bat.zip
 
 # install fnm for nodejs
@@ -90,9 +90,9 @@ cd ~/neofetch && make PREFIX=~/.local install
 cd ~ && rm -rf ~/neofetch
 
 # install ncdu
-wget https://dev.yorhel.nl/download/ncdu-2.3-linux-x86_64.tar.gz
-tar -xvzf ncdu-2.3-linux-x86_64.tar.gz -C ~/.local/bin
-rm ncdu-2.3-linux-x86_64.tar.gz
+wget https://dev.yorhel.nl/download/ncdu-2.9.1-linux-x86_64.tar.gz
+tar -xvzf ncdu-2.9.1-linux-x86_64.tar.gz -C ~/.local/bin
+rm ncdu-2.9.1-linux-x86_64.tar.gz
 
 # set tmux color
 echo "set -g default-terminal \"screen-256color\"" >> ~/.tmux.conf
@@ -114,7 +114,7 @@ cat ~/.zshrc | sed 's/ZSH_THEME=\"robbyrussell\"/ZSH_THEME=\"mzz-ys\"\nZSH_DISAB
 
 mv ~/temp.zshrc ~/.zshrc
 
-# Disable oh-my-zsh auto update notification
+# Enable Oh My Zsh automatic updates without prompting
 echo "export DISABLE_UPDATE_PROMPT=true" | cat - ~/.zshrc > temp && mv temp ~/.zshrc
 
 # set the TERM=xterm-256color for tmux and Mosh
@@ -157,11 +157,11 @@ install lazygit ~/.local/bin/lazygit
 rm lazygit.tar.gz lazygit
 
 # setup neovim
-curl -LO https://github.com/neovim/neovim/releases/download/v0.9.5/nvim-linux64.tar.gz
-tar -xzf nvim-linux64.tar.gz
-mv nvim-linux64 ~/.nvim
+curl -LO https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-x86_64.tar.gz
+tar -xzf nvim-linux-x86_64.tar.gz
+mv nvim-linux-x86_64 ~/.nvim
 ln -s $HOME/.nvim/bin/nvim $HOME/.local/bin/nvim
-rm nvim-linux64.tar.gz
+rm nvim-linux-x86_64.tar.gz
 
 # setup GoLang environment variables (which is only set for bash in previous)
 echo '# GoLang' >> ~/.zshrc
@@ -193,23 +193,20 @@ eval "$(fnm env --shell bash)"
 
 # setup LunarVim
 LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y
-~/miniconda3/bin/python -m pip install neovim
+# install the Python client for Neovim
+~/miniconda3/bin/python -m pip install pynvim
 
 # setup conda
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
-# use faster libmamba solver for conda
-~/miniconda3/bin/conda install -n base -y conda-libmamba-solver
-~/miniconda3/bin/conda config --set solver libmamba
-
 # install jupyter
 ~/miniconda3/bin/conda install -y ipywidgets ipykernel jupyterlab jupyter
 
 # setup lazydocker
 curl https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh | bash
 
-# install lemonade for neovim/lunarvim clipboard for SSH
+# install lemonade for Neovim clipboard over SSH
 go install github.com/lemonade-command/lemonade@latest
 
 # install cargo-binstall for faster cargo installation
@@ -315,7 +312,7 @@ pipx install tldr
 pipx install "huggingface-hub[cli,hf_xet]"
 
 # install superfile (CLI file manager)
-bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)"
+bash -c "$(curl -sLo- https://superfile.dev/install.sh)"
 CFG="$HOME/.config/superfile/config.toml"
 URL="https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml"
 mkdir -p "$HOME/.config/superfile"
@@ -323,11 +320,11 @@ mkdir -p "$HOME/.config/superfile"
 sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' "$CFG"
 
 # install yazi (CLI file manager)
-cargo install yazi-build
+cargo install --force yazi-build
 mkdir -p ~/.config/yazi
-ya pack -a BennyOe/onedark
+ya pkg add damjee/onedark
 echo '[flavor]' > ~/.config/yazi/theme.toml
-echo 'use = "onedark"' >> ~/.config/yazi/theme.toml
+echo 'dark = "onedark"' >> ~/.config/yazi/theme.toml
 
 # install pm2
 npm config set prefix "$HOME/.local"
@@ -336,8 +333,10 @@ npm install -g pm2
 # install CLI agents
 npm install -g @openai/codex@latest
 mkdir -p ~/.codex
-echo "network_access = true" >> ~/.codex/config.toml
-npm install -g @google/gemini-cli
+if ! grep -qE '^\[sandbox_workspace_write\]$' ~/.codex/config.toml 2>/dev/null; then
+    printf '\n[sandbox_workspace_write]\nnetwork_access = true\n' >> ~/.codex/config.toml
+fi
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 curl -fsSL https://cursor.com/install | bash
 curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://opencode.ai/install | bash
@@ -347,7 +346,6 @@ curl -fsSL https://bun.sh/install | bash
 curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh
 
 # add more relavent tools for agents
-curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
 curl -fsSL https://raw.githubusercontent.com/zjrosen/perles/main/install.sh | bash
 
 # install dolt for beads

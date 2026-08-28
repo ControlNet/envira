@@ -109,15 +109,15 @@ if [[ -f /etc/redhat-release ]]; then
         sudo dnf install -y python3 pipx gedit vim git git-lfs curl wget zsh gcc make perl screen tmux ncdu xsel unzip bat screenfetch neofetch fastfetch mosh iperf3 nmap btop
     # if centos
     else
-        sudo yum install -y python3 dnf gedit vim git git-lfs curl wget zsh gcc make perl build-essential screen tmux ncdu xsel unzip iperf3 nmap
+        sudo yum install -y python3 dnf gedit vim git git-lfs curl wget zsh gcc make perl screen tmux ncdu xsel unzip iperf3 nmap
         # install pipx
         python3 -m pip install --user pipx
         python3 -m pipx ensurepath
 
         # install bat
-        wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.7.1/bat-v0.7.1-x86_64-unknown-linux-musl.tar.gz
+        wget -O bat.zip https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz
         tar -xvzf bat.zip -C ~/.local/bin
-        cd ~/.local/bin && mv bat-v0.7.1-x86_64-unknown-linux-musl/bat . && rm -r bat-v0.7.1-x86_64-unknown-linux-musl
+        cd ~/.local/bin && mv bat-v0.26.1-x86_64-unknown-linux-musl/bat . && rm -r bat-v0.26.1-x86_64-unknown-linux-musl
         cd ~ && rm bat.zip
 
         # install neofetch
@@ -197,8 +197,8 @@ elif cat /etc/os-release | grep -qiE "^ID=manjaro$"; then
     sudo pacman -S --noconfirm --needed tigervnc
 
 # if arch
-elif cat /etc/os-release | grep -qiE "Arch"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
+elif cat /etc/os-release | grep -qiE "^ID=arch$"; then
+    sudo pacman -Syu --noconfirm --needed gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
     # install yay
     git clone https://aur.archlinux.org/yay.git
     cd yay
@@ -208,7 +208,7 @@ elif cat /etc/os-release | grep -qiE "Arch"; then
 
 # if endeavour os
 elif cat /etc/os-release | grep -qiE "EndeavourOS"; then
-    sudo pacman -Sy --noconfirm gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
+    sudo pacman -Syu --noconfirm --needed gedit vim git git-lfs curl wget zsh gcc make perl base-devel binutils screen tmux ncdu bat python-pip python-pipx xsel ctop screenfetch fastfetch p7zip unzip tigervnc mosh iperf3 nmap btop
 
     # considering endeavour os cannot use officila docker install script, so we install it here
     yay -Sy --noconfirm docker
@@ -249,7 +249,7 @@ cat ~/.zshrc | sed 's/ZSH_THEME=\"robbyrussell\"/ZSH_THEME=\"mzz-ys\"\nZSH_DISAB
 
 mv ~/temp.zshrc ~/.zshrc
 
-# Disable oh-my-zsh auto update notification
+# Enable Oh My Zsh automatic updates without prompting
 echo "export DISABLE_UPDATE_PROMPT=true" | cat - ~/.zshrc > temp && mv temp ~/.zshrc
 
 # set the TERM=xterm-256color for tmux and Mosh
@@ -304,11 +304,11 @@ sudo install lazygit /usr/local/bin/lazygit
 rm lazygit.tar.gz lazygit
 
 # setup neovim
-curl -LO https://github.com/neovim/neovim/releases/download/v0.9.5/nvim-linux64.tar.gz
-tar -xzf nvim-linux64.tar.gz
-mv nvim-linux64 ~/.nvim
+curl -LO https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-x86_64.tar.gz
+tar -xzf nvim-linux-x86_64.tar.gz
+mv nvim-linux-x86_64 ~/.nvim
 sudo ln -sf $HOME/.nvim/bin/nvim /usr/local/bin/nvim
-rm nvim-linux64.tar.gz
+rm nvim-linux-x86_64.tar.gz
 
 # setup GoLang environment variables (which is only set for bash in previous)
 echo '# GoLang' >> ~/.zshrc
@@ -340,21 +340,18 @@ eval "$(fnm env --shell bash)"
 
 # setup LunarVim
 LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y
-~/miniconda3/bin/python -m pip install neovim
+# install the Python client for Neovim
+~/miniconda3/bin/python -m pip install pynvim
 
 # setup conda
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 ~/miniconda3/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
-# use faster libmamba solver for conda
-~/miniconda3/bin/conda install -n base -y conda-libmamba-solver
-~/miniconda3/bin/conda config --set solver libmamba
-
 # install jupyter
 ~/miniconda3/bin/conda install -y ipywidgets ipykernel jupyterlab jupyter
 
 # install Meslo font
-wget https://github.com/ryanoasis/nerd-fonts/releases/download/v2.1.0/Meslo.zip
+wget https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/Meslo.zip
 mkdir -p .local/share/fonts
 unzip Meslo.zip -d .local/share/fonts
 cd .local/share/fonts
@@ -377,7 +374,7 @@ sudo usermod -aG docker $USER
 # setup lazydocker
 curl https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh | bash
 
-# install lemonade for neovim/lunarvim clipboard for SSH
+# install lemonade for Neovim clipboard over SSH
 go install github.com/lemonade-command/lemonade@latest
 
 # install zerotier
@@ -507,23 +504,25 @@ sudo ln -sf "$HOME/.local/bin/tldr" /usr/local/bin/tldr
 
 # install huggingface CLI
 pipx install "huggingface-hub[cli,hf_xet]"
-sudo ln -sf "$HOME/.local/bin/huggingface-cli" /usr/local/bin/huggingface-cli
+sudo ln -sf "$HOME/.local/bin/hf" /usr/local/bin/hf
 
 # install superfile (CLI file manager)
-bash -c "$(curl -sLo- https://superfile.netlify.app/install.sh)"
+bash -c "$(curl -sLo- https://superfile.dev/install.sh)"
 CFG="$HOME/.config/superfile/config.toml"
 URL="https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml"
 mkdir -p "$HOME/.config/superfile"
 [ -f "$CFG" ] || curl -fsSL "$URL" -o "$CFG"
 sed -i -E 's/^\s*auto_check_update\s*=.*/auto_check_update = false/' "$CFG"
-sudo ln -sf "$HOME/.local/bin/superfile" /usr/local/bin/superfile
+if [ -x "$HOME/.local/bin/spf" ]; then
+    sudo ln -sf "$HOME/.local/bin/spf" /usr/local/bin/spf
+fi
 
 # install yazi (CLI file manager)
-cargo install yazi-build
+cargo install --force yazi-build
 mkdir -p ~/.config/yazi
-ya pack -a BennyOe/onedark
+ya pkg add damjee/onedark
 echo '[flavor]' > ~/.config/yazi/theme.toml
-echo 'use = "onedark"' >> ~/.config/yazi/theme.toml
+echo 'dark = "onedark"' >> ~/.config/yazi/theme.toml
 sudo install "$HOME/.cargo/bin/yazi" /usr/local/bin/yazi
 sudo install "$HOME/.cargo/bin/ya" /usr/local/bin/ya
 
@@ -535,8 +534,10 @@ sudo ln -sf "$HOME/.local/bin/pm2" /usr/local/bin/pm2
 # install CLI agents
 npm install -g @openai/codex@latest
 mkdir -p ~/.codex
-echo "network_access = true" >> ~/.codex/config.toml
-npm install -g @google/gemini-cli
+if ! grep -qE '^\[sandbox_workspace_write\]$' ~/.codex/config.toml 2>/dev/null; then
+    printf '\n[sandbox_workspace_write]\nnetwork_access = true\n' >> ~/.codex/config.toml
+fi
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 curl -fsSL https://cursor.com/install | bash
 curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://opencode.ai/install | bash
@@ -546,7 +547,6 @@ curl -fsSL https://bun.sh/install | bash
 curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh
 
 # add more relavent tools for agents
-curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
 curl -fsSL https://raw.githubusercontent.com/zjrosen/perles/main/install.sh | bash
 
 # install dolt for beads

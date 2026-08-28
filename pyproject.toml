@@ -44,7 +44,7 @@ version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 
 # Pixi configuration
-[tool.pixi.project]
+[tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
@@ -60,8 +60,6 @@ clean = "rm -rf dist pybuild build"
 python = ">=3.12,<4"
 rich = ">=14.0.0,<15"
 distro = ">=1.9.0,<2"
-
-[tool.pixi.build-dependencies]
 pyinstaller = ">=6,<7"
 twine = "*"
 setuptools = "*"
