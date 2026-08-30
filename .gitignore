@@ -376,3 +376,6 @@ $RECYCLE.BIN/
 .cursorignore
 envira/_version.py
 pybuild
+
+# Local Codex continuation state
+.omo/run-continuation/
