@@ -299,6 +299,7 @@ fi
 
 # @openai/codex -> usually `codex`
 check_optional_cmd "codex"
+check_optional_cmd "omp"
 
 # Antigravity CLI
 check_optional_cmd "agy"

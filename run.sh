@@ -544,10 +544,7 @@ curl -fsSL https://opencode.ai/install | bash
 curl -fsSL https://bun.sh/install | bash
 ~/.bun/bin/bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no
 ~/.bun/bin/bun add -g @openchamber/web
-curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh
-
-# add more relavent tools for agents
-curl -fsSL https://raw.githubusercontent.com/zjrosen/perles/main/install.sh | bash
+curl -fsSL https://omp.sh/install | sh
 
 # install dolt for beads
 arch="$(uname -m)" && \
