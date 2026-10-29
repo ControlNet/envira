@@ -1,6 +1,6 @@
 # envira Rewrite Design (Rust + ratatui)
 
-Status: M1–M3 implemented on `feature/rust-cli` (2026-10-29); M4–M5 open. Supersedes the architecture on
+Status: M1–M4 implemented on `feature/rust-cli` (2026-10-29); M5 open. Supersedes the architecture on
 `origin/feature/cli-app`.
 
 ## Intent
@@ -249,7 +249,7 @@ duplicates (e.g. an existing `alias ls='lsd'`) so the user can clean them up.
 ## Command line
 ```
 envira                      # TUI on a terminal, `status` otherwise
-envira status [--json]
+envira status [--json] [--latest [--refresh]]   # latest versions: cached 6 h, network only with --latest
 envira sync   [--bundle B]... [-y] [--dry-run] [-q]
 envira install <item|bundle>... [--force] [-y] [--dry-run] [-q]
 envira retry  [-y]          # failed + blocked units of the last run
@@ -259,7 +259,9 @@ envira env                  # regenerate shell files and rc blocks only
 envira log    [<item>] [--run <id>]
 envira doctor               # facts, PATH, rc integration and duplicates, catalog layers
 envira catalog check|schema|show
-envira update ...           # M4
+envira update [<item|bundle>...] [--check] [--refresh | --offline] [-y] [--dry-run] [-q]
+                            # no items: every outdated managed/adoptable tool
+envira adopt  [<item|bundle>...] [--dry-run]   # record adoptable tools as managed, no reinstall
 Global: --catalog <path>, --no-overlay, --scope user|system
 Hidden, used by templates: envira fs ..., envira fetch-release ...
 ```
@@ -345,7 +347,26 @@ template's `defaults`) and the builtins `arch home user bin_dir sudo envira id b
 - Raw commands (`run`, `check`, `apply`, `revert`, `detect.cmd`) get builtins only.
 
 **`[methods.<name>]`.** `desc`, `when`, `scope = "user" | "system" | "any"`, `expects` (lint only),
-`defaults`, `install`, optional `update` / `latest` (M4) and `installed = { cmd, regex }` (adoption).
+`defaults`, `install`, optional `update` (default: `install` again), `latest` and
+`installed = { cmd, regex }` (adoption; its first group is the version the method installed).
+
+**Queries** (`latest`, `installed`): `{ cmd | http, json?, regex? }`. `http` is a GET (User-Agent set;
+`GITHUB_TOKEN` for api.github.com) whose placeholders are inserted verbatim; `json` is a dotted path
+(numbers index arrays) into the answer; `regex`'s first group is the version, default a generic
+version pattern (so tags like `v0.25.0` and `bun-v1.4.4` need no regex). Answers are cached per tool
+and expanded query in `latest.toml` for 6 hours (failures for 30 minutes). Install entries may set
+their own `update` and `latest`, which override the method's; raw `run` entries only get builtins.
+
+**Updates go where the tool lives.** An update runs the `update` template of the install entry the
+tool came from, in that entry's scope (the route):
+- managed: the method and scope recorded in state;
+- adoptable via an `installed` query: that method, in its own scope;
+- adoptable by path (binary under `$HOME`, no query matched): the first usable user-scope entry whose
+  method has no `installed` query and, if its install template uses `{bin_dir}`, whose user bin dir
+  holds the binary.
+Routes need the entry's dependencies present and, for system scope, sudo; otherwise the tool is
+`external` and never touched. "Outdated" compares `latest` with the version the method reports,
+falling back to the detected version.
 
 **`[actions.<name>]`.** `desc`, `defaults`, `check` (exit 0 = in place), `apply`, optional `revert`.
 The library calls the `envira fs` primitives: `write`, `block`, `toml-set`, `ini-set`, `link` (each
@@ -398,13 +419,25 @@ duplicate ids.
 8. Without a TTY, tools still open `/dev/tty`: `yazi --version` blocked inside the TUI. All commands now
    run in a new session (`setsid`), so they have no controlling terminal.
 9. Ownership comes from the method's `installed` query or the binary path. A tool built from source
-   into `~/.cargo/bin` shows its planned method (github-release) under "via" until M4 adoption decides
-   how to take it over.
+   into `~/.cargo/bin` (yazi) is external: the github-release entry installs into `~/.local/bin`, and
+   the cargo entry's query does not list it.
 10. Shared libraries are items too. Node.js 25+ from fnm links against `libatomic.so.1`, which minimal
    images lack (the node binary installs but does not start). `libatomic` has `bins = []`, detects
    through `ldconfig -p`, installs the distro package, and `nodejs` depends on it.
-11. Not modelled yet: per-entry `update` commands and the `latest` query (M4); the uninstall of tools
-   (out of v1); prerequisites that are not catalog items, such as `curl` for the `script` method.
+11. The detected version can belong to another copy. A host had an old `bat` in `~/.local/bin`
+   shadowing apt's `batcat`; comparing that version with apt's candidate reported apt's bat as
+   outdated forever. Outdated now uses the version from the method's `installed` query.
+12. Detection depends on the working directory: `rustc --version` inside a repo with
+   `rust-toolchain.toml` reports the pinned toolchain. Captures now run in `$HOME`.
+13. Vendor tools use exit codes as answers: `rustup check` exits 100 when an update exists, so its
+   query is `rustup check || [ $? -eq 100 ]`.
+14. A binary in `$HOME` is not proof of the method: node from nvm matched the fnm-based `nodejs`
+   entry by path. Routes now require the entry's dependencies (fnm) to be present.
+15. `latest` sources are per method where possible (crates.io, PyPI, npm registry, GitHub releases,
+   `apt-cache policy`, `pacman -Si`); dnf and zypper only have `update` for now, as their query
+   formats are unverified. apt and pacman answer from the local package lists (no network).
+16. Not modelled yet: the uninstall of tools (out of v1); prerequisites that are not catalog items,
+   such as `curl` for the `script` method; herdr has an updater (`herdr update`) but no latest source.
 
 ## Legacy script parity (long-term parallel maintenance)
 CI check (`tests/legacy_parity.rs` or a small script) that:
@@ -458,10 +491,12 @@ tests/integration/ (Docker: run.sh, check.sh, Dockerfile.ubuntu)
    `envira fs` primitives; shellenv + rc block.
 3. **M3 TUI** (done): dashboard, plan review, run view with live logs, first-run picker. History screen
    deferred; `envira log` covers it.
-4. **M4 updates**: `latest` for all backends, `update`, outdated filter, adoption of existing installs.
+4. **M4 updates** (done): `latest` queries per method and entry with a cache, `update` in place along
+   routes, `adopt`, outdated label / filter / `u` key in the TUI, background check on start.
 5. **M5 delivery**: remote catalog + cache + overlays, musl release CI + maturin wheels (see Repo
    transition), Python package removal, `envira.sh` bootstrap, legacy parity check; port the remaining catalog.
 
 ## Open questions
 - Is the `envira` crate name free on crates.io?
-- How many log runs to keep, and should `status` check updates by default (network cost)?
+- How many log runs to keep (20 now)? `status` uses cached latest versions only; the TUI checks in the
+  background on start (6 h cache).

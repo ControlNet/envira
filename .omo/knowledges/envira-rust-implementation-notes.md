@@ -21,6 +21,19 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - fnm's Node.js 25+ needs `libatomic.so.1` (apt `libatomic1`); without it `node` fails to load on
   minimal images. It is the `libatomic` catalog item, a dependency of `nodejs`.
 
+## Updates and adoption (M4)
+- Registry answers verified 2026-10: crates.io `crate.max_stable_version` (403 without User-Agent),
+  PyPI `info.version`, npm `https://registry.npmjs.org/<pkg>/latest` → `version` (scoped names work
+  unencoded), GitHub `releases/latest` → `tag_name` (`v1.39.0`, `bun-v1.4.4`).
+- `rustup check` prints `stable-<triple> - update available: A (..) -> B (..)` or `up to date: A`
+  and exits 100 when an update exists.
+- `fnm ls-remote --lts | tail -n 1` gives the newest LTS (`--latest` is not on every fnm version).
+- `bun upgrade`, `herdr update`, `pipx upgrade`, `npm install -g <pkg>@latest`,
+  `apt-get install --only-upgrade -y` are the in-place updaters.
+- Never re-plan an update with the machine's scope preference: a `~/.local/bin` tool on a sudo
+  machine would be "updated" into `/usr/local/bin` and leave two copies. Use the route.
+- Run captures in `$HOME`; the launch directory's `rust-toolchain.toml` changed `rustc --version`.
+
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
 - reqwest 0.13: TLS feature is `rustls` (not `rustls-tls`); `default-features = false, features = ["blocking", "json", "rustls"]`.

@@ -405,6 +405,17 @@ pub async fn update(
         }
         return Ok(0);
     }
+    if targets.is_empty() {
+        // Only explicit items left out: up to date is success, anything else is an error.
+        for (id, why) in &skipped {
+            println!("  skip {id}: {why}");
+        }
+        let all_current = skipped.iter().all(|(_, w)| w.starts_with("up to date"));
+        if all_current {
+            println!("Up to date.");
+        }
+        return Ok(if all_current { 0 } else { 1 });
+    }
     let mut plan = sess.update_plan(&targets);
     plan.skipped.extend(skipped);
     run_plan(sess, plan, state.unwrap_or_default(), "update", opts).await
