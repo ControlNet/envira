@@ -6,7 +6,8 @@
 desc = "LunarVim (release-1.4/neovim-0.9 branch)"
 bin = "lvim"
 depends = ["neovim", "git", "build-tools", "nodejs", "miniconda", "curl"]
-install = [{ run = "LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y && \"$HOME/miniconda3/bin/python\" -m pip install pynvim" }]
+# The installer pip-installs pynvim with --user, which PEP 668 blocks on newer distros.
+install = [{ run = "LV_BRANCH='release-1.4/neovim-0.9' PIP_BREAK_SYSTEM_PACKAGES=1 bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y && \"$HOME/miniconda3/bin/python\" -m pip install pynvim" }]
 
 [tools.gedit]
 desc = "GNOME text editor"
@@ -48,6 +49,8 @@ install = [
 
 [tools.neofetch]
 desc = "System information with ASCII art"
+# `neofetch --version` exits 1.
+detect = { cmd = "(neofetch --version || true) 2>&1 | grep 'Neofetch [0-9]'" }
 install = [
   { method = "apt", package = "neofetch" },
   { method = "dnf", package = "neofetch" },

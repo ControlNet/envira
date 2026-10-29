@@ -32,7 +32,7 @@ bins = ["go", "gofmt"]
 detect = { cmd = "go version", version = 'go(\d\S*)' }
 # Same layout as ControlNet/golang-tools-install-script (GOROOT ~/.go), but always the newest
 # release and without rc-file edits; the environment comes from `shell`. Updating replaces ~/.go.
-install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n 1) && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.linux-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go\" && mkdir -p \"$HOME/.go\" && tar -C \"$HOME/.go\" --strip-components=1 -xzf go.tar.gz", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
+install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | sed -n 1p) && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.linux-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go\" && mkdir -p \"$HOME/.go\" && tar -C \"$HOME/.go\" --strip-components=1 -xzf go.tar.gz", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
 shell = { path = ["~/.go/bin", "~/go/bin"], env = { GOROOT = "~/.go", GOPATH = "~/go" } }
 
 [tools.fnm]
@@ -48,7 +48,7 @@ shell = { path = ["~/.local/share/fnm"], env = { FNM_PATH = "~/.local/share/fnm"
 desc = "GNU atomic operations library (Node.js 25+ links against it)"
 # A shared library, not an executable: detected through the linker cache.
 bins = []
-detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" ldconfig -p | grep -qF libatomic.so.1" }
+detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" ldconfig -p | grep -F libatomic.so.1 >/dev/null" }
 install = [
   { method = "apt", package = "libatomic1" },
   { method = "dnf", package = "libatomic" },

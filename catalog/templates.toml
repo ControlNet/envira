@@ -180,6 +180,6 @@ revert = "{sudo} {envira} fs restore {link}"
 
 [actions.user-group]
 desc = "Supplementary group membership for the target user"
-check = "id -nG {user} | tr ' ' '\\n' | grep -qx {group}"
+check = "id -nG {user} | tr ' ' '\\n' | grep -x {group} >/dev/null"
 apply = "{sudo} groupadd -f {group} && {sudo} usermod -aG {group} {user}"
 revert = "{sudo} gpasswd -d {user} {group}"

@@ -9,7 +9,7 @@ if [ "${ENVIRA_MODE:-sudo}" = user ]; then
   # What an administrator provides on a machine without sudo.
   sudo apt-get update -qq
   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    git build-essential unzip libatomic1 python3-pip python3-venv >/dev/null
+    git wget build-essential unzip libatomic1 python3-pip python3-venv >/dev/null
   export ENVIRA_PRIVILEGE=none
   bundles=(-b user -b extras)
 else

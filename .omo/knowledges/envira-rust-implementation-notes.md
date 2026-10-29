@@ -40,8 +40,14 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   in sync and found the missing `pm2`. Bundle `full` = run.sh, `user` = run_user.sh, `extras` = old tools.
 - Detect commands that do not use `--version`: `dolt version`, `gotify version`, `hf version`,
   `screen -v` (non-zero exit on some versions), `tmux -V`, `7z i`, `ping -V`, `ctop -v`.
-- Under `bash -eo pipefail`, `cmd | grep -m1 x` (or `| head`) fails with SIGPIPE when `cmd` keeps
-  writing after grep exits: `7z i | grep -m1 7-Zip` reported p7zip as not installed. Use plain grep.
+- Under `bash -eo pipefail`, `cmd | grep -q x`, `| grep -m1` or `| head` fail at random with
+  SIGPIPE when `cmd` is still writing after the reader exits: `7z i | grep -m1 7-Zip` and
+  `ldconfig -p | grep -q libatomic.so.1` flapped between installed and missing (libfuse2 looked
+  absent on a host that had it). Use `grep … >/dev/null`; the test `catalog_pipes_do_not_exit_early`
+  rejects these readers. Tools whose `--version` exits non-zero (neofetch, some screen builds) use
+  `(cmd --version || true) 2>&1 | grep 'Name [0-9]'`.
+- LunarVim's installer pip-installs pynvim with `--user`; PEP 668 (Ubuntu 24.04) blocks that, so
+  run.sh's LunarVim step fails there too. The catalog sets `PIP_BREAK_SYSTEM_PACKAGES=1`.
 - Release asset names change: lazygit went from `lazygit_<v>_Linux_x86_64.tar.gz` to
   `..._linux_x86_64.tar.gz` (run.sh still has the old URL). Asset params take a list of globs.
 - oh-my-opencode's installer now writes the plugin as `oh-my-openagent@latest` in

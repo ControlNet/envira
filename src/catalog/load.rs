@@ -233,6 +233,28 @@ mod tests {
         assert!(user.iter().all(|i| covered.contains(i)));
     }
 
+    /// Commands run with `pipefail`: a reader that exits early (`grep -q`, `grep -m`, `head`) kills
+    /// the writer with SIGPIPE and fails the pipeline at random (`ldconfig -p | grep -q`).
+    #[test]
+    fn catalog_pipes_do_not_exit_early() {
+        let re = regex::Regex::new(r"\|\s*(grep\s+(-\w*[qm]|--quiet|--max-count)|head\b)").unwrap();
+        let bad: Vec<String> = EMBEDDED
+            .files()
+            .filter(|f| f.path().extension().is_some_and(|e| e == "toml"))
+            .flat_map(|f| {
+                let name = f.path().display().to_string();
+                f.contents_utf8()
+                    .unwrap_or_default()
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, l)| re.is_match(l))
+                    .map(move |(n, _)| format!("{name}:{}", n + 1))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(bad.is_empty(), "early-exit readers in pipes: {bad:?}");
+    }
+
     #[test]
     fn overlay_overrides_single_field_and_keeps_the_rest() {
         let base = layer(&[(

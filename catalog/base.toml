@@ -71,7 +71,7 @@ install = [
 [tools.screen]
 desc = "GNU Screen terminal multiplexer"
 # `screen -v` exits non-zero on some versions.
-detect = { cmd = "screen -v 2>&1 | grep -i 'screen version'" }
+detect = { cmd = "(screen -v || true) 2>&1 | grep 'Screen version'" }
 install = [
   { method = "apt", package = "screen" },
   { method = "dnf", package = "screen" },
@@ -185,7 +185,7 @@ install = [{ method = "apt", package = "openssh-server" }]
 [tools.libfuse2]
 desc = "FUSE 2 library (AppImages)"
 bins = []
-detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" ldconfig -p | grep -qF libfuse.so.2" }
+detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" ldconfig -p | grep -F libfuse.so.2 >/dev/null" }
 install = [{ method = "apt", package = "libfuse2" }]
 
 [tools.fontconfig]
