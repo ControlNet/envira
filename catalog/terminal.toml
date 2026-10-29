@@ -43,7 +43,8 @@ shell = { path = ["~/.fzf/bin"], init = { zsh = '[ -f "$HOME/.fzf.zsh" ] && . "$
 
 [tools.lazygit]
 desc = "Terminal UI for git"
-install = [{ method = "github-release", repo = "jesseduffield/lazygit", asset = { x86_64 = "lazygit_*_Linux_x86_64.tar.gz", aarch64 = "lazygit_*_Linux_arm64.tar.gz" } }]
+# Asset names were `Linux_…` up to 2026 and are `linux_…` now (run.sh still uses the old name).
+install = [{ method = "github-release", repo = "jesseduffield/lazygit", asset = { x86_64 = ["lazygit_*_linux_x86_64.tar.gz", "lazygit_*_Linux_x86_64.tar.gz"], aarch64 = ["lazygit_*_linux_arm64.tar.gz", "lazygit_*_Linux_arm64.tar.gz"] } }]
 
 [tools.zellij]
 desc = "Terminal workspace (multiplexer)"
@@ -194,10 +195,6 @@ desc = "GitHub CLI"
 detect = { cmd = "gh --version", version = 'gh version (\S+)' }
 install = [{ method = "github-release", repo = "cli/cli", asset = { x86_64 = "gh_*_linux_amd64.tar.gz", aarch64 = "gh_*_linux_arm64.tar.gz" } }]
 
-[tools.dolt]
-desc = "Version-controlled SQL database (used by beads)"
-install = [{ method = "github-release", repo = "dolthub/dolt", asset = { x86_64 = "dolt-linux-amd64.tar.gz", aarch64 = "dolt-linux-arm64.tar.gz" } }]
-
 [bundles.terminal]
 name = "Terminal"
 desc = "Daily terminal tools and their aliases"
@@ -205,5 +202,5 @@ items = [
   "bat", "bat-link", "ncdu", "fzf", "lazygit", "zellij", "zellij-config", "herdr", "lsd", "delta",
   "duf", "dust", "fd", "ripgrep", "gping", "procs", "xh", "viu", "rustscan", "scc", "gotify",
   "zoxide", "micro", "superfile", "superfile-config", "yazi", "yazi-theme", "tldr", "rich-cli",
-  "speedtest-cli", "gdown", "gh", "dolt",
+  "speedtest-cli", "gdown", "gh",
 ]

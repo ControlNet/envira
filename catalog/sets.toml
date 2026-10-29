@@ -23,7 +23,7 @@ items = [
   "bat", "ncdu", "fzf", "lazygit", "zellij", "zellij-config", "herdr", "lsd", "delta", "duf",
   "dust", "fd", "ripgrep", "gping", "procs", "xh", "viu", "rustscan", "scc", "gotify", "zoxide",
   "micro", "superfile", "superfile-config", "yazi", "yazi-theme", "tldr", "rich-cli",
-  "speedtest-cli", "gdown", "gh", "dolt",
+  "speedtest-cli", "gdown", "gh",
   # editors
   "neovim", "lemonade", "texlab",
   # ai agents
