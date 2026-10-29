@@ -1,0 +1,15 @@
+# Throwaway Ubuntu machine for envira integration runs: a normal user with passwordless sudo,
+# no unzip (envira installs it as a dependency) and no apt package lists (exercises the apt fallback).
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl sudo zsh python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/zsh user \
+ && echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/user \
+ && touch /home/user/.zshrc && chown user:user /home/user/.zshrc
+
+USER user
+WORKDIR /home/user
