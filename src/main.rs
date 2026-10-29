@@ -96,6 +96,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 commands::log(&sess, item.as_deref(), run.as_deref())
             }
             Some(Command::Doctor) => commands::doctor(&sess).await,
+            Some(Command::Explain { item }) => commands::explain(&sess, &item).await,
             Some(Command::Fs { .. } | Command::FetchRelease { .. } | Command::Catalog { .. }) => {
                 unreachable!()
             }

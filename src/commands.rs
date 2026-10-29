@@ -164,6 +164,126 @@ pub async fn doctor(sess: &Session) -> Result<i32> {
     Ok(0)
 }
 
+/// Prints a command's exit code and the first lines of its output, indented.
+fn print_probe(cmd: &str, p: &crate::runner::Probe) {
+    println!("  $ {cmd}");
+    println!("    exit {}", p.code);
+    let lines: Vec<&str> = p.output.lines().collect();
+    for l in lines.iter().take(6) {
+        println!("    │ {}", exec::redact(l, exec::secrets()));
+    }
+    if lines.len() > 6 {
+        println!("    │ … {} more lines", lines.len() - 6);
+    }
+}
+
+pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
+    let cat = &sess.catalog;
+    let f = &sess.facts;
+    let state = sess.state()?;
+    let snap = sess.snapshot(state.as_ref()).await;
+    let Some(item) = snap.get(id) else {
+        bail!("unknown item {id:?} (see `envira status`)");
+    };
+    println!(
+        "{id} · {} · {} · {}",
+        match item.kind {
+            crate::plan::Kind::Tool => "tool",
+            crate::plan::Kind::Config => "config",
+        },
+        item.category,
+        item.label.text()
+    );
+    let desc = cat
+        .tools
+        .get(id)
+        .and_then(|t| t.desc.clone())
+        .or_else(|| cat.configs.get(id).and_then(|c| c.desc.clone()));
+    if let Some(d) = desc {
+        println!("  {d}");
+    }
+    if let Some(r) = &item.reason {
+        println!("  not applicable here: {r}");
+    }
+    let timeout = Duration::from_secs(15);
+    match item.kind {
+        crate::plan::Kind::Tool => {
+            println!("detect:");
+            let cmd = crate::plan::detect_cmd(cat, f, id);
+            print_probe(&cmd, &sess.runner.capture(&cmd, timeout).await);
+            if let Some(re) = cat.tools[id]
+                .detect
+                .as_ref()
+                .and_then(|d| d.version.as_deref())
+            {
+                println!("  version regex {re}");
+            }
+            println!(
+                "  version {} · path {}",
+                item.version.as_deref().unwrap_or("—"),
+                item.path.as_deref().unwrap_or("—")
+            );
+            if let Some(o) = item.ownership {
+                println!(
+                    "  {} via {} ({})",
+                    o.as_str(),
+                    item.via.as_deref().unwrap_or("?"),
+                    item.scope.map(|s| s.to_string()).unwrap_or_default()
+                );
+            }
+        }
+        crate::plan::Kind::Config => {
+            let scope = if cat.configs[id].scope == Some(crate::catalog::ScopeSpec::System) {
+                state::Scope::System
+            } else {
+                state::Scope::User
+            };
+            println!("checks (all must pass):");
+            match crate::plan::config_steps(cat, f, id, scope) {
+                Ok(steps) => {
+                    for s in steps {
+                        match &s.check {
+                            Some(c) => print_probe(c, &sess.runner.capture(c, timeout).await),
+                            None => println!("  · {} (no check)", s.label),
+                        }
+                    }
+                }
+                Err(e) => println!("  cannot expand: {e}"),
+            }
+        }
+    }
+    let rec = state.as_ref().and_then(|s| {
+        s.tools
+            .get(id)
+            .map(|r| (r.last_result, r.last_error.clone(), r.last_run.clone()))
+            .or_else(|| {
+                s.configs
+                    .get(id)
+                    .map(|r| (r.last_result, r.last_error.clone(), r.last_run.clone()))
+            })
+    });
+    if let Some((result, error, run)) = rec {
+        println!(
+            "last run: {result:?}{}{}",
+            run.map(|r| format!(" in {r}")).unwrap_or_default(),
+            error.map(|e| format!(" · {e}")).unwrap_or_default()
+        );
+        if result == state::LastResult::Failed {
+            println!("  `envira log {id}` shows its log");
+        }
+    }
+    let plan = sess.plan(&snap.present(), &[id.to_string()], true);
+    let verb = match (item.kind, item.present) {
+        (crate::plan::Kind::Config, true) => "re-applying",
+        (crate::plan::Kind::Config, false) => "applying",
+        (_, true) => "reinstalling",
+        (_, false) => "installing",
+    };
+    println!("{verb} would run:");
+    print_plan(&plan, sess);
+    Ok(0)
+}
+
 pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32> {
     let run_id = match run {
         Some(r) => r.to_string(),
@@ -182,7 +302,19 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32>
         return Ok(0);
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
-    println!("run {} · {} · started {}", rec.id, rec.command, rec.started);
+    println!(
+        "run {} · {} · started {}{}",
+        rec.id,
+        rec.command,
+        rec.started,
+        match &rec.finished {
+            Some(f) => format!(" · finished {f}"),
+            None => " · did not finish (envira was stopped or killed)".into(),
+        }
+    );
+    if !rec.machine.is_empty() {
+        println!("envira {} · {}", rec.envira, rec.machine);
+    }
     for u in &rec.units {
         println!(
             "  {:<9} {:<24} {:<8} {:<15} {:>6.1}s {}",
@@ -486,6 +618,9 @@ fn print_outdated(snap: &Snapshot) {
 
 /// Records adoptable tools as managed so later updates and `status` treat them as envira's.
 pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i32> {
+    let _lock = (!dry_run)
+        .then(|| state::RunLock::acquire(&sess.paths, &sess.facts))
+        .transpose()?;
     let mut state = sess.state()?.unwrap_or_default();
     let snap = sess.snapshot(Some(&state)).await;
     let explicit = !items.is_empty();
@@ -661,6 +796,16 @@ pub fn print_plan(plan: &Plan, sess: &Session) {
     }
 }
 
+/// The last `n` lines of a unit log, without its `#` header and trailer.
+fn log_tail(path: &std::path::Path, n: usize) -> Vec<String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with("# ")).collect();
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|l| l.to_string())
+        .collect()
+}
+
 async fn run_plan(
     sess: &Session,
     plan: Plan,
@@ -691,6 +836,7 @@ async fn run_plan(
             return Ok(1);
         }
     }
+    let _lock = state::RunLock::acquire(&sess.paths, &sess.facts)?;
     let keepalive = if plan.needs_sudo(&sess.facts) {
         app::ensure_sudo(&sess.facts)?
     } else {
@@ -713,6 +859,11 @@ async fn run_plan(
 
     let quiet = opts.quiet;
     let mut interrupts = 0;
+    // SIGTERM/SIGHUP: cancel the running step and stop, so the run record is completed and no
+    // installer keeps running on its own (steps run in their own sessions).
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate())?;
+    let mut hup = signal(SignalKind::hangup())?;
     let mut failed = 0;
     loop {
         tokio::select! {
@@ -731,7 +882,14 @@ async fn run_plan(
                             Outcome::Cancelled => { failed += 1; println!("  ✗ {id} cancelled") }
                             Outcome::Failed(e) => {
                                 failed += 1;
-                                println!("  ✗ {id} failed: {e} · log {}", paths.run_dir(&run_id).join(format!("{id}.log")).display());
+                                let log = paths.run_dir(&run_id).join(format!("{id}.log"));
+                                println!("  ✗ {id} failed: {e} · log {}", log.display());
+                                if quiet {
+                                    // Step output was hidden: show the end of the log.
+                                    for l in log_tail(&log, 15) {
+                                        println!("    │ {l}");
+                                    }
+                                }
                             }
                         }
                     }
@@ -742,6 +900,13 @@ async fn run_plan(
                     Event::ShellEnv(Err(e)) => println!("==> shell environment not updated: {e}"),
                     Event::Finished(_) => {}
                 }
+            }
+            _ = async { tokio::select! { _ = term.recv() => {}, _ = hup.recv() => {} } } => {
+                println!("\n==> terminated: cancelling the current step and stopping");
+                ctl_tx.send_modify(|c| {
+                    c.stop = true;
+                    c.cancel_seq += 1;
+                });
             }
             _ = tokio::signal::ctrl_c() => {
                 interrupts += 1;

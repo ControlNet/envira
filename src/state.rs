@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::Catalog;
@@ -125,9 +125,25 @@ impl State {
         }
         let text =
             std::fs::read_to_string(&f).with_context(|| format!("reading {}", f.display()))?;
-        Ok(Some(
-            toml::from_str(&text).with_context(|| format!("parsing {}", f.display()))?,
-        ))
+        match toml::from_str(&text) {
+            Ok(st) => Ok(Some(st)),
+            Err(e) => {
+                // Keep the broken file for inspection and let the next start begin fresh
+                // instead of failing every command until someone edits it by hand.
+                let aside = f.with_file_name(format!(
+                    "state.toml.broken-{}",
+                    chrono::Local::now().format("%Y%m%d-%H%M%S")
+                ));
+                std::fs::rename(&f, &aside)
+                    .with_context(|| format!("{} is corrupt: {e}", f.display()))?;
+                bail!(
+                    "{} is corrupt and envira moved it to {}; run envira again to start with \
+                     a fresh state (bundles need to be selected again): {e}",
+                    f.display(),
+                    aside.display()
+                )
+            }
+        }
     }
 
     pub fn save(&self, paths: &Paths, facts: &Facts) -> Result<()> {
@@ -164,13 +180,53 @@ pub fn write_atomic(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
     let dir = path.parent().context("path without parent")?;
     create_dir_all_owned(dir, facts)?;
     let tmp = dir.join(format!(
-        ".{}.envira-tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("f")
+        ".{}.{}.envira-tmp",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("f"),
+        std::process::id()
     ));
-    std::fs::write(&tmp, data).with_context(|| format!("writing {}", tmp.display()))?;
+    {
+        use std::io::Write;
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(data)
+            .and_then(|_| f.sync_all())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+    }
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
     chown_to_target(path, facts);
     Ok(())
+}
+
+/// Exclusive lock on the state directory for the length of a run, so two envira processes (a
+/// TUI and a CLI `sync`, say) never install at once or overwrite each other's state. Released
+/// when dropped or when the process dies. `envira fs` and `fetch-release`, which steps call,
+/// never take it.
+#[derive(Debug)]
+pub struct RunLock {
+    _file: std::fs::File,
+}
+
+impl RunLock {
+    pub fn acquire(paths: &Paths, facts: &Facts) -> Result<RunLock> {
+        use std::os::fd::AsRawFd;
+        create_dir_all_owned(&paths.state_dir, facts)?;
+        let path = paths.state_dir.join("lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        chown_to_target(&path, facts);
+        // SAFETY: plain syscall on a file descriptor owned by `file`.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            bail!(
+                "another envira run is in progress (lock {}); wait for it to finish",
+                path.display()
+            );
+        }
+        Ok(RunLock { _file: file })
+    }
 }
 
 pub fn create_dir_all_owned(dir: &Path, facts: &Facts) -> Result<()> {
@@ -218,6 +274,11 @@ pub struct UnitRecord {
 pub struct RunRecord {
     pub id: String,
     pub command: String,
+    /// envira version and machine summary, for reading old logs.
+    #[serde(default)]
+    pub envira: String,
+    #[serde(default)]
+    pub machine: String,
     pub started: String,
     pub finished: Option<String>,
     #[serde(default)]
@@ -246,6 +307,8 @@ impl RunRecord {
         RunRecord {
             id: id.into(),
             command: command.into(),
+            envira: env!("CARGO_PKG_VERSION").into(),
+            machine: String::new(),
             started: now_rfc3339(),
             finished: None,
             units: plan
@@ -355,6 +418,44 @@ mod tests {
             toml::from_str("[bundles.terminal]\nitems=[\"bat\",\"herdr\"]\n").unwrap();
         let d = back.desired(&cat);
         assert_eq!(d.into_iter().collect::<Vec<_>>(), vec!["bat", "codex"]);
+    }
+
+    #[test]
+    fn corrupt_state_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+        };
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        std::fs::write(paths.state_file(), "bundles = [\"base\"\ntools = {").unwrap();
+        let err = format!("{:#}", State::load(&paths).unwrap_err());
+        assert!(err.contains("moved it to"), "{err}");
+        assert!(!paths.state_file().exists());
+        let kept: Vec<_> = std::fs::read_dir(&paths.state_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().into_string().unwrap())
+            .filter(|n| n.starts_with("state.toml.broken-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        // The next start begins fresh.
+        assert!(State::load(&paths).unwrap().is_none());
+    }
+
+    #[test]
+    fn only_one_run_holds_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let facts = Facts::sample(dir.path());
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+        };
+        let held = RunLock::acquire(&paths, &facts).unwrap();
+        let err = format!("{:#}", RunLock::acquire(&paths, &facts).unwrap_err());
+        assert!(err.contains("another envira run"), "{err}");
+        drop(held);
+        assert!(RunLock::acquire(&paths, &facts).is_ok());
     }
 
     #[test]

@@ -197,6 +197,8 @@ pub struct App {
     pub toast: Option<(String, Instant)>,
     pub help: bool,
     pub tick: u64,
+    /// SIGTERM/SIGHUP arrived during a run: quit once it has wound down.
+    pub quitting: bool,
 }
 
 impl App {
@@ -235,6 +237,7 @@ impl App {
             toast: None,
             help: false,
             tick: 0,
+            quitting: false,
         }
     }
 
@@ -844,6 +847,26 @@ impl App {
     // Executor events
     // --------------------------------------------------------------------------------------------
 
+    /// SIGTERM or SIGHUP: true when the TUI can exit now; during a run it stops the run and
+    /// cancels the running step first, so no installer is left running without envira.
+    pub fn terminate(&mut self) -> bool {
+        match &mut self.run {
+            Some(run) if run.finished.is_none() => {
+                if let Some(ctl) = &run.ctl {
+                    ctl.send_modify(|c| {
+                        c.stop = true;
+                        c.cancel_seq += 1;
+                    });
+                }
+                run.stopping = true;
+                self.quitting = true;
+                self.notify("Terminating: cancelling the current step");
+                false
+            }
+            _ => true,
+        }
+    }
+
     pub fn start_run(&mut self, plan: Plan, run_id: String, ctl: Option<watch::Sender<Control>>) {
         self.run = Some(RunView::new(plan, run_id, ctl));
         self.screen = Screen::Run;
@@ -1094,6 +1117,23 @@ pub mod tests {
         a.on_key(key(KeyCode::Char('r')));
         assert_eq!(a.screen, Screen::Plan);
         assert!(a.plan.as_ref().unwrap().1.starts_with("retry"));
+    }
+
+    #[test]
+    fn terminate_cancels_a_running_run_first() {
+        let mut a = app();
+        assert!(a.terminate(), "nothing running: exit at once");
+        let plan = a.make_plan(&["herdr".into()]);
+        let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+        a.start_run(plan, "r1".into(), Some(ctl_tx));
+        a.on_exec(Event::UnitStarted(0));
+        assert!(!a.terminate());
+        assert!(a.quitting);
+        let c = *ctl_rx.borrow();
+        assert!(c.stop);
+        assert_eq!(c.cancel_seq, 1);
+        a.on_exec(Event::Finished(RunRecord::default()));
+        assert!(a.terminate());
     }
 
     #[test]

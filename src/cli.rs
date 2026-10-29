@@ -117,6 +117,9 @@ pub enum Command {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Why an item has its status: detect/check commands with their exit codes and output,
+    /// the install route, recorded state and what installing it would run.
+    Explain { item: String },
     /// Machine facts, catalog layers, PATH and shell integration.
     Doctor,
     /// Catalog utilities.

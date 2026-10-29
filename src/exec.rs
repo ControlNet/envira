@@ -103,7 +103,13 @@ pub async fn execute(
 ) -> (RunRecord, State) {
     let run_dir = ctx.paths.run_dir(&ctx.run_id);
     let _ = state::create_dir_all_owned(&run_dir, &ctx.facts);
+    // Logs can hold whatever installers print; keep them private to the user.
+    let _ = std::fs::set_permissions(
+        ctx.paths.logs_dir(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    );
     let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
+    record.machine = ctx.facts.summary();
     let _ = record.save(&ctx.paths, &ctx.facts);
     let mut bad: BTreeSet<String> = BTreeSet::new();
 
@@ -174,13 +180,50 @@ async fn run_unit(
         let log = log.clone();
         let tx = tx.clone();
         move |line: String| {
+            let line = redact(&line, secrets());
             if let Some(f) = log.lock().unwrap().as_mut() {
-                let _ = writeln!(f, "{line}");
+                let _ = writeln!(f, "{} {line}", chrono::Local::now().format("%H:%M:%S"));
             }
             let _ = tx.send(Event::Line(idx, line));
         }
     };
+    if let Some(f) = log.lock().unwrap().as_mut() {
+        let _ = writeln!(
+            f,
+            "# envira {} · run {} ({}) · {}\n# started {}",
+            env!("CARGO_PKG_VERSION"),
+            ctx.run_id,
+            ctx.command,
+            ctx.facts.summary(),
+            state::now_rfc3339()
+        );
+    }
+    let started = Instant::now();
+    let outcome = run_steps(unit, ctx, &emit, ctl).await;
+    if let Some(f) = log.lock().unwrap().as_mut() {
+        let _ = writeln!(
+            f,
+            "# finished {}{} in {}",
+            outcome.as_str(),
+            outcome
+                .detail()
+                .map(|d| format!(": {}", redact(&d, secrets())))
+                .unwrap_or_default(),
+            crate::commands::fmt_duration(started.elapsed())
+        );
+    }
+    outcome
+}
 
+async fn run_steps<F>(
+    unit: &Unit,
+    ctx: &ExecCtx,
+    emit: &F,
+    ctl: &mut watch::Receiver<Control>,
+) -> Outcome
+where
+    F: Fn(String) + Clone + Send + 'static,
+{
     emit(format!(
         "[envira] {} {} via {} · scope {} · {}",
         unit.action.as_str(),
@@ -311,6 +354,45 @@ async fn run_unit(
             }
         }
     }
+}
+
+/// Values of secret-looking environment variables (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+/// `*API_KEY*`, ...), longest first; installers that echo their environment must not put them
+/// into logs.
+pub fn secrets() -> &'static [String] {
+    static SECRETS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    SECRETS.get_or_init(|| secret_values(std::env::vars()))
+}
+
+fn secret_values(vars: impl Iterator<Item = (String, String)>) -> Vec<String> {
+    const MARKERS: [&str; 6] = [
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "API_KEY",
+        "PRIVATE_KEY",
+    ];
+    let mut v: Vec<String> = vars
+        .filter(|(k, val)| {
+            let k = k.to_ascii_uppercase();
+            val.len() >= 8 && MARKERS.iter().any(|m| k.contains(m))
+        })
+        .map(|(_, val)| val)
+        .collect();
+    v.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    v.dedup();
+    v
+}
+
+pub fn redact(line: &str, secrets: &[String]) -> String {
+    let mut out = line.to_string();
+    for s in secrets {
+        if out.contains(s.as_str()) {
+            out = out.replace(s.as_str(), "***");
+        }
+    }
+    out
 }
 
 fn update_state(state: &mut State, unit: &Unit, outcome: &Outcome, run_id: &str) {
@@ -542,6 +624,52 @@ mod tests {
             vec![("herdr", "skipped"), ("bun", "skipped")]
         );
         assert_eq!(rec.unfinished(), vec!["herdr", "bun"]);
+    }
+
+    #[test]
+    fn secret_values_are_redacted() {
+        let vars = [
+            ("GITHUB_TOKEN", "ghp_abcdefghijklmnop"),
+            ("INFISICAL_CLIENT_SECRET", "s3cr3t-value"),
+            ("db_password", "hunter2hunter2"),
+            ("SHORT_TOKEN", "abc"),
+            ("PATH", "/usr/bin:/bin"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let s = secret_values(vars.into_iter());
+        assert_eq!(s.len(), 3, "{s:?}");
+        assert_eq!(
+            redact("Authorization: Bearer ghp_abcdefghijklmnop at /usr/bin", &s),
+            "Authorization: Bearer *** at /usr/bin"
+        );
+    }
+
+    #[tokio::test]
+    async fn unit_logs_have_a_header_timestamps_and_a_trailer() {
+        let s = setup();
+        s.runner
+            .rule("herdr.dev", 0, "fetching\ninstalled")
+            .on_install("herdr.dev", "herdr --version", "herdr 0.3.1");
+        run(&s, plan(&s.ctx, &["herdr"])).await;
+        let log =
+            std::fs::read_to_string(s.ctx.paths.run_dir(&s.ctx.run_id).join("herdr.log")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert!(lines[0].starts_with("# envira "), "{log}");
+        assert!(lines[0].contains("Ubuntu 24.04"), "{log}");
+        assert!(lines[1].starts_with("# started "), "{log}");
+        let ts = regex::Regex::new(r"^\d\d:\d\d:\d\d ").unwrap();
+        assert!(
+            lines[2..lines.len() - 1].iter().all(|l| ts.is_match(l)),
+            "{log}"
+        );
+        assert!(log.contains(" installed\n"), "{log}");
+        assert!(
+            lines
+                .last()
+                .unwrap()
+                .starts_with("# finished ok: 0.3.1 in "),
+            "{log}"
+        );
     }
 
     #[tokio::test]

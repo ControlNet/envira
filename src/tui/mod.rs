@@ -21,7 +21,7 @@ use crate::latest::{self, Fetch, Latest};
 use crate::plan::Plan;
 use crate::state::{self, State};
 use crate::status::{self, Snapshot};
-use app::{App, Cmd};
+use app::{App, Cmd, Screen};
 use theme::Theme;
 
 enum AppEvent {
@@ -31,6 +31,29 @@ enum AppEvent {
     Latest(BTreeMap<String, Latest>),
     Exec(exec::Event),
     Error(String),
+    /// SIGTERM or SIGHUP (the terminal went away).
+    Terminate,
+}
+
+fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
+    use tokio::signal::unix::{SignalKind, signal};
+    tokio::spawn(async move {
+        let (Ok(mut term), Ok(mut hup)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) else {
+            return;
+        };
+        loop {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = hup.recv() => {}
+            }
+            if tx.send(AppEvent::Terminate).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 pub async fn run(sess: Session) -> Result<i32> {
@@ -97,6 +120,7 @@ fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>, fetch: Fetc
 async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme) -> Result<i32> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut input = spawn_input(tx.clone());
+    spawn_signals(tx.clone());
     {
         let tx = tx.clone();
         tokio::spawn(async move {
@@ -121,7 +145,12 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
     let mut keepalive: Option<JoinHandle<()>> = None;
 
     loop {
-        term.draw(|f| ui::draw(f, &app, &theme))?;
+        // After SIGHUP the terminal is gone; keep winding the run down without drawing.
+        if let Err(e) = term.draw(|f| ui::draw(f, &app, &theme))
+            && !app.quitting
+        {
+            return Err(e.into());
+        }
         let Some(first) = rx.recv().await else {
             return Ok(0);
         };
@@ -146,7 +175,16 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                     {
                         k.abort();
                     }
+                    let finished = matches!(e, exec::Event::Finished(_));
                     app.on_exec(e);
+                    if finished && app.quitting {
+                        return Ok(1);
+                    }
+                }
+                AppEvent::Terminate => {
+                    if app.terminate() {
+                        return Ok(1);
+                    }
                 }
                 AppEvent::Error(e) => {
                     app.detecting = false;
@@ -193,6 +231,14 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                     }
                 }
                 Cmd::StartRun { plan, command } => {
+                    let lock = match state::RunLock::acquire(&sess.paths, &sess.facts) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            app.screen = Screen::Dashboard;
+                            app.notify(format!("{e:#}"));
+                            continue;
+                        }
+                    };
                     if plan.needs_sudo(&sess.facts) {
                         match authorize_sudo(term, &mut input, &tx) {
                             Ok(true) => keepalive = Some(spawn_keepalive()),
@@ -203,7 +249,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                             Err(e) => return Err(e),
                         }
                     }
-                    start_run(&sess, &mut app, plan, command, tx.clone());
+                    start_run(&sess, &mut app, plan, command, lock, tx.clone());
                 }
             }
         }
@@ -257,6 +303,7 @@ fn start_run(
     app: &mut App,
     plan: Plan,
     command: String,
+    lock: state::RunLock,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
@@ -264,7 +311,11 @@ fn start_run(
     let ctx = sess.exec_ctx(command, true);
     let run_id = ctx.run_id.clone();
     let st = app.state.clone().unwrap_or_default();
-    tokio::spawn(exec::execute(plan.clone(), ctx, st, etx, ctl_rx));
+    let run = plan.clone();
+    tokio::spawn(async move {
+        let _lock = lock;
+        exec::execute(run, ctx, st, etx, ctl_rx).await
+    });
     tokio::spawn(async move {
         while let Some(e) = erx.recv().await {
             if tx.send(AppEvent::Exec(e)).is_err() {
