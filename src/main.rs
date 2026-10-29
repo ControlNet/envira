@@ -1,6 +1,3 @@
-// Session/snapshot/exec-event APIs used only by the TUI, which lands in the next commit.
-#![allow(dead_code)]
-
 mod app;
 mod catalog;
 mod cli;
@@ -15,6 +12,7 @@ mod shellenv;
 mod state;
 mod status;
 mod template;
+mod tui;
 
 use clap::Parser;
 
@@ -59,6 +57,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
     rt.block_on(async {
         let sess = app::Session::open(&cli.global)?;
         match cli.command {
+            None if std::io::IsTerminal::is_terminal(&std::io::stdout()) => tui::run(sess).await,
             None => commands::status(&sess, false).await,
             Some(Command::Status { json }) => commands::status(&sess, json).await,
             Some(Command::Sync { bundles, run }) => commands::sync(&sess, &bundles, &run).await,

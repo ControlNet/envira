@@ -1,0 +1,257 @@
+//! Terminal UI: one event channel fed by input, a ticker, detection and the executor; the UI
+//! only folds events into `App` and redraws, so it never blocks on work.
+
+pub mod app;
+pub mod theme;
+pub mod ui;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind};
+use futures::StreamExt;
+use ratatui::DefaultTerminal;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
+
+use crate::app::Session;
+use crate::exec::{self, Control, ExecCtx};
+use crate::plan::Plan;
+use crate::state::{self, State};
+use crate::status::{self, Snapshot};
+use app::{App, Cmd};
+use theme::Theme;
+
+enum AppEvent {
+    Term(TermEvent),
+    Tick,
+    Snapshot(Box<Snapshot>, Option<State>),
+    Exec(exec::Event),
+    Error(String),
+}
+
+pub async fn run(sess: Session) -> Result<i32> {
+    let theme = Theme::detect();
+    let mut terminal = ratatui::init();
+    let res = event_loop(&mut terminal, sess, theme).await;
+    ratatui::restore();
+    res
+}
+
+fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut events = EventStream::new();
+        while let Some(Ok(ev)) = events.next().await {
+            if tx.send(AppEvent::Term(ev)).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>) {
+    let (cat, facts, runner, paths) = (
+        sess.catalog.clone(),
+        sess.facts.clone(),
+        sess.runner.clone(),
+        sess.paths.clone(),
+    );
+    tokio::spawn(async move {
+        let state = match State::load(&paths) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = tx.send(AppEvent::Error(format!("{e:#}")));
+                None
+            }
+        };
+        let snap = status::snapshot(&cat, &facts, state.as_ref(), runner.as_ref()).await;
+        let _ = tx.send(AppEvent::Snapshot(Box::new(snap), state));
+    });
+}
+
+async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme) -> Result<i32> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    let mut input = spawn_input(tx.clone());
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(Duration::from_millis(200));
+            loop {
+                iv.tick().await;
+                if tx.send(AppEvent::Tick).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    spawn_detect(&sess, tx.clone());
+    let mut app = App::new(
+        &sess.loaded,
+        sess.catalog.clone(),
+        sess.facts.clone(),
+        sess.paths.clone(),
+        sess.prefer_system(),
+    );
+    let mut keepalive: Option<JoinHandle<()>> = None;
+
+    loop {
+        term.draw(|f| ui::draw(f, &app, &theme))?;
+        let Some(first) = rx.recv().await else {
+            return Ok(0);
+        };
+        // Fold everything already queued before the next redraw (fast installer output).
+        let mut batch = vec![first];
+        while let Ok(ev) = rx.try_recv() {
+            batch.push(ev);
+        }
+        let mut cmds = Vec::new();
+        for ev in batch {
+            match ev {
+                AppEvent::Term(TermEvent::Key(k)) if k.kind == KeyEventKind::Press => {
+                    cmds.extend(app.on_key(k))
+                }
+                AppEvent::Term(_) => {}
+                AppEvent::Tick => app.tick += 1,
+                AppEvent::Snapshot(s, st) => app.on_snapshot(*s, st),
+                AppEvent::Exec(e) => {
+                    if matches!(e, exec::Event::Finished(_))
+                        && let Some(k) = keepalive.take()
+                    {
+                        k.abort();
+                    }
+                    app.on_exec(e);
+                }
+                AppEvent::Error(e) => {
+                    app.detecting = false;
+                    app.notify(e);
+                }
+            }
+        }
+        for cmd in cmds {
+            match cmd {
+                Cmd::Quit => return Ok(0),
+                Cmd::Refresh => {
+                    app.detecting = true;
+                    spawn_detect(&sess, tx.clone());
+                }
+                Cmd::Reload => match sess.reload() {
+                    Ok(()) => {
+                        app.catalog = sess.catalog.clone();
+                        app.loaded_layers = sess.loaded.layers.clone();
+                        app.notify("Catalog reloaded");
+                        spawn_detect(&sess, tx.clone());
+                    }
+                    Err(e) => {
+                        app.detecting = false;
+                        app.notify(format!("{e:#}").lines().next().unwrap_or("").to_string());
+                    }
+                },
+                Cmd::SaveState => {
+                    if let Some(st) = &app.state
+                        && let Err(e) = st.save(&sess.paths, &sess.facts)
+                    {
+                        app.notify(format!("could not save state: {e:#}"));
+                    }
+                }
+                Cmd::ExportScript(plan) => {
+                    let f = sess.paths.state_dir.join("plan.sh");
+                    match state::write_atomic(
+                        &f,
+                        crate::plan::as_script(&plan).as_bytes(),
+                        &sess.facts,
+                    ) {
+                        Ok(()) => app.notify(format!("Saved {}", f.display())),
+                        Err(e) => app.notify(format!("{e:#}")),
+                    }
+                }
+                Cmd::StartRun { plan, command } => {
+                    if plan.needs_sudo(&sess.facts) {
+                        match authorize_sudo(term, &mut input, &tx) {
+                            Ok(true) => keepalive = Some(spawn_keepalive()),
+                            Ok(false) => {
+                                app.notify("sudo authentication failed; nothing was run");
+                                continue;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    start_run(&sess, &mut app, plan, command, tx.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Refreshes sudo credentials, prompting on the normal screen when a password is needed.
+fn authorize_sudo(
+    term: &mut DefaultTerminal,
+    input: &mut JoinHandle<()>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Result<bool> {
+    let quiet = std::process::Command::new("sudo")
+        .args(["-n", "-v"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if quiet {
+        return Ok(true);
+    }
+    // Stop reading keys so the password prompt gets them, then hand the terminal back.
+    input.abort();
+    ratatui::restore();
+    println!("envira: this plan needs sudo (asked once; kept alive during the run).");
+    let ok = std::process::Command::new("sudo")
+        .arg("-v")
+        .status()
+        .is_ok_and(|s| s.success());
+    *term = ratatui::init();
+    term.clear()?;
+    *input = spawn_input(tx.clone());
+    Ok(ok)
+}
+
+fn spawn_keepalive() -> JoinHandle<()> {
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let _ = tokio::process::Command::new("sudo")
+                .args(["-n", "-v"])
+                .stdin(std::process::Stdio::null())
+                .status()
+                .await;
+        }
+    })
+}
+
+fn start_run(
+    sess: &Session,
+    app: &mut App,
+    plan: Plan,
+    command: String,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    let run_id = state::new_run_id(&sess.paths);
+    let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+    let (etx, mut erx) = mpsc::unbounded_channel();
+    let ctx = ExecCtx {
+        catalog: Arc::clone(&sess.catalog),
+        facts: Arc::clone(&sess.facts),
+        paths: sess.paths.clone(),
+        runner: sess.runner.clone(),
+        run_id: run_id.clone(),
+        command,
+        shell_env: true,
+    };
+    let st = app.state.clone().unwrap_or_default();
+    tokio::spawn(exec::execute(plan.clone(), ctx, st, etx, ctl_rx));
+    tokio::spawn(async move {
+        while let Some(e) = erx.recv().await {
+            if tx.send(AppEvent::Exec(e)).is_err() {
+                break;
+            }
+        }
+    });
+    app.start_run(plan, run_id, Some(ctl_tx));
+}
