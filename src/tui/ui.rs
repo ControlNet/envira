@@ -119,6 +119,15 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) {
     } else {
         format!("catalog {}", app.loaded_layers.join(" + "))
     };
+    // Long catalog paths keep their end and never push out the left side.
+    let max = (area.width / 2) as usize;
+    let n = right.chars().count();
+    let right = if n + 1 > max && max > 1 {
+        let tail: String = right.chars().skip(n + 2 - max).collect();
+        format!("…{tail}")
+    } else {
+        right
+    };
     let [l, r] = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(right.chars().count() as u16 + 1),
@@ -260,14 +269,11 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t,
                 failed.len(),
                 t.red,
-                format!(
-                    "failed{}",
-                    if failed.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {}", failed.join(" "))
-                    }
-                ),
+                match &app.last_run {
+                    Some((_, left, _)) => format!("failed · last run left {} · t", left.len()),
+                    None if failed.is_empty() => "failed".into(),
+                    None => format!("failed · {}", failed.join(" ")),
+                },
             ),
             bar(
                 t,
@@ -791,14 +797,27 @@ fn log_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme, height: usize) -> 
     }
 }
 
+/// A log line from the live run or a log file; files add `# ` header/trailer lines and an
+/// `HH:MM:SS ` time before every line.
 fn log_line<'a>(t: &Theme, l: &str) -> Line<'a> {
-    if l.starts_with("[envira]") {
-        Line::styled(l.to_string(), t.s(t.dim))
-    } else if l.starts_with("$ ") {
-        Line::styled(l.to_string(), t.s(t.magenta))
-    } else {
-        Line::raw(l.to_string())
+    if l.starts_with("# ") {
+        return Line::styled(l.to_string(), t.s(t.dim));
     }
+    let b = l.as_bytes();
+    let timed = b.len() >= 9
+        && b[8] == b' '
+        && b[2] == b':'
+        && b[5] == b':'
+        && [0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit());
+    let (time, body) = if timed { l.split_at(9) } else { ("", l) };
+    let body = if body.starts_with("[envira]") {
+        Span::styled(body.to_string(), t.s(t.dim))
+    } else if body.starts_with("$ ") {
+        Span::styled(body.to_string(), t.s(t.magenta))
+    } else {
+        Span::raw(body.to_string())
+    };
+    Line::from(vec![Span::styled(time.to_string(), t.s(t.dim)), body])
 }
 
 pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
@@ -1249,12 +1268,8 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             UnitState::Done(Outcome::Failed(_) | Outcome::Cancelled, _)
         )
     });
-    let blocked = run.count(|u| {
-        matches!(
-            u,
-            UnitState::Done(Outcome::Blocked(_) | Outcome::Skipped, _)
-        )
-    });
+    let blocked = run.count(|u| matches!(u, UnitState::Done(Outcome::Blocked(_), _)));
+    let skipped = run.count(|u| matches!(u, UnitState::Done(Outcome::Skipped, _)));
     let running = run.count(|u| matches!(u, UnitState::Running(_)));
     let queued = run.count(|u| matches!(u, UnitState::Queued));
     let what = match &run.finished {
@@ -1269,7 +1284,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         Some((_, took)) => vec![
             Span::styled(
                 "run finished",
-                t.s(if failed + blocked == 0 {
+                t.s(if failed + blocked + skipped == 0 {
                     t.green
                 } else {
                     t.red
@@ -1294,7 +1309,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     );
     let inner = block.inner(top);
     f.render_widget(block, top);
-    let done = ok + failed + blocked;
+    let done = ok + failed + blocked + skipped;
     let mut l1 = vec![
         Span::styled(
             format!("{done}"),
@@ -1312,6 +1327,9 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             t.s(t.yellow),
         ));
     }
+    if skipped > 0 {
+        l1.push(Span::styled(format!("– {skipped} skipped  "), t.s(t.dim)));
+    }
     if running > 0 {
         l1.push(Span::styled(
             format!("{} {running} running  ", SPINNER[(app.tick % 10) as usize]),
@@ -1328,6 +1346,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             (ok, t.green),
             (failed, t.red),
             (blocked, t.yellow),
+            (skipped, t.dim),
             (running, t.blue),
         ],
         n,
@@ -1335,7 +1354,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(Paragraph::new(vec![Line::from(l1), gauge]), inner);
 
     let [left, right] = Layout::horizontal([
-        Constraint::Length(52.min(area.width / 2)),
+        Constraint::Length(if run.zoom { 0 } else { 52.min(area.width / 2) }),
         Constraint::Min(30),
     ])
     .areas(main);
@@ -1489,6 +1508,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         &[
             ("Step", "↑↓"),
             ("Scroll", "PgUp/PgDn"),
+            ("Zoom log", "z"),
             ("Dashboard", "enter"),
             ("Quit", "q"),
         ]
@@ -1497,14 +1517,15 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Step", "↑↓"),
             ("Follow", "f"),
             ("Scroll", "PgUp/PgDn"),
+            ("Zoom log", "z"),
             ("Cancel step", "c"),
             ("Stop after step", "ctrl-c"),
         ]
     };
     let right_span = toast_span(app, t).or_else(|| {
-        (run.finished.is_some() && failed + blocked > 0).then(|| {
+        (run.finished.is_some() && failed + blocked + skipped > 0).then(|| {
             Span::styled(
-                format!("Retry failed ({}): r", failed + blocked),
+                format!("Retry unfinished ({}): r", failed + blocked + skipped),
                 Style::new().fg(t.magenta).add_modifier(Modifier::BOLD),
             )
         })
@@ -1529,6 +1550,7 @@ fn help(f: &mut Frame, area: Rect, _app: &App, t: &Theme) {
         ("/  f", "search · cycle status filter"),
         ("← →", "detail tabs in [5]"),
         ("l", "log of the item"),
+        ("t", "retry what the last run left unfinished"),
         ("R  r", "re-detect + check updates · reload catalog"),
         ("esc", "clear search / selection"),
         ("q", "quit"),
@@ -1672,10 +1694,47 @@ mod tests {
         a.on_exec(crate::exec::Event::Finished(Default::default()));
         let s = render(&a, 140, 40);
         assert!(
-            s.contains("run finished") && s.contains("Retry failed"),
+            s.contains("run finished") && s.contains("Retry unfinished"),
             "{s}"
         );
         render(&a, 60, 16);
+        // Zoomed: the log takes the whole width, the steps panel is gone.
+        a.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        let s = render(&a, 140, 40);
+        assert!(s.contains("[4] Log") && !s.contains("[2] Steps"), "{s}");
+        render(&a, 60, 16);
+    }
+
+    #[test]
+    fn long_catalog_names_do_not_hide_the_header() {
+        let mut a = app();
+        a.loaded_layers = vec![format!(
+            "explicit /{} (1 files)",
+            "very/long/path".repeat(20)
+        )];
+        let s = render(&a, 100, 30);
+        let first = s.lines().next().unwrap();
+        assert!(
+            first.starts_with("envira 0.1.0 · workstation · "),
+            "{first}"
+        );
+        assert!(
+            first.contains("…") && first.ends_with("(1 files)"),
+            "{first}"
+        );
+    }
+
+    #[test]
+    fn log_lines_dim_times_and_headers() {
+        let t = Theme::tokyo_night();
+        let l = log_line(&t, "15:57:41 $ echo start");
+        assert_eq!(l.spans[0].content, "15:57:41 ");
+        assert_eq!(l.spans[1].content, "$ echo start");
+        assert_eq!(l.spans[1].style.fg, Some(t.magenta));
+        let l = log_line(&t, "# finished ok in 3.0s");
+        assert_eq!(l.style.fg, Some(t.dim));
+        let l = log_line(&t, "[envira] live line");
+        assert_eq!(l.spans[1].content, "[envira] live line");
     }
 
     #[test]

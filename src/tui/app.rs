@@ -120,6 +120,8 @@ pub struct RunView {
     pub shell_env: Option<Result<Vec<String>, String>>,
     pub ctl: Option<watch::Sender<Control>>,
     pub stopping: bool,
+    /// The log takes the whole width.
+    pub zoom: bool,
 }
 
 impl RunView {
@@ -138,6 +140,7 @@ impl RunView {
             shell_env: None,
             ctl,
             stopping: false,
+            zoom: false,
         }
     }
 
@@ -199,6 +202,8 @@ pub struct App {
     pub tick: u64,
     /// SIGTERM/SIGHUP arrived during a run: quit once it has wound down.
     pub quitting: bool,
+    /// The last run left these units unfinished: `(run id, ids, whether it finished)`.
+    pub last_run: Option<(String, Vec<String>, bool)>,
 }
 
 impl App {
@@ -238,6 +243,7 @@ impl App {
             help: false,
             tick: 0,
             quitting: false,
+            last_run: None,
         }
     }
 
@@ -278,6 +284,7 @@ impl App {
                 self.screen = Screen::Picker;
             } else {
                 self.screen = Screen::Dashboard;
+                self.load_last_run();
             }
         }
         self.snap = Some(snap);
@@ -627,6 +634,16 @@ impl App {
                     self.open_plan(self.make_revert(&t), format!("revert · {n} configs"));
                 }
             }
+            KeyCode::Char('t') => match self.last_run.clone() {
+                Some((id, left, _)) => {
+                    let n = left.len();
+                    self.open_plan(
+                        self.make_plan(&left),
+                        format!("retry · {n} unfinished from run {id}"),
+                    );
+                }
+                None => self.notify("The last run left nothing to retry"),
+            },
             KeyCode::Char('l') => {
                 self.focus = 5;
                 self.detail = DetailTab::Log;
@@ -813,6 +830,7 @@ impl App {
                 run.follow = !run.follow;
                 run.scroll = 0;
             }
+            KeyCode::Char('z') => run.zoom = !run.zoom,
             KeyCode::Char('c') if !finished => {
                 if let Some(ctl) = &run.ctl {
                     ctl.send_modify(|c| c.cancel_seq += 1);
@@ -847,6 +865,35 @@ impl App {
     // Executor events
     // --------------------------------------------------------------------------------------------
 
+    /// Offers to retry what the last run left unfinished (failed, or interrupted by a crash,
+    /// a closed terminal or a stop).
+    pub fn load_last_run(&mut self) {
+        self.last_run = None;
+        let Some(id) = self.state.as_ref().and_then(|s| s.last_run.clone()) else {
+            return;
+        };
+        let Ok(rec) = RunRecord::load(&self.paths, &id) else {
+            return;
+        };
+        let left = rec.unfinished();
+        if left.is_empty() {
+            return;
+        }
+        if rec.finished.is_none()
+            && crate::state::RunLock::acquire(&self.paths, &self.facts).is_err()
+        {
+            self.notify(format!("Run {id} is still in progress in another envira"));
+            return;
+        }
+        let n = left.len();
+        self.notify(if rec.finished.is_none() {
+            format!("Run {id} was interrupted and left {n} unfinished · t retries")
+        } else {
+            format!("Run {id} left {n} unfinished · t retries")
+        });
+        self.last_run = Some((id, left, rec.finished.is_some()));
+    }
+
     /// SIGTERM or SIGHUP: true when the TUI can exit now; during a run it stops the run and
     /// cancels the running step first, so no installer is left running without envira.
     pub fn terminate(&mut self) -> bool {
@@ -868,6 +915,7 @@ impl App {
     }
 
     pub fn start_run(&mut self, plan: Plan, run_id: String, ctl: Option<watch::Sender<Control>>) {
+        self.last_run = None;
         self.run = Some(RunView::new(plan, run_id, ctl));
         self.screen = Screen::Run;
     }
@@ -1134,6 +1182,33 @@ pub mod tests {
         assert_eq!(c.cancel_seq, 1);
         a.on_exec(Event::Finished(RunRecord::default()));
         assert!(a.terminate());
+    }
+
+    #[test]
+    fn unfinished_last_run_is_offered_for_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.paths = Paths {
+            state_dir: dir.path().join("state"),
+            config_dir: dir.path().join("config"),
+        };
+        let plan = a.make_plan(&["codex".into()]);
+        let mut rec = RunRecord::planned(&plan, "20261029-140500", "sync");
+        rec.units[0].outcome = "failed".into();
+        rec.save(&a.paths, &a.facts).unwrap();
+        a.state.as_mut().unwrap().last_run = Some("20261029-140500".into());
+        a.load_last_run();
+        let toast = a.toast_text().unwrap().to_string();
+        assert!(
+            toast.contains("interrupted") && toast.contains("t retries"),
+            "{toast}"
+        );
+        a.on_key(key(KeyCode::Char('t')));
+        assert_eq!(a.screen, Screen::Plan);
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert!(title.starts_with("retry"), "{title}");
+        let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, vec!["fnm", "nodejs", "npm-prefix", "codex"]);
     }
 
     #[test]

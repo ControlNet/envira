@@ -111,6 +111,9 @@ pub async fn execute(
     let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
     record.machine = ctx.facts.summary();
     let _ = record.save(&ctx.paths, &ctx.facts);
+    // Point state at this run now: if envira dies midway, `retry` resumes this run.
+    state.last_run = Some(ctx.run_id.clone());
+    let _ = state.save(&ctx.paths, &ctx.facts);
     let mut bad: BTreeSet<String> = BTreeSet::new();
 
     for (idx, unit) in plan.units.iter().enumerate() {
