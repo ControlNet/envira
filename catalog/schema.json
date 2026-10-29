@@ -122,6 +122,14 @@
     "Bundle": {
       "type": "object",
       "properties": {
+        "bundles": {
+          "description": "Other bundles whose items this bundle also includes.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "desc": {
           "type": [
             "string",

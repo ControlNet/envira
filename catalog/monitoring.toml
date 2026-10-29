@@ -1,13 +1,36 @@
 #:schema ./schema.json
-# System and GPU monitoring.
+# System, GPU and network monitors.
+
+[tools.btop]
+desc = "Resource monitor (top replacement)"
+install = [
+  { method = "dnf", package = "btop" },
+  { method = "pacman", package = "btop" },
+  { method = "zypper", package = "btop" },
+  # Ubuntu and machines without sudo: the static release build.
+  { method = "github-release", repo = "aristocratos/btop", asset = { x86_64 = "btop-x86_64-unknown-linux-musl.tar.gz", aarch64 = "btop-aarch64-unknown-linux-musl.tar.gz" } },
+]
+shell = { alias = { top = "btop" } }
+
+[tools.bottom]
+desc = "Graphical process and system monitor"
+bin = "btm"
+install = [{ method = "cargo", package = "bottom", depends = ["cargo-binstall"], portable = true }]
 
 [tools.nvitop]
 desc = "Interactive NVIDIA GPU process viewer"
-when = ["gpu"]
 detect = { cmd = "nvitop --version", version = 'nvitop (\S+)' }
 install = [{ method = "pipx", package = "nvitop", depends = ["pipx"] }]
 
+[tools.nviwatch]
+desc = "NVIDIA GPU monitor"
+install = [{ method = "cargo", package = "nviwatch", depends = ["cargo-binstall"], portable = true }]
+
+[tools.bandwhich]
+desc = "Bandwidth usage per process"
+install = [{ method = "cargo", package = "bandwhich", depends = ["cargo-binstall"], portable = true }]
+
 [bundles.monitoring]
 name = "Monitoring"
-desc = "System and GPU monitors"
-items = ["nvitop"]
+desc = "System, GPU and network monitors"
+items = ["btop", "bottom", "nvitop", "nviwatch", "bandwhich"]

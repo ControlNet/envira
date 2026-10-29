@@ -10,9 +10,9 @@ install = [
 ]
 
 [configs.docker-service]
-desc = "Start the docker daemon at boot"
+desc = "Start the docker daemon at boot (Arch; get.docker.com enables it elsewhere)"
 scope = "system"
-when = ["!container"]
+when = ["family:arch", "!container"]
 depends = ["docker"]
 check = "systemctl is-enabled --quiet docker"
 apply = "{sudo} systemctl enable --now docker"
@@ -24,7 +24,23 @@ scope = "system"
 depends = ["docker"]
 steps = [{ use = "user-group", group = "docker" }]
 
+[tools.lazydocker]
+desc = "Terminal UI for docker"
+install = [{ method = "script", url = "https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh", shell = "bash", latest = { http = "https://api.github.com/repos/jesseduffield/lazydocker/releases/latest", json = "tag_name" } }]
+
+[tools.dive]
+desc = "Explore docker image layers"
+install = [{ method = "go", package = "github.com/wagoodman/dive", depends = ["go"], portable = true }]
+
+[tools.ctop]
+desc = "top for containers"
+detect = { cmd = "ctop -v", version = 'version (\S+?),?\s' }
+install = [
+  { method = "pacman", package = "ctop" },
+  { method = "github-release", repo = "bcicen/ctop", asset = { x86_64 = "ctop-*-linux-amd64", aarch64 = "ctop-*-linux-arm64" } },
+]
+
 [bundles.containers]
 name = "Containers"
-desc = "Docker and its setup"
-items = ["docker", "docker-service", "docker-group"]
+desc = "Docker, its setup and container tools"
+items = ["docker", "docker-service", "docker-group", "lazydocker", "dive", "ctop"]

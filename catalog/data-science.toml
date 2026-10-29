@@ -1,0 +1,32 @@
+#:schema ./schema.json
+# Python data science: Miniconda with Jupyter, and the Hugging Face CLI.
+
+[tools.miniconda]
+desc = "Miniconda in ~/miniconda3"
+bin = "conda"
+detect = { cmd = '"$HOME/miniconda3/bin/conda" --version', version = 'conda (\S+)' }
+install = [{ run = 'curl -fsSL -o miniconda.sh "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-{arch}.sh" && bash miniconda.sh -b -p "$HOME/miniconda3"', update = '"$HOME/miniconda3/bin/conda" update -y -n base conda' }]
+# Instead of `conda init` (which edits rc files): only condabin on PATH plus the shell hook.
+shell = { path = ["~/miniconda3/condabin"], init = { zsh = 'eval "$("$HOME/miniconda3/bin/conda" shell.zsh hook)"', bash = 'eval "$("$HOME/miniconda3/bin/conda" shell.bash hook)"' } }
+
+[configs.conda-settings]
+desc = "Hide the conda environment prefix in the prompt"
+depends = ["miniconda"]
+steps = [{ use = "line", file = "~/.condarc", match = "^changeps1:", line = "changeps1: false" }]
+
+[tools.jupyter]
+desc = "JupyterLab and ipywidgets in the conda base environment"
+depends = ["miniconda"]
+detect = { cmd = '"$HOME/miniconda3/bin/jupyter-lab" --version' }
+# Accepting the Anaconda channel terms of service is required before installing from them.
+install = [{ run = 'c="$HOME/miniconda3/bin/conda"; for ch in main r msys2; do "$c" tos accept --override-channels --channel "https://repo.anaconda.com/pkgs/$ch" || exit 1; done; "$c" install -y ipywidgets ipykernel jupyterlab jupyter', update = '"$HOME/miniconda3/bin/conda" update -y ipywidgets ipykernel jupyterlab jupyter' }]
+
+[tools.hf]
+desc = "Hugging Face CLI (with hf_xet and hf_transfer)"
+detect = { cmd = "hf version" }
+install = [{ run = 'pipx install --force "huggingface-hub[cli,hf_xet]" && pipx inject huggingface-hub hf_transfer', update = "pipx upgrade huggingface-hub", depends = ["pipx"], latest = { http = "https://pypi.org/pypi/huggingface-hub/json", json = "info.version" } }]
+
+[bundles.data-science]
+name = "Data science"
+desc = "Miniconda, Jupyter and the Hugging Face CLI"
+items = ["miniconda", "conda-settings", "jupyter", "hf"]

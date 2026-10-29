@@ -87,9 +87,53 @@ pub fn validate(loaded: &Loaded) -> Report {
                 c.err("bundles", id, format!("unknown item {item:?}"));
             }
         }
+        for nested in &b.bundles {
+            if !cat.bundles.contains_key(nested) {
+                c.err("bundles", id, format!("unknown bundle {nested:?}"));
+            } else if bundle_reaches(cat, nested, id, &mut Vec::new()) {
+                c.err("bundles", id, format!("bundle cycle through {nested:?}"));
+            }
+        }
     }
     check_cycles(&mut c, cat);
     c.report
+}
+
+/// True when item `from` is `target` or depends on it, directly or through any install entry.
+fn reaches(cat: &Catalog, from: &str, target: &str, seen: &mut Vec<String>) -> bool {
+    if from == target {
+        return true;
+    }
+    if seen.iter().any(|s| s == from) {
+        return false;
+    }
+    seen.push(from.to_string());
+    let deps: Vec<&String> = match (cat.tools.get(from), cat.configs.get(from)) {
+        (Some(t), _) => t
+            .depends
+            .iter()
+            .chain(t.install.iter().flat_map(|e| &e.depends))
+            .collect(),
+        (None, Some(c)) => c.depends.iter().collect(),
+        _ => vec![],
+    };
+    deps.into_iter().any(|d| reaches(cat, d, target, seen))
+}
+
+/// True when bundle `from` includes `target`, directly or through nested bundles.
+fn bundle_reaches(cat: &Catalog, from: &str, target: &str, seen: &mut Vec<String>) -> bool {
+    if from == target {
+        return true;
+    }
+    if seen.iter().any(|s| s == from) {
+        return false;
+    }
+    seen.push(from.to_string());
+    cat.bundles.get(from).is_some_and(|b| {
+        b.bundles
+            .iter()
+            .any(|n| bundle_reaches(cat, n, target, seen))
+    })
 }
 
 fn check_when(c: &mut Ctx, section: &str, id: &str, when: &[String]) {
@@ -320,7 +364,11 @@ fn check_tools(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                             &e.params,
                         );
                         for x in &method.expects {
-                            if !t.depends.contains(x) && !e.depends.contains(x) {
+                            let direct = t.depends.iter().chain(&e.depends);
+                            if !direct
+                                .into_iter()
+                                .any(|d| reaches(cat, d, x, &mut Vec::new()))
+                            {
                                 c.warn(
                                     "tools",
                                     id,
@@ -557,6 +605,11 @@ mod tests {
         );
         assert!(r.errors.is_empty(), "{:?}", r.errors);
         assert!(has(&r.warnings, "expects \"nodejs\""), "{:?}", r.warnings);
+        // Satisfied through a dependency of a dependency.
+        let r = check(
+            "[tools.nodejs]\ninstall = [{ run = \"true\" }]\n[tools.n]\ndepends=[\"nodejs\"]\ninstall = [{ run = \"true\" }]\n[tools.a]\ninstall = [{ method = \"npm\", package = \"x\", depends = [\"n\"] }]\n",
+        );
+        assert!(!has(&r.warnings, "tools.a"), "{:?}", r.warnings);
     }
 
     #[test]
@@ -629,5 +682,25 @@ mod tests {
         );
         assert!(has(&r.errors, "unknown predicate"), "{:?}", r.errors);
         assert!(has(&r.errors, "unknown item \"zzz\""), "{:?}", r.errors);
+    }
+
+    #[test]
+    fn nested_bundles_flatten_and_cycles_fail() {
+        let src = concat!(
+            "[tools.a]\ninstall=[{run=\"true\"}]\n[tools.b]\ninstall=[{run=\"true\"}]\n",
+            "[bundles.x]\nitems=[\"a\"]\n[bundles.y]\nitems=[\"b\",\"a\"]\nbundles=[\"x\"]\n",
+            "[bundles.all]\nbundles=[\"y\",\"x\"]\n",
+        );
+        let r = check(src);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let cat: Catalog = toml::from_str(src).unwrap();
+        assert_eq!(cat.bundle_items("all"), vec!["b", "a"]);
+        let r = check("[bundles.p]\nbundles=[\"q\"]\n[bundles.q]\nbundles=[\"p\", \"zz\"]\n");
+        assert!(
+            has(&r.errors, "bundle cycle through \"q\""),
+            "{:?}",
+            r.errors
+        );
+        assert!(has(&r.errors, "unknown bundle \"zz\""), "{:?}", r.errors);
     }
 }

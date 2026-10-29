@@ -222,6 +222,18 @@ pub enum FsCmd {
         #[arg(long)]
         check: bool,
     },
+    /// Set one whole line, found by a regex (inserted after `--after` or appended when absent).
+    Line {
+        file: String,
+        #[arg(long = "match")]
+        pattern: String,
+        #[arg(long)]
+        line: String,
+        #[arg(long)]
+        after: Option<String>,
+        #[arg(long)]
+        check: bool,
+    },
     /// Symbolic link.
     Link {
         target: String,

@@ -224,6 +224,9 @@ pub struct Bundle {
     pub desc: Option<String>,
     #[serde(default)]
     pub items: Vec<String>,
+    /// Other bundles whose items this bundle also includes.
+    #[serde(default)]
+    pub bundles: Vec<String>,
 }
 
 impl Tool {

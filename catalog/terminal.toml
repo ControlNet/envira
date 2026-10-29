@@ -1,28 +1,162 @@
 #:schema ./schema.json
-# Everyday terminal tools.
+# Everyday terminal tools. Crates are installed with cargo-binstall (prebuilt) and, like Go
+# modules and release downloads, copied into /usr/local/bin when sudo is available (`portable`).
 
 [tools.bat]
 desc = "cat with syntax highlighting"
-# Debian/Ubuntu ship the binary as `batcat`.
+# Debian/Ubuntu ship the binary as `batcat`; `bat-link` adds the `bat` name system-wide.
 bins = ["bat", "batcat"]
 detect = { cmd = "bat --version 2>/dev/null || batcat --version", version = 'bat (\S+)' }
 install = [
   { method = "apt", package = "bat" },
   { method = "dnf", package = "bat" },
   { method = "pacman", package = "bat" },
+  { method = "zypper", package = "bat" },
   { method = "github-release", repo = "sharkdp/bat", bins = ["bat"], asset = { x86_64 = "bat-v*-x86_64-unknown-linux-musl.tar.gz", aarch64 = "bat-v*-aarch64-unknown-linux-gnu.tar.gz" } },
 ]
-shell = { alias = { bat = "batcat" } }
+
+[configs.bat-link]
+desc = "`bat` name for Debian's batcat"
+scope = "system"
+when = ["family:debian"]
+depends = ["bat"]
+steps = [{ use = "link", target = "/usr/bin/batcat", link = "/usr/local/bin/bat" }]
+
+[tools.ncdu]
+desc = "Disk usage analyzer"
+install = [
+  { method = "apt", package = "ncdu" },
+  { method = "dnf", package = "ncdu" },
+  { method = "pacman", package = "ncdu" },
+  { method = "zypper", package = "ncdu" },
+  # Static build (run_user.sh); the download site has no "latest" link, so the version is pinned.
+  { run = "curl -fsSL https://dev.yorhel.nl/download/ncdu-2.9.1-linux-{arch}.tar.gz | tar -xz -C {bin_dir}" },
+]
+
+[tools.fzf]
+desc = "Fuzzy finder"
+depends = ["git"]
+detect = { cmd = "fzf --version", version = '^(\S+)' }
+# --no-update-rc: envira sources ~/.fzf.zsh / ~/.fzf.bash itself.
+install = [{ run = 'git clone --depth 1 https://github.com/junegunn/fzf.git "$HOME/.fzf" && "$HOME/.fzf/install" --all --no-update-rc', update = 'git -C "$HOME/.fzf" pull --ff-only && "$HOME/.fzf/install" --all --no-update-rc', latest = { http = "https://api.github.com/repos/junegunn/fzf/releases/latest", json = "tag_name" } }]
+shell = { path = ["~/.fzf/bin"], init = { zsh = '[ -f "$HOME/.fzf.zsh" ] && . "$HOME/.fzf.zsh"', bash = '[ -f "$HOME/.fzf.bash" ] && . "$HOME/.fzf.bash"' } }
+
+[tools.lazygit]
+desc = "Terminal UI for git"
+install = [{ method = "github-release", repo = "jesseduffield/lazygit", asset = { x86_64 = "lazygit_*_Linux_x86_64.tar.gz", aarch64 = "lazygit_*_Linux_arm64.tar.gz" } }]
+
+[tools.zellij]
+desc = "Terminal workspace (multiplexer)"
+install = [{ method = "cargo", package = "zellij", depends = ["cargo-binstall"], portable = true }]
+shell = { alias = { zel = "zellij" } }
+
+[configs.zellij-config]
+desc = "zellij starts locked, Ctrl-b passes through to tmux (fix_zellij_kdl.py)"
+depends = ["zellij", "python3"]
+check = "grep -Eq '^[[:space:]]*default_mode[[:space:]]+\"locked\"' \"$HOME/.config/zellij/config.kdl\""
+apply = "curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3"
+
+[tools.herdr]
+desc = "Terminal workspace manager"
+detect = { cmd = "herdr --version", version = '(\d+\.\d+\S*)' }
+# No published latest-version source; `envira update herdr` runs the built-in updater.
+install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "herdr update" }]
+
+[tools.lsd]
+desc = "ls with colours and icons"
+install = [{ method = "cargo", package = "lsd", depends = ["cargo-binstall"], portable = true }]
+shell = { alias = { ls = "lsd" } }
+
+[tools.delta]
+desc = "Syntax-highlighting pager for git diffs"
+install = [{ method = "cargo", package = "git-delta", depends = ["cargo-binstall"], portable = true }]
+
+[tools.duf]
+desc = "Disk usage overview (df replacement)"
+install = [{ method = "go", package = "github.com/muesli/duf", depends = ["go"], portable = true }]
+shell = { alias = { df = "duf" } }
+
+[tools.dust]
+desc = "Directory sizes (du replacement)"
+install = [{ method = "cargo", package = "du-dust", depends = ["cargo-binstall"], portable = true }]
+shell = { alias = { du = "dust" } }
+
+[tools.fd]
+desc = "Fast find alternative"
+install = [{ method = "cargo", package = "fd-find", depends = ["cargo-binstall"], portable = true }]
+
+[tools.ripgrep]
+desc = "Fast grep (with PCRE2)"
+bin = "rg"
+detect = { cmd = "rg --version", version = 'ripgrep (\S+)' }
+# Built from source: the PCRE2 feature is not in the prebuilt binaries.
+install = [{ run = "cargo install --locked --force --features pcre2 ripgrep", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/ripgrep", json = "crate.max_stable_version" } }]
+
+[tools.gping]
+desc = "ping with a graph"
+install = [{ method = "cargo", package = "gping", depends = ["cargo-binstall"], portable = true }]
+shell = { alias = { ping = "gping" } }
+
+[tools.procs]
+desc = "Modern ps"
+install = [{ method = "cargo", package = "procs", depends = ["cargo-binstall"], portable = true }]
+shell = { alias = { ps = "procs" } }
+
+[tools.xh]
+desc = "Friendly HTTP client"
+install = [{ method = "cargo", package = "xh", depends = ["cargo-binstall"], portable = true }]
+
+[tools.viu]
+desc = "Image viewer for the terminal"
+install = [{ method = "cargo", package = "viu", depends = ["cargo-binstall"], portable = true }]
+
+[tools.rustscan]
+desc = "Fast port scanner"
+install = [{ method = "cargo", package = "rustscan", depends = ["cargo-binstall"], portable = true }]
+
+[tools.scc]
+desc = "Code counter"
+install = [{ method = "go", package = "github.com/boyter/scc/v3", depends = ["go"], portable = true }]
+
+[tools.gotify]
+desc = "Gotify push-notification CLI"
+detect = { cmd = "gotify version", version = 'Version:\s*(\S+)' }
+# `go install` names the binary after the module (`cli`); it is renamed.
+install = [{ run = 'go install github.com/gotify/cli@latest && mv "$(go env GOPATH)/bin/cli" "$(go env GOPATH)/bin/gotify"', depends = ["go"], portable = true, latest = { http = "https://proxy.golang.org/github.com/gotify/cli/@latest", json = "Version" } }]
+
+[tools.zoxide]
+desc = "Smarter cd"
+install = [{ method = "script", url = "https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/ajeetdsouza/zoxide/releases/latest", json = "tag_name" } }]
+shell = { init = { zsh = 'eval "$(zoxide init zsh)"', bash = 'eval "$(zoxide init bash)"' } }
+
+[tools.micro]
+desc = "Terminal text editor (nano replacement)"
+# getmic.ro downloads into the current directory (a fresh temp dir per step).
+install = [{ run = "curl -fsSL https://getmic.ro | bash && install -D -m 755 micro {bin_dir}/micro", portable = true, latest = { http = "https://api.github.com/repos/zyedidia/micro/releases/latest", json = "tag_name" } }]
+shell = { alias = { nano = "micro" } }
+
+[tools.superfile]
+desc = "Terminal file manager"
+bin = "spf"
+install = [{ method = "script", url = "https://superfile.dev/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/yorukot/superfile/releases/latest", json = "tag_name" } }]
+
+[configs.superfile-config]
+desc = "superfile default config without update checks"
+depends = ["superfile"]
+steps = [
+  { check = 'test -f "$HOME/.config/superfile/config.toml"', run = 'mkdir -p "$HOME/.config/superfile" && curl -fsSL https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml -o "$HOME/.config/superfile/config.toml"' },
+  { use = "toml-set", file = "~/.config/superfile/config.toml", key = "auto_check_update", value = false },
+]
 
 [tools.yazi]
 desc = "Terminal file manager"
 bins = ["yazi", "ya"]
 detect = { cmd = "yazi --version", version = 'Yazi (\S+)' }
 install = [
+  # yazi-build compiles yazi and ya (run.sh); the release download is the fallback without cargo.
+  { run = "cargo install --force yazi-build", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/yazi-build", json = "crate.max_stable_version" } },
   { method = "github-release", repo = "sxyazi/yazi", asset = "yazi-{arch}-unknown-linux-musl.zip", bins = ["yazi", "ya"] },
-  { method = "cargo", package = "yazi-build", depends = ["rust-toolchain"] },
 ]
-shell = { alias = { y = "yazi" } }
 
 [configs.yazi-theme]
 desc = "yazi onedark flavor"
@@ -32,13 +166,40 @@ steps = [
   { use = "toml-set", file = "~/.config/yazi/theme.toml", key = "flavor.dark", value = "onedark" },
 ]
 
-[tools.herdr]
-desc = "Terminal workspace manager"
-detect = { cmd = "herdr --version", version = '(\d+\.\d+\S*)' }
-# No published latest-version source; `envira update herdr` runs the built-in updater.
-install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "herdr update" }]
+[tools.tldr]
+desc = "Simplified man pages"
+install = [{ method = "pipx", package = "tldr", depends = ["pipx"] }]
+
+[tools.rich-cli]
+desc = "Rich text and syntax highlighting in the terminal"
+bin = "rich"
+install = [{ method = "pipx", package = "rich-cli", depends = ["pipx"] }]
+
+[tools.speedtest-cli]
+desc = "Internet bandwidth test"
+bins = ["speedtest-cli", "speedtest"]
+install = [{ method = "pipx", package = "speedtest-cli", depends = ["pipx"] }]
+
+[tools.gdown]
+desc = "Google Drive downloader"
+install = [{ method = "pipx", package = "gdown", depends = ["pipx"] }]
+
+[tools.gh]
+desc = "GitHub CLI"
+# Release download instead of webi (run.sh): webi edits shell rc files through envman.
+detect = { cmd = "gh --version", version = 'gh version (\S+)' }
+install = [{ method = "github-release", repo = "cli/cli", asset = { x86_64 = "gh_*_linux_amd64.tar.gz", aarch64 = "gh_*_linux_arm64.tar.gz" } }]
+
+[tools.dolt]
+desc = "Version-controlled SQL database (used by beads)"
+install = [{ method = "github-release", repo = "dolthub/dolt", asset = { x86_64 = "dolt-linux-amd64.tar.gz", aarch64 = "dolt-linux-arm64.tar.gz" } }]
 
 [bundles.terminal]
 name = "Terminal"
-desc = "Daily terminal tools"
-items = ["bat", "yazi", "yazi-theme", "herdr"]
+desc = "Daily terminal tools and their aliases"
+items = [
+  "bat", "bat-link", "ncdu", "fzf", "lazygit", "zellij", "zellij-config", "herdr", "lsd", "delta",
+  "duf", "dust", "fd", "ripgrep", "gping", "procs", "xh", "viu", "rustscan", "scc", "gotify",
+  "zoxide", "micro", "superfile", "superfile-config", "yazi", "yazi-theme", "tldr", "rich-cli",
+  "speedtest-cli", "gdown", "gh", "dolt",
+]

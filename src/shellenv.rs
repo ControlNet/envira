@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn renders_only_present_tools_with_guards() {
         let (_d, cat, facts, paths) = setup();
-        let present: BTreeSet<String> = ["bun", "fnm", "yazi"]
+        let present: BTreeSet<String> = ["bun", "fnm", "lsd"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -259,9 +259,9 @@ mod tests {
         ));
         assert!(
             r.init_zsh
-                .contains("command -v yazi >/dev/null 2>&1 && alias y='yazi'\n")
+                .contains("command -v lsd >/dev/null 2>&1 && alias ls='lsd'\n")
         );
-        assert!(r.init_zsh.contains("if command -v fnm >/dev/null 2>&1; then\n  eval \"$(fnm env --use-on-cd --shell zsh)\"\nfi\n"));
+        assert!(r.init_zsh.contains("if command -v fnm >/dev/null 2>&1; then\n  eval \"$(fnm env --shell zsh)\"\n  eval \"$(fnm completions --shell zsh)\"\nfi\n"));
         assert!(r.init_bash.contains("--shell bash"));
         assert!(!r.init_bash.contains("_bun"), "bun has zsh-only init");
     }
@@ -290,8 +290,8 @@ mod tests {
     #[test]
     fn install_is_idempotent_and_adds_one_rc_block() {
         let (d, cat, facts, paths) = setup();
-        std::fs::write(d.path().join(".zshrc"), "alias y=yazi\n").unwrap();
-        let present: BTreeSet<String> = ["yazi".to_string()].into();
+        std::fs::write(d.path().join(".zshrc"), "alias ls=lsd\n").unwrap();
+        let present: BTreeSet<String> = ["lsd".to_string()].into();
         let first = install(&cat, &facts, &paths, &present).unwrap();
         assert_eq!(first.len(), 5, "{first:?}");
         let second = install(&cat, &facts, &paths, &present).unwrap();
@@ -303,7 +303,7 @@ mod tests {
         ));
         assert_eq!(
             rc_duplicates(&cat, &facts, &present),
-            vec!["~/.zshrc:1: alias y=yazi"]
+            vec!["~/.zshrc:1: alias ls=lsd"]
         );
     }
 }

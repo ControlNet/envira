@@ -599,7 +599,7 @@ mod tests {
         let r = FakeRunner::default();
         r.rule("bat --version", 0, "bat 0.24.0\n")
             .rule("command -v bat", 0, "/usr/bin/batcat\n")
-            .rule("dpkg-query -W -f='${Version}' bat", 0, "0.24.0-1build1")
+            .rule("dpkg-query -W -f='${Version}\\n' bat", 0, "0.24.0-1build1\n")
             .rule("herdr --version", 0, "herdr 0.3.1\n")
             .rule("command -v herdr", 0, "/home/user/.local/bin/herdr\n")
             .rule("yazi --version", 0, "Yazi 25.5.31\n")
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(get("fnm").label, Label::Failed);
         assert_eq!(get("yazi-theme").label, Label::Missing);
         assert_eq!(get("codex-sandbox-network").label, Label::Drifted);
-        assert_eq!(get("nvitop").label, Label::NotApplicable);
+        assert_eq!(get("yay").label, Label::NotApplicable);
         assert_eq!(get("pipx").label, Label::Available);
         assert!(snap.to_sync().contains(&"yazi-theme".to_string()));
         assert!(!snap.to_sync().contains(&"bat".to_string()));

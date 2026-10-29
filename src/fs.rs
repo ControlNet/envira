@@ -42,7 +42,8 @@ struct Meta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KeyRecord {
     kind: String,
-    /// Previous value (TOML literal for `toml`, raw text for `ini`); `None` when the key was absent.
+    /// Previous value (TOML literal for `toml`, raw text for `ini`, the whole line for
+    /// `line`); `None` when the key was absent.
     prior: Option<String>,
 }
 
@@ -393,6 +394,58 @@ fn remove_ini_key(path: &Path, section: &str, key: &str, prior: Option<&str>) ->
     Ok(())
 }
 
+/// One whole line, found by `pattern`: replaced when it differs, else inserted after the first line
+/// matching `after` (appended when it is empty or matches nothing). Recorded under the pattern as key.
+pub fn line(
+    b: &Backups,
+    path: &Path,
+    pattern: &str,
+    text: &str,
+    after: Option<&str>,
+    check: bool,
+) -> Result<bool> {
+    let re = regex::Regex::new(pattern).with_context(|| format!("bad --match {pattern:?}"))?;
+    let after = after
+        .filter(|a| !a.is_empty())
+        .map(|a| regex::Regex::new(a).with_context(|| format!("bad --after {a:?}")))
+        .transpose()?;
+    let text_now = read_opt(path)?.unwrap_or_default();
+    let mut lines: Vec<String> = text_now.lines().map(String::from).collect();
+    let found = lines.iter().position(|l| re.is_match(l));
+    let ok = found.is_some_and(|i| lines[i] == text);
+    if check || ok {
+        return Ok(ok);
+    }
+    b.record_key(path, pattern, "line", found.map(|i| lines[i].clone()))?;
+    match found {
+        Some(i) => lines[i] = text.to_string(),
+        None => {
+            let at = after
+                .and_then(|a| lines.iter().position(|l| a.is_match(l)))
+                .map_or(lines.len(), |i| i + 1);
+            lines.insert(at, text.to_string());
+        }
+    }
+    write_atomic(path, &(lines.join("\n") + "\n"), None)?;
+    Ok(true)
+}
+
+fn restore_line(path: &Path, pattern: &str, prior: Option<&str>) -> Result<()> {
+    let re = regex::Regex::new(pattern)?;
+    let text = read_opt(path)?.unwrap_or_default();
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    if let Some(i) = lines.iter().position(|l| re.is_match(l)) {
+        match prior {
+            Some(p) => lines[i] = p.to_string(),
+            None => {
+                lines.remove(i);
+            }
+        }
+        write_atomic(path, &(lines.join("\n") + "\n"), None)?;
+    }
+    Ok(())
+}
+
 /// Symbolic link `link -> target`.
 pub fn link(b: &Backups, target: &str, link: &Path, check: bool) -> Result<bool> {
     let ok = std::fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink())
@@ -449,6 +502,7 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
                 let (section, k) = key.rsplit_once('.').unwrap_or(("", key));
                 remove_ini_key(path, section, k, rec.prior.as_deref())?;
             }
+            "line" => restore_line(path, key, rec.prior.as_deref())?,
             other => bail!("unknown key record kind {other}"),
         }
         if meta.keys.is_empty() {
@@ -591,6 +645,57 @@ mod tests {
         restore(&b, &f, Some("core.pager")).unwrap();
         let t = std::fs::read_to_string(&f).unwrap();
         assert!(t.contains("name = a") && !t.contains("pager"), "{t}");
+    }
+
+    #[test]
+    fn line_replaces_or_inserts_and_reverts() {
+        let (d, b) = setup();
+        let f = d.path().join(".zshrc");
+        std::fs::write(
+            &f,
+            "export ZSH=\"$HOME/.oh-my-zsh\"\nZSH_THEME=\"robbyrussell\"\nsource x\n",
+        )
+        .unwrap();
+        let theme = "ZSH_THEME=\"mzz-ys\"";
+        assert!(!line(&b, &f, "^ZSH_THEME=", theme, None, true).unwrap());
+        assert!(line(&b, &f, "^ZSH_THEME=", theme, None, false).unwrap());
+        assert!(line(&b, &f, "^ZSH_THEME=", theme, None, true).unwrap());
+        // Absent: inserted after the anchor, or appended without one.
+        line(
+            &b,
+            &f,
+            "^DISABLE_UPDATE_PROMPT=",
+            "DISABLE_UPDATE_PROMPT=true",
+            Some("^export ZSH="),
+            false,
+        )
+        .unwrap();
+        line(
+            &b,
+            &f,
+            "^export TERM=",
+            "export TERM=xterm-256color",
+            Some("^nomatch"),
+            false,
+        )
+        .unwrap();
+        let t = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            t,
+            "export ZSH=\"$HOME/.oh-my-zsh\"\nDISABLE_UPDATE_PROMPT=true\nZSH_THEME=\"mzz-ys\"\nsource x\nexport TERM=xterm-256color\n"
+        );
+        // A second apply changes nothing and keeps the original value recorded.
+        assert!(line(&b, &f, "^ZSH_THEME=", theme, None, false).unwrap());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), t);
+        restore(&b, &f, Some("^ZSH_THEME=")).unwrap();
+        restore(&b, &f, Some("^DISABLE_UPDATE_PROMPT=")).unwrap();
+        restore(&b, &f, Some("^export TERM=")).unwrap();
+        let t = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            t,
+            "export ZSH=\"$HOME/.oh-my-zsh\"\nZSH_THEME=\"robbyrussell\"\nsource x\n"
+        );
+        assert!(line(&b, &f, "(", "x", None, true).is_err());
     }
 
     #[test]

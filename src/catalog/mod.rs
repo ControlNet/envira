@@ -77,6 +77,28 @@ impl Catalog {
             .unwrap_or(&[])
     }
 
+    /// Items of a bundle including those of nested bundles, in order and without duplicates.
+    pub fn bundle_items(&self, id: &str) -> Vec<String> {
+        fn walk(cat: &Catalog, id: &str, seen: &mut Vec<String>, out: &mut Vec<String>) {
+            if seen.iter().any(|s| s == id) {
+                return;
+            }
+            seen.push(id.to_string());
+            let Some(b) = cat.bundles.get(id) else { return };
+            for i in &b.items {
+                if !out.contains(i) {
+                    out.push(i.clone());
+                }
+            }
+            for nested in &b.bundles {
+                walk(cat, nested, seen, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, id, &mut Vec::new(), &mut out);
+        out
+    }
+
     pub fn bundle_name<'a>(&'a self, id: &'a str) -> &'a str {
         self.bundles
             .get(id)

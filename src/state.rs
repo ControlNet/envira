@@ -140,8 +140,7 @@ impl State {
         let mut d: BTreeSet<String> = self
             .bundles
             .iter()
-            .filter_map(|b| cat.bundles.get(b))
-            .flat_map(|b| b.items.iter().cloned())
+            .flat_map(|b| cat.bundle_items(b))
             .chain(self.include.iter().cloned())
             .collect();
         for x in &self.exclude {

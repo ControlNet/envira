@@ -51,7 +51,7 @@ when = ["family:debian"]
 scope = "system"
 # Retries after `apt-get update` when the package lists are missing or stale (fresh images).
 install = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package} || { {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package}; }"
-installed = { cmd = "dpkg-query -W -f='${Version}' {package}", regex = '^(?:\d+:)?([^-\s]+)' }
+installed = { cmd = "dpkg-query -W -f='${Version}\\n' {package}", regex = '^(?:\d+:)?([^-\s]+)' }
 update = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {package}"
 # Candidate from the local package lists (what an upgrade would install), no network.
 latest = { cmd = "apt-cache policy {package}", regex = 'Candidate: (?:\d+:)?([^-\s]+)' }
@@ -62,7 +62,7 @@ when = ["family:fedora"]
 scope = "system"
 install = "{sudo} dnf install -y {package}"
 update = "{sudo} dnf upgrade -y {package}"
-installed = { cmd = "rpm -q --qf '%{{VERSION}}' {package}", regex = '^(\S+)$' }
+installed = { cmd = "rpm -q --qf '%{{VERSION}}\\n' {package}", regex = '^(\S+)' }
 
 [methods.pacman]
 desc = "Arch package"
@@ -79,13 +79,13 @@ when = ["family:suse"]
 scope = "system"
 install = "{sudo} zypper --non-interactive install {package}"
 update = "{sudo} zypper --non-interactive update {package}"
-installed = { cmd = "rpm -q --qf '%{{VERSION}}' {package}", regex = '^(\S+)$' }
+installed = { cmd = "rpm -q --qf '%{{VERSION}}\\n' {package}", regex = '^(\S+)' }
 
 [methods.cargo]
 desc = "Rust crate (prebuilt via cargo-binstall when available)"
 expects = ["rust-toolchain"]
 scope = "user"
-install = "if command -v cargo-binstall >/dev/null 2>&1; then cargo binstall -y --force {package}; else cargo install --locked --force {package}; fi"
+install = "if command -v cargo-binstall >/dev/null 2>&1; then BINSTALL_DISABLE_TELEMETRY=true cargo binstall -y --force {package}; else cargo install --locked --force {package}; fi"
 installed = { cmd = "cargo install --list", regex = '(?m)^{package} v(\S+):' }
 latest = { http = "https://crates.io/api/v1/crates/{package}", json = "crate.max_stable_version" }
 
@@ -109,8 +109,10 @@ latest = { http = "https://registry.npmjs.org/{package}/latest", json = "version
 
 [methods.go]
 desc = "Go module built with go install"
+expects = ["go"]
 scope = "user"
 install = "go install {package}@latest"
+latest = { http = "https://proxy.golang.org/{package}/@latest", json = "Version" }
 
 [methods.github-release]
 desc = "Prebuilt binary from a GitHub release"
@@ -161,6 +163,13 @@ desc = "Set one key in an INI file section"
 check = "{sudo} {envira} fs ini-set --check {file} {section} {key} {value}"
 apply = "{sudo} {envira} fs ini-set {file} {section} {key} {value}"
 revert = "{sudo} {envira} fs restore {file} --key {section}.{key}"
+
+[actions.line]
+desc = "One whole line found by a regex (shell rc settings owned by another tool)"
+defaults = { after = "" }
+check = "{sudo} {envira} fs line --check {file} --match {match} --line {line} --after {after}"
+apply = "{sudo} {envira} fs line {file} --match {match} --line {line} --after {after}"
+revert = "{sudo} {envira} fs restore {file} --key {match}"
 
 [actions.link]
 desc = "Symbolic link"

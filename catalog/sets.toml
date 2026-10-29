@@ -1,0 +1,40 @@
+#:schema ./schema.json
+# Whole-machine sets matching the legacy scripts.
+
+[bundles.full]
+name = "Full"
+desc = "Everything run.sh sets up (all bundles except extras)"
+bundles = [
+  "base", "shell", "toolchains", "terminal", "editors", "ai-agents", "monitoring", "containers",
+  "data-science", "secrets", "system",
+]
+
+[bundles.user]
+name = "User only"
+desc = "What run_user.sh sets up without sudo (except extras)"
+items = [
+  # shell
+  "oh-my-zsh", "zsh-autosuggestions", "zsh-syntax-highlighting", "zsh-theme", "zsh-plugins",
+  "zsh-settings", "tmux-colors", "git-settings",
+  # toolchains
+  "rust-toolchain", "cargo-binstall", "cargo-cache", "go", "fnm", "nodejs", "npm-prefix", "pm2", "pipx",
+  "uv", "pixi", "pixi-config", "bun",
+  # terminal
+  "bat", "ncdu", "fzf", "lazygit", "zellij", "zellij-config", "herdr", "lsd", "delta", "duf",
+  "dust", "fd", "ripgrep", "gping", "procs", "xh", "viu", "rustscan", "scc", "gotify", "zoxide",
+  "micro", "superfile", "superfile-config", "yazi", "yazi-theme", "tldr", "rich-cli",
+  "speedtest-cli", "gdown", "gh", "dolt",
+  # editors
+  "neovim", "lemonade", "texlab",
+  # ai agents
+  "codex", "codex-sandbox-network", "antigravity", "cursor-agent", "claude", "opencode",
+  "oh-my-opencode", "openchamber", "omp",
+  # monitoring
+  "btop", "bottom", "nvitop", "nviwatch",
+  # containers
+  "lazydocker", "dive",
+  # data science
+  "miniconda", "conda-settings", "jupyter", "hf",
+  # secrets
+  "infisical", "ienv",
+]

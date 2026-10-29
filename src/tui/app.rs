@@ -257,16 +257,16 @@ impl App {
                 self.picker = self
                     .catalog
                     .bundles
-                    .iter()
-                    .filter(|(_, b)| {
-                        let have = b
-                            .items
+                    .keys()
+                    .filter(|id| {
+                        let items = self.catalog.bundle_items(id);
+                        let have = items
                             .iter()
                             .filter(|i| snap.get(i).is_some_and(|s| s.present))
                             .count();
-                        !b.items.is_empty() && have * 2 >= b.items.len()
+                        !items.is_empty() && have * 2 >= items.len()
                     })
-                    .map(|(id, _)| id.clone())
+                    .cloned()
                     .collect();
                 self.screen = Screen::Picker;
             } else {
@@ -496,7 +496,7 @@ impl App {
             .iter()
             .filter(|b| self.picker.contains(*b))
         {
-            for i in &self.catalog.bundles[b].items {
+            for i in &self.catalog.bundle_items(b) {
                 if let Some(s) = snap.get(i)
                     && !s.present
                     && s.label != Label::NotApplicable
@@ -701,7 +701,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(b) = ids.get(self.bundle_cursor) {
-                    self.selected = self.catalog.bundles[b].items.iter().cloned().collect();
+                    self.selected = self.catalog.bundle_items(b).into_iter().collect();
                     self.focus = 4;
                     self.notify(format!(
                         "Selected the items of {}: i installs them",
@@ -1004,7 +1004,7 @@ pub mod tests {
         assert_eq!(a.screen, Screen::Plan);
         let (plan, _) = a.plan.as_ref().unwrap();
         let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
-        assert_eq!(ids, vec!["fnm", "nodejs", "codex"]);
+        assert_eq!(ids, vec!["fnm", "nodejs", "npm-prefix", "codex"]);
         let cmds = a.on_key(key(KeyCode::Enter));
         assert!(matches!(&cmds[..], [Cmd::StartRun { command, .. }] if command == "install"));
         assert!(a.selected.is_empty());
@@ -1073,10 +1073,18 @@ pub mod tests {
             Outcome::Blocked("nodejs".into()),
             Duration::ZERO,
         ));
+        a.on_exec(Event::UnitFinished(
+            3,
+            Outcome::Blocked("npm-prefix".into()),
+            Duration::ZERO,
+        ));
         a.on_exec(Event::Finished(RunRecord::default()));
         let run = a.run.as_ref().unwrap();
         assert_eq!(run.sel, 0);
-        assert_eq!(run.failed_ids(), vec!["fnm", "nodejs", "codex"]);
+        assert_eq!(
+            run.failed_ids(),
+            vec!["fnm", "nodejs", "npm-prefix", "codex"]
+        );
         a.on_key(key(KeyCode::Char('r')));
         assert_eq!(a.screen, Screen::Plan);
         assert!(a.plan.as_ref().unwrap().1.starts_with("retry"));
@@ -1102,7 +1110,13 @@ pub mod tests {
         assert_eq!(a.screen, Screen::Picker);
         a.on_key(key(KeyCode::Char('n')));
         a.picker.insert("ai-agents".into());
-        assert_eq!(a.picker_targets(), vec!["codex", "codex-sandbox-network"]);
+        let targets = a.picker_targets();
+        assert_eq!(&targets[..2], ["codex", "codex-sandbox-network"]);
+        assert!(
+            targets
+                .iter()
+                .all(|t| a.catalog.bundle_items("ai-agents").contains(t))
+        );
         let cmds = a.on_key(key(KeyCode::Enter));
         assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
         assert_eq!(a.state.as_ref().unwrap().bundles, vec!["ai-agents"]);

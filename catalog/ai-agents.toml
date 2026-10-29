@@ -1,17 +1,56 @@
 #:schema ./schema.json
-# AI coding agents.
+# AI coding agents. Vendor installers put their binaries in ~/.local/bin (or their own dir,
+# which `shell` adds to PATH).
 
 [tools.codex]
 desc = "OpenAI Codex CLI"
 detect = { cmd = "codex --version", version = 'codex-cli (\S+)' }
-install = [{ method = "npm", package = "@openai/codex", depends = ["nodejs"] }]
+install = [{ method = "npm", package = "@openai/codex", depends = ["nodejs", "npm-prefix"] }]
 
 [configs.codex-sandbox-network]
 desc = "Allow network access in the codex workspace-write sandbox"
 depends = ["codex"]
 steps = [{ use = "toml-set", file = "~/.codex/config.toml", key = "sandbox_workspace_write.network_access", value = true }]
 
+[tools.antigravity]
+desc = "Google Antigravity CLI"
+bin = "agy"
+install = [{ method = "script", url = "https://antigravity.google/cli/install.sh", shell = "bash" }]
+
+[tools.cursor-agent]
+desc = "Cursor agent CLI"
+bin = "agent"
+bins = ["agent", "cursor-agent"]
+install = [{ method = "script", url = "https://cursor.com/install", shell = "bash", update = "agent update" }]
+
+[tools.claude]
+desc = "Claude Code"
+install = [{ method = "script", url = "https://claude.ai/install.sh", shell = "bash", update = "claude update", latest = { http = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest", json = "version" } }]
+
+[tools.opencode]
+desc = "opencode agent"
+install = [{ method = "script", url = "https://opencode.ai/install", shell = "bash", update = "opencode upgrade", latest = { http = "https://registry.npmjs.org/opencode-ai/latest", json = "version" } }]
+shell = { path = ["~/.opencode/bin"] }
+
+[configs.oh-my-opencode]
+desc = "oh-my-opencode plugin for opencode (no provider logins)"
+depends = ["opencode", "bun"]
+check = "grep -qs oh-my-opencode \"$HOME/.config/opencode/opencode.json\" \"$HOME/.config/opencode/opencode.jsonc\""
+apply = "bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no"
+
+[tools.openchamber]
+desc = "Web UI for opencode"
+detect = { cmd = "command -v openchamber" }
+install = [{ run = "bun add -g @openchamber/web", depends = ["bun"], latest = { http = "https://registry.npmjs.org/@openchamber/web/latest", json = "version" } }]
+
+[tools.omp]
+desc = "omp agent CLI"
+install = [{ method = "script", url = "https://omp.sh/install" }]
+
 [bundles.ai-agents]
 name = "AI agents"
 desc = "Coding agents and their settings"
-items = ["codex", "codex-sandbox-network"]
+items = [
+  "codex", "codex-sandbox-network", "antigravity", "cursor-agent", "claude", "opencode",
+  "oh-my-opencode", "openchamber", "omp",
+]

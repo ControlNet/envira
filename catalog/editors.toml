@@ -1,13 +1,27 @@
 #:schema ./schema.json
 # Editors and language servers.
 
+[tools.neovim]
+desc = "Neovim (release build in ~/.nvim)"
+bin = "nvim"
+detect = { cmd = "nvim --version", version = 'NVIM v(\S+)' }
+# The release is a directory (binary plus runtime), so it lives in ~/.nvim with a link in the
+# user bin dir; updating replaces the directory.
+install = [{ run = 'a=$(uname -m | sed s/aarch64/arm64/) && curl -fsSL "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$a.tar.gz" | tar -xz && rm -rf "$HOME/.nvim" && mv "nvim-linux-$a" "$HOME/.nvim" && mkdir -p {bin_dir} && ln -sf "$HOME/.nvim/bin/nvim" {bin_dir}/nvim', latest = { http = "https://api.github.com/repos/neovim/neovim/releases/latest", json = "tag_name" } }]
+shell = { path = ["~/.nvim/bin"] }
+
+[tools.lemonade]
+desc = "Clipboard over SSH for Neovim"
+detect = { cmd = "command -v lemonade" }
+install = [{ method = "go", package = "github.com/lemonade-command/lemonade", depends = ["go"] }]
+
 [tools.texlab]
 desc = "LaTeX language server"
 detect = { cmd = "texlab --version", version = 'texlab (\S+)' }
 # Static binary: with system scope it is built as the user and copied into /usr/local/bin.
-install = [{ method = "cargo", package = "texlab", depends = ["rust-toolchain"], portable = true }]
+install = [{ method = "cargo", package = "texlab", depends = ["cargo-binstall"], portable = true }]
 
-[bundles.latex]
-name = "LaTeX"
-desc = "LaTeX editing support"
-items = ["texlab"]
+[bundles.editors]
+name = "Editors"
+desc = "Neovim, clipboard bridge and LaTeX language server"
+items = ["neovim", "lemonade", "texlab"]

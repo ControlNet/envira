@@ -1,0 +1,80 @@
+#:schema ./schema.json
+# Older or redundant tools that run.sh / run_user.sh still install. Not part of `full` or
+# `user`; select the `extras` bundle (or single items) to get them.
+
+[tools.lunarvim]
+desc = "LunarVim (release-1.4/neovim-0.9 branch)"
+bin = "lvim"
+depends = ["neovim", "git", "build-tools", "nodejs", "miniconda"]
+install = [{ run = "LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) -y && \"$HOME/miniconda3/bin/python\" -m pip install pynvim" }]
+
+[tools.gedit]
+desc = "GNOME text editor"
+detect = { cmd = "command -v gedit" }
+install = [
+  { method = "apt", package = "gedit" },
+  { method = "dnf", package = "gedit" },
+  { method = "pacman", package = "gedit" },
+  { method = "zypper", package = "gedit" },
+]
+
+[tools.tigervnc]
+desc = "VNC server"
+bin = "vncserver"
+detect = { cmd = "command -v vncserver" }
+install = [
+  { method = "apt", package = ["tigervnc-standalone-server", "tigervnc-common", "tigervnc-xorg-extension"] },
+  { method = "dnf", package = "tigervnc-server" },
+  { method = "pacman", package = "tigervnc" },
+  { method = "zypper", package = "tigervnc" },
+]
+
+[tools.meslo-font]
+desc = "Meslo Nerd Font in ~/.local/share/fonts"
+bins = []
+depends = ["unzip", "fontconfig"]
+detect = { cmd = 'ls "$HOME"/.local/share/fonts/MesloLG*NerdFont*.ttf >/dev/null 2>&1' }
+install = [{ run = 'curl -fsSL -o Meslo.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Meslo.zip && mkdir -p "$HOME/.local/share/fonts" && unzip -o Meslo.zip -x "*Windows*" -d "$HOME/.local/share/fonts" && fc-cache -f' }]
+
+[tools.screenfetch]
+desc = "System information with ASCII art"
+detect = { cmd = "screenfetch -V" }
+install = [
+  { method = "apt", package = "screenfetch" },
+  { method = "dnf", package = "screenfetch" },
+  { method = "pacman", package = "screenfetch" },
+  { method = "zypper", package = "screenfetch" },
+]
+
+[tools.neofetch]
+desc = "System information with ASCII art"
+install = [
+  { method = "apt", package = "neofetch" },
+  { method = "dnf", package = "neofetch" },
+  { method = "zypper", package = "neofetch" },
+  # The project is archived; 7.1.0 is its last release.
+  { run = 'git clone --depth 1 --branch 7.1.0 https://github.com/dylanaraps/neofetch && make -C neofetch PREFIX="$HOME/.local" install', depends = ["git", "build-tools"] },
+]
+
+[tools.fastfetch]
+desc = "System information (neofetch successor)"
+install = [
+  { run = "{sudo} add-apt-repository -y ppa:zhangsongcui3371/fastfetch && {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y fastfetch", scope = "system", when = ["family:ubuntu"], depends = ["apt-tools"] },
+  { method = "dnf", package = "fastfetch" },
+  { method = "pacman", package = "fastfetch" },
+  { method = "zypper", package = "fastfetch" },
+]
+
+[tools.archey4]
+desc = "System information"
+bin = "archey"
+install = [{ method = "pipx", package = "archey4", depends = ["pipx"] }]
+
+[tools.genact]
+desc = "Nonsense activity generator"
+install = [{ method = "cargo", package = "genact", depends = ["cargo-binstall"], portable = true }]
+
+[bundles.extras]
+name = "Extras"
+desc = "Older or redundant tools from the legacy scripts (not in full/user)"
+items = ["lunarvim", "gedit", "tigervnc", "meslo-font", "screenfetch", "neofetch", "fastfetch", "archey4", "genact"]

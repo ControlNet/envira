@@ -466,7 +466,7 @@ mod tests {
         let p = plan(&s.ctx, &["codex", "herdr"]);
         assert_eq!(
             p.units.iter().map(|u| u.id.as_str()).collect::<Vec<_>>(),
-            vec!["fnm", "nodejs", "codex", "herdr"]
+            vec!["fnm", "nodejs", "npm-prefix", "codex", "herdr"]
         );
         let (rec, st, events) = run(&s, p).await;
         assert_eq!(
@@ -474,11 +474,15 @@ mod tests {
             vec![
                 ("fnm", "failed"),
                 ("nodejs", "blocked"),
+                ("npm-prefix", "blocked"),
                 ("codex", "blocked"),
                 ("herdr", "ok")
             ]
         );
-        assert_eq!(rec.unfinished(), vec!["fnm", "nodejs", "codex"]);
+        assert_eq!(
+            rec.unfinished(),
+            vec!["fnm", "nodejs", "npm-prefix", "codex"]
+        );
         assert_eq!(st.tools["herdr"].version.as_deref(), Some("0.3.1"));
         assert!(st.is_managed("herdr"));
         assert_eq!(st.tools["fnm"].last_result, LastResult::Failed);

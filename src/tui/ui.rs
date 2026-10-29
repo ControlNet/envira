@@ -299,7 +299,7 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 
 fn bundle_counts(app: &App, b: &str) -> (usize, usize) {
     let Some(snap) = &app.snap else { return (0, 0) };
-    let items = &app.catalog.bundles[b].items;
+    let items = app.catalog.bundle_items(b);
     let relevant: Vec<&ItemStatus> = items
         .iter()
         .filter_map(|i| snap.get(i))
@@ -316,7 +316,7 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let name_w = 13usize;
-    let count_w = 5u16;
+    let count_w = 8u16;
     let bar_w = inner
         .width
         .saturating_sub(2 + name_w as u16 + count_w + 1)
@@ -349,7 +349,7 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 ),
             ];
             spans.extend(bar(t, bar_w, &[(have, color)], total).spans);
-            spans.push(Span::styled(format!(" {have:>2}/{total:<2}"), t.s(t.dim)));
+            spans.push(Span::styled(format!(" {have:>3}/{total:<3}"), t.s(t.dim)));
             let line = Line::from(spans);
             if app.focus == 2 && i == app.bundle_cursor {
                 line.style(t.cursor())
@@ -358,7 +358,11 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             }
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+    // Keep the cursor visible when there are more bundles than rows.
+    let skip = app
+        .bundle_cursor
+        .saturating_sub(inner.height.saturating_sub(1) as usize);
+    f.render_widget(Paragraph::new(lines).scroll((skip as u16, 0)), inner);
 }
 
 fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
@@ -1585,7 +1589,8 @@ mod tests {
     #[test]
     fn dashboard_shows_panels_and_items() {
         let a = app();
-        let s = render(&a, 140, 40);
+        // Tall enough to show every catalog item.
+        let s = render(&a, 140, 160);
         for needle in [
             "[1] Overview",
             "[2] Bundles",
@@ -1606,13 +1611,26 @@ mod tests {
     }
 
     #[test]
+    fn bundle_list_scrolls_to_the_cursor() {
+        let mut a = app();
+        a.focus = 2;
+        a.bundle_cursor = a.bundle_ids().len() - 1;
+        let last = a
+            .catalog
+            .bundle_name(a.bundle_ids().last().unwrap())
+            .to_string();
+        let s = render(&a, 80, 24);
+        assert!(s.contains(&last), "missing {last:?} in\n{s}");
+    }
+
+    #[test]
     fn outdated_tools_show_latest_and_glyph() {
         let mut a = app();
         a.on_latest(std::collections::BTreeMap::from([(
             "rust-toolchain".to_string(),
             crate::latest::Latest::Version("2.0.0".into()),
         )]));
-        let s = render(&a, 140, 40);
+        let s = render(&a, 140, 160);
         let row = s
             .lines()
             .find(|l| l.contains("rust-toolchain"))
@@ -1631,7 +1649,7 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         let s = render(&a, 140, 40);
         assert!(
-            s.contains("[2] Steps") && s.contains("codex") && s.contains("Run 3 steps: enter"),
+            s.contains("[2] Steps") && s.contains("codex") && s.contains("Run 4 steps: enter"),
             "{s}"
         );
         let plan = a.plan.clone().unwrap().0;

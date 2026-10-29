@@ -113,8 +113,8 @@ impl Session {
     pub fn expand_targets(&self, names: &[String]) -> Result<Vec<String>> {
         let mut out = Vec::new();
         for n in names {
-            if let Some(b) = self.catalog.bundles.get(n) {
-                out.extend(b.items.iter().cloned());
+            if self.catalog.bundles.contains_key(n) {
+                out.extend(self.catalog.bundle_items(n));
             } else if self.catalog.tools.contains_key(n) || self.catalog.configs.contains_key(n) {
                 out.push(n.clone());
             } else {

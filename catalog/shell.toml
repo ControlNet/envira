@@ -1,0 +1,79 @@
+#:schema ./schema.json
+# zsh with oh-my-zsh, the mzz-ys theme and plugins, tmux colours and git settings.
+#
+# oh-my-zsh owns ~/.zshrc (its installer writes the template). envira changes only single
+# lines there (theme, plugins, update prompt, TERM); everything else (PATH, env, aliases, tool
+# init) lives in envira's own files, sourced by one managed block.
+
+[tools.oh-my-zsh]
+desc = "zsh configuration framework"
+bins = []
+depends = ["zsh", "git", "curl"]
+detect = { cmd = "test -f \"$HOME/.oh-my-zsh/oh-my-zsh.sh\"" }
+# The installer replaces ~/.zshrc with its template (the old file is kept as .zshrc.pre-oh-my-zsh).
+install = [{ run = 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended', update = 'env ZSH="$HOME/.oh-my-zsh" zsh -f "$HOME/.oh-my-zsh/tools/upgrade.sh"' }]
+
+[tools.zsh-autosuggestions]
+desc = "Fish-like command suggestions for zsh"
+bins = []
+depends = ["oh-my-zsh", "git"]
+detect = { cmd = 'test -d "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions"' }
+install = [{ run = 'git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions"', update = 'git -C "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions" pull --ff-only' }]
+
+[tools.zsh-syntax-highlighting]
+desc = "Syntax highlighting for zsh"
+bins = []
+depends = ["oh-my-zsh", "git"]
+detect = { cmd = 'test -d "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting"' }
+install = [{ run = 'git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting"', update = 'git -C "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting" pull --ff-only' }]
+
+[configs.zsh-theme]
+desc = "mzz-ys oh-my-zsh theme (ZSH_THEME, ZSH_DISABLE_COMPFIX)"
+depends = ["oh-my-zsh"]
+steps = [
+  { check = 'test -s "$HOME/.oh-my-zsh/themes/mzz-ys.zsh-theme"', run = 'curl -fsSL https://raw.githubusercontent.com/ControlNet/my-zsh-theme-env/main/files/mzz-ys.zsh-theme -o "$HOME/.oh-my-zsh/themes/mzz-ys.zsh-theme"', revert = 'rm -f "$HOME/.oh-my-zsh/themes/mzz-ys.zsh-theme"' },
+  { use = "line", file = "~/.zshrc", match = "^ZSH_THEME=", line = 'ZSH_THEME="mzz-ys"' },
+  { use = "line", file = "~/.zshrc", match = "^ZSH_DISABLE_COMPFIX=", line = 'ZSH_DISABLE_COMPFIX="true"', after = "^ZSH_THEME=" },
+]
+
+[configs.zsh-plugins]
+desc = "Enable git, zsh-autosuggestions and zsh-syntax-highlighting"
+depends = ["zsh-autosuggestions", "zsh-syntax-highlighting"]
+steps = [{ use = "line", file = "~/.zshrc", match = '^plugins=\(', line = "plugins=(git zsh-autosuggestions zsh-syntax-highlighting)" }]
+
+[configs.zsh-settings]
+desc = "Update oh-my-zsh without prompting; TERM=xterm-256color for tmux and mosh"
+depends = ["oh-my-zsh"]
+# Both must be set before oh-my-zsh.sh is sourced, so they go right after `export ZSH=`.
+steps = [
+  { use = "line", file = "~/.zshrc", match = "^export DISABLE_UPDATE_PROMPT=", line = "export DISABLE_UPDATE_PROMPT=true", after = "^export ZSH=" },
+  { use = "line", file = "~/.zshrc", match = "^export TERM=", line = "export TERM=xterm-256color", after = "^export ZSH=" },
+]
+
+[configs.default-shell]
+desc = "zsh as the login shell"
+scope = "system"
+depends = ["zsh"]
+check = '[ "$(getent passwd {user} | cut -d: -f7)" = "$(command -v zsh)" ]'
+apply = '{sudo} chsh --shell "$(command -v zsh)" {user}'
+revert = "{sudo} chsh --shell /bin/bash {user}"
+
+[configs.tmux-colors]
+desc = "tmux 256-colour terminal"
+steps = [{ use = "block", path = "~/.tmux.conf", block = "tmux-colors", content = "set -g default-terminal \"screen-256color\"\n" }]
+
+[configs.git-settings]
+desc = "git lsd alias (graph log) and the store credential helper"
+depends = ["git"]
+steps = [
+  { use = "ini-set", file = "~/.gitconfig", section = "alias", key = "lsd", value = "log --graph --decorate --pretty=oneline --abbrev-commit --all" },
+  { use = "ini-set", file = "~/.gitconfig", section = "credential", key = "helper", value = "store" },
+]
+
+[bundles.shell]
+name = "Shell"
+desc = "zsh, oh-my-zsh, theme, plugins, tmux and git settings"
+items = [
+  "oh-my-zsh", "zsh-autosuggestions", "zsh-syntax-highlighting", "zsh-theme", "zsh-plugins",
+  "zsh-settings", "default-shell", "tmux-colors", "git-settings",
+]

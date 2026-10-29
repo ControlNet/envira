@@ -811,6 +811,7 @@ mod tests {
                 "fnm",
                 "libatomic",
                 "nodejs",
+                "npm-prefix",
                 "codex",
                 "codex-sandbox-network"
             ]
@@ -822,12 +823,18 @@ mod tests {
         let plan = p.plan(&["codex-sandbox-network".into()], false);
         assert_eq!(
             ids(&plan),
-            vec!["fnm", "nodejs", "codex", "codex-sandbox-network"]
+            vec![
+                "fnm",
+                "nodejs",
+                "npm-prefix",
+                "codex",
+                "codex-sandbox-network"
+            ]
         );
-        assert_eq!(plan.units[2].deps, vec!["nodejs"]);
+        assert_eq!(plan.units[3].deps, vec!["nodejs", "npm-prefix"]);
         assert_eq!(plan.units[1].reason, "needed by codex");
 
-        let present = set(&["fnm", "nodejs"]);
+        let present = set(&["fnm", "nodejs", "npm-prefix"]);
         let mut p = Planner::new(&c, &f, &present);
         let plan = p.plan(&["codex".into()], false);
         assert_eq!(ids(&plan), vec!["codex"]);
@@ -864,7 +871,7 @@ mod tests {
     fn github_release_goes_system_wide_with_sudo() {
         let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
         let present = set(&[]);
-        let plan = Planner::new(&c, &f, &present).plan(&["yazi".into()], false);
+        let plan = Planner::new(&c, &f, &present).plan(&["lazygit".into()], false);
         let u = &plan.units[0];
         assert_eq!((u.via.as_str(), u.scope), ("github-release", Scope::System));
         assert!(
@@ -879,7 +886,7 @@ mod tests {
     #[test]
     fn portable_cargo_tool_is_copied_system_wide() {
         let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
-        let present = set(&["rust-toolchain"]);
+        let present = set(&["rust-toolchain", "cargo-binstall"]);
         let plan = Planner::new(&c, &f, &present).plan(&["texlab".into()], false);
         let u = &plan.units[0];
         assert_eq!(u.steps.len(), 2);
@@ -895,7 +902,7 @@ mod tests {
         let mut f = Facts::sample(Path::new("/home/user"));
         let present = set(&[]);
         let mut p = Planner::new(&c, &f, &present);
-        assert_eq!(p.choose("nvitop").unwrap_err(), "when gpu is not met");
+        assert_eq!(p.choose("yay").unwrap_err(), "when family:arch is not met");
         f.privilege = Privilege::None;
         let mut p = Planner::new(&c, &f, &present);
         assert_eq!(p.choose("docker").unwrap_err(), "needs sudo");
@@ -915,15 +922,15 @@ mod tests {
         let check = u.steps[0].check.as_deref().unwrap();
         assert!(!check.contains("sudo"), "{check}");
         assert!(
-            check.contains("fs write --check /etc/sysctl.d/60-envira-inotify.conf"),
+            check.contains("fs line --check /etc/sysctl.conf --match"),
             "{check}"
         );
         assert!(u.steps[0].cmd.as_deref().unwrap().starts_with("sudo -n "));
         assert_eq!(
             u.steps[1].cmd.as_deref().unwrap(),
-            "sudo -n sysctl --system"
+            "sudo -n sysctl -w fs.inotify.max_user_watches=524288"
         );
-        assert_eq!(u.verify.len(), 1);
+        assert_eq!(u.verify.len(), 2);
     }
 
     #[test]
@@ -963,6 +970,15 @@ mod tests {
         assert!(as_script(&plan).contains("# install herdr via script (requested)"));
     }
 
+    /// Index of the first install entry of `id` using `via` (a method name or `run`).
+    fn entry_of(c: &Catalog, id: &str, via: &str) -> usize {
+        c.tools[id]
+            .install
+            .iter()
+            .position(|e| e.method.as_deref().unwrap_or("run") == via)
+            .unwrap()
+    }
+
     fn target(id: &str, entry: usize, via: &str, scope: Scope) -> UpdateTarget {
         UpdateTarget {
             id: id.into(),
@@ -985,8 +1001,13 @@ mod tests {
             target("codex", 0, "npm", Scope::User),
             target("nodejs", 0, "run", Scope::User),
             target("fnm", 0, "script", Scope::User),
-            // bat lives in ~/.local/bin: github-release (entry 3) in user scope, not apt.
-            target("bat", 3, "github-release", Scope::User),
+            // bat lives in ~/.local/bin: github-release in user scope, not apt.
+            target(
+                "bat",
+                entry_of(&c, "bat", "github-release"),
+                "github-release",
+                Scope::User,
+            ),
             target("herdr", 0, "script", Scope::User),
             target("bun", 0, "run", Scope::User),
         ]);

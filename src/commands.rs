@@ -304,6 +304,20 @@ pub fn fs_cmd(cmd: &FsCmd) -> Result<i32> {
             value,
             *check,
         )?),
+        FsCmd::Line {
+            file,
+            pattern,
+            line,
+            after,
+            check,
+        } => code(fs::line(
+            &b,
+            &fs::expand(file),
+            pattern,
+            line,
+            after.as_deref(),
+            *check,
+        )?),
         FsCmd::Link {
             target,
             link,

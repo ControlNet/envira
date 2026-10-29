@@ -6,8 +6,9 @@ desc = "Raise the inotify watch limit (editors, file watchers)"
 scope = "system"
 when = ["!container"]
 steps = [
-  { use = "file", path = "/etc/sysctl.d/60-envira-inotify.conf", content = "fs.inotify.max_user_watches=524288\n" },
-  { run = "{sudo} sysctl --system" },
+  { use = "line", file = "/etc/sysctl.conf", match = '^fs\.inotify\.max_user_watches=', line = "fs.inotify.max_user_watches=524288" },
+  # Also for the running kernel.
+  { check = '[ "$(cat /proc/sys/fs/inotify/max_user_watches)" -ge 524288 ]', run = "{sudo} sysctl -w fs.inotify.max_user_watches=524288" },
 ]
 
 [bundles.system]

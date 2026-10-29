@@ -173,6 +173,7 @@ fn merge(base: &mut toml::Table, over: toml::Table) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn layer(files: &[(&str, &str)]) -> Layer {
         Layer {
@@ -185,6 +186,51 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// Every command verify.sh checks is provided by a catalog tool, and the `full` + `extras`
+    /// bundles cover every tool, so the catalog stays a superset of the legacy scripts.
+    #[test]
+    fn catalog_covers_verify_sh() {
+        let cat = load(&[embedded_layer()]).unwrap().catalog;
+        let bins: BTreeSet<&str> = cat.tools.iter().flat_map(|(id, t)| t.bins(id)).collect();
+        let verify = include_str!("../../verify.sh");
+        let mut missing = Vec::new();
+        for line in verify.lines().map(str::trim) {
+            let words: Vec<&str> = line
+                .split_whitespace()
+                .take_while(|w| !w.starts_with('#'))
+                .map(|w| w.trim_matches('"'))
+                .collect();
+            match words.as_slice() {
+                ["check_cmd" | "check_optional_cmd", name, ..] if !bins.contains(name) => {
+                    missing.push(name.to_string());
+                }
+                // check_any_cmd MODE "LABEL" CMD...: one of the commands is enough.
+                ["check_any_cmd", ..] => {
+                    let cmds = line.splitn(3, '"').nth(2).unwrap_or("");
+                    if !cmds.split_whitespace().any(|c| bins.contains(c)) {
+                        missing.push(cmds.trim().to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(missing.is_empty(), "verify.sh checks {missing:?}");
+
+        let mut covered: BTreeSet<String> = cat.bundle_items("full").into_iter().collect();
+        covered.extend(cat.bundle_items("extras"));
+        let loose: Vec<String> = cat
+            .item_ids()
+            .into_iter()
+            .filter(|id| !covered.contains(id))
+            .collect();
+        assert!(
+            loose.is_empty(),
+            "not in any bundle of full/extras: {loose:?}"
+        );
+        let user = cat.bundle_items("user");
+        assert!(user.iter().all(|i| covered.contains(i)));
     }
 
     #[test]

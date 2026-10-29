@@ -1,9 +1,10 @@
 #:schema ./schema.json
-# Language toolchains and runtimes. Other items depend on these explicitly.
+# Language toolchains and package managers. Other items depend on these explicitly.
 
 [tools.rust-toolchain]
 desc = "Rust toolchain via rustup (rustc, cargo)"
-# `rustup check` exits 100 when an update is available.
+# `rustup check` exits 100 when an update is available. The rustup/cargo proxies are not copied
+# into /usr/local/bin (run.sh did): they only work for the user whose ~/.rustup they read.
 bins = ["rustup", "rustc", "cargo"]
 detect = { cmd = "rustc --version", version = 'rustc (\S+)' }
 install = [
@@ -11,15 +12,26 @@ install = [
 ]
 shell = { path = ["~/.cargo/bin"] }
 
-[tools.unzip]
-desc = "Extract zip archives (needed by the fnm and bun install scripts)"
-detect = { cmd = "unzip -v", version = 'UnZip (\S+)' }
-install = [
-  { method = "apt", package = "unzip" },
-  { method = "dnf", package = "unzip" },
-  { method = "pacman", package = "unzip" },
-  { method = "zypper", package = "unzip" },
-]
+[tools.cargo-binstall]
+desc = "Install prebuilt Rust binaries (used by the cargo method)"
+depends = ["rust-toolchain"]
+detect = { cmd = "cargo-binstall -V" }
+install = [{ run = "curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash", update = "cargo binstall -y --force cargo-binstall", latest = { http = "https://crates.io/api/v1/crates/cargo-binstall", json = "crate.max_stable_version" } }]
+shell = { env = { BINSTALL_DISABLE_TELEMETRY = "true", BINSTALL_NO_CONFIRM = "true" } }
+
+[tools.cargo-cache]
+desc = "Inspect and clean cargo's caches"
+detect = { cmd = "cargo-cache --version" }
+install = [{ method = "cargo", package = "cargo-cache", depends = ["cargo-binstall"], portable = true }]
+
+[tools.go]
+desc = "Go toolchain in ~/.go (GOPATH ~/go)"
+bins = ["go", "gofmt"]
+detect = { cmd = "go version", version = 'go(\d\S*)' }
+# Same layout as ControlNet/golang-tools-install-script (GOROOT ~/.go), but always the newest
+# release and without rc-file edits; the environment comes from `shell`. Updating replaces ~/.go.
+install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n 1) && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.linux-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go\" && mkdir -p \"$HOME/.go\" && tar -C \"$HOME/.go\" --strip-components=1 -xzf go.tar.gz", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
+shell = { path = ["~/.go/bin", "~/go/bin"], env = { GOROOT = "~/.go", GOPATH = "~/go" } }
 
 [tools.fnm]
 desc = "Fast Node.js version manager"
@@ -28,7 +40,7 @@ detect = { cmd = "fnm --version", version = 'fnm (\S+)' }
 install = [
   { method = "script", url = "https://fnm.vercel.app/install", shell = "bash", args = ["--skip-shell"], latest = { http = "https://api.github.com/repos/Schniz/fnm/releases/latest", json = "tag_name" } },
 ]
-shell = { path = ["~/.local/share/fnm"], init = { zsh = 'eval "$(fnm env --use-on-cd --shell zsh)"', bash = 'eval "$(fnm env --use-on-cd --shell bash)"' } }
+shell = { path = ["~/.local/share/fnm"], env = { FNM_PATH = "~/.local/share/fnm" }, init = { zsh = "eval \"$(fnm env --shell zsh)\"\neval \"$(fnm completions --shell zsh)\"", bash = 'eval "$(fnm env --shell bash)"' } }
 
 [tools.libatomic]
 desc = "GNU atomic operations library (Node.js 25+ links against it)"
@@ -51,6 +63,16 @@ detect = { cmd = "node --version", version = 'v(\S+)' }
 # Updating installs the newest LTS and makes it the default; older versions stay installed.
 install = [{ run = "fnm install --lts && fnm default lts-latest", latest = { cmd = "fnm ls-remote --lts | tail -n 1", regex = 'v(\d\S*)' } }]
 
+[configs.npm-prefix]
+desc = "Global npm packages in ~/.local (bins in ~/.local/bin, independent of the Node version)"
+depends = ["nodejs"]
+steps = [{ use = "ini-set", file = "~/.npmrc", section = "", key = "prefix", value = "{home}/.local" }]
+
+[tools.pm2]
+desc = "Node.js process manager"
+detect = { cmd = "npm ls -g --depth=0 pm2", version = 'pm2@(\S+)' }
+install = [{ method = "npm", package = "pm2", depends = ["nodejs", "npm-prefix"] }]
+
 [tools.pipx]
 desc = "Install Python applications in isolated environments"
 detect = { cmd = "pipx --version", version = '(\S+)' }
@@ -58,8 +80,25 @@ install = [
   { method = "apt", package = "pipx" },
   { method = "dnf", package = "pipx" },
   { method = "pacman", package = "python-pipx" },
-  { method = "github-release", repo = "pypa/pipx", asset = "pipx.pyz" },
+  # openSUSE, CentOS and machines without sudo (run.sh / run_user.sh: pip --user).
+  { run = "python3 -m pip install --user pipx || python3 -m pip install --user --break-system-packages pipx", update = "python3 -m pip install --user --upgrade pipx || python3 -m pip install --user --upgrade --break-system-packages pipx", depends = ["python3"] },
 ]
+
+[tools.uv]
+desc = "Fast Python package and project manager"
+bins = ["uv", "uvx"]
+install = [{ method = "pipx", package = "uv", depends = ["pipx"] }]
+
+[tools.pixi]
+desc = "Conda-based package and project manager"
+detect = { cmd = "pixi --version", version = 'pixi (\S+)' }
+install = [{ run = "curl -fsSL https://pixi.sh/install.sh | PIXI_NO_PATH_UPDATE=1 bash", update = "pixi self-update", latest = { http = "https://api.github.com/repos/prefix-dev/pixi/releases/latest", json = "tag_name" } }]
+shell = { path = ["~/.pixi/bin"], init = { zsh = 'eval "$(pixi completion --shell zsh)"', bash = 'eval "$(pixi completion --shell bash)"' } }
+
+[configs.pixi-config]
+desc = "Keep the shell prompt unchanged in pixi shells"
+depends = ["pixi"]
+steps = [{ use = "toml-set", file = "~/.config/pixi/config.toml", key = "shell.change-ps1", value = false }]
 
 [tools.bun]
 desc = "JavaScript runtime, bundler and package manager"
@@ -73,5 +112,8 @@ shell = { path = ["~/.bun/bin"], env = { BUN_INSTALL = "~/.bun" }, init = { zsh 
 
 [bundles.toolchains]
 name = "Toolchains"
-desc = "Language toolchains other tools build on"
-items = ["unzip", "libatomic", "rust-toolchain", "fnm", "nodejs", "pipx", "bun"]
+desc = "Rust, Go, Node.js, Python and JavaScript toolchains"
+items = [
+  "rust-toolchain", "cargo-binstall", "cargo-cache", "go", "fnm", "libatomic", "nodejs",
+  "npm-prefix", "pm2", "pipx", "uv", "pixi", "pixi-config", "bun",
+]
