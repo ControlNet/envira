@@ -240,11 +240,40 @@ impl RunRecord {
         )
     }
 
-    /// Ids that failed or were blocked.
+    /// A record that lists every unit of `plan` as `pending`. Outcomes replace the entries as
+    /// units finish, so a run that dies midway still shows (and retries) what it never reached.
+    pub fn planned(plan: &crate::plan::Plan, id: &str, command: &str) -> RunRecord {
+        RunRecord {
+            id: id.into(),
+            command: command.into(),
+            started: now_rfc3339(),
+            finished: None,
+            units: plan
+                .units
+                .iter()
+                .map(|u| UnitRecord {
+                    id: u.id.clone(),
+                    action: u.action.as_str().into(),
+                    via: u.via.clone(),
+                    outcome: "pending".into(),
+                    detail: None,
+                    seconds: 0.0,
+                })
+                .collect(),
+        }
+    }
+
+    /// Ids that did not succeed: failed, blocked, cancelled, skipped after a stop, or never
+    /// reached because envira was killed.
     pub fn unfinished(&self) -> Vec<String> {
         self.units
             .iter()
-            .filter(|u| matches!(u.outcome.as_str(), "failed" | "blocked" | "cancelled"))
+            .filter(|u| {
+                matches!(
+                    u.outcome.as_str(),
+                    "failed" | "blocked" | "cancelled" | "skipped" | "pending"
+                )
+            })
             .map(|u| u.id.clone())
             .collect()
     }

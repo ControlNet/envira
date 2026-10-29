@@ -9,6 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
+use crate::net;
+
 /// Result of a captured command.
 #[derive(Debug, Clone, Default)]
 pub struct Probe {
@@ -54,26 +56,45 @@ pub trait Runner: Send + Sync {
 }
 
 /// GET with envira's User-Agent (crates.io rejects requests without one) and `GITHUB_TOKEN`
-/// for the GitHub API (higher rate limit).
+/// for the GitHub API (higher rate limit). Transient failures are retried briefly.
 async fn http_get_text(url: &str, timeout: Duration) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("envira/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .map_err(|e| e.to_string())?;
-    let mut req = client.get(url);
-    if url.starts_with("https://api.github.com/")
-        && let Ok(t) = std::env::var("GITHUB_TOKEN")
-        && !t.is_empty()
-    {
-        req = req.bearer_auth(t);
+    let policy = net::Retry::QUERY;
+    let mut n = 1;
+    loop {
+        let mut req = client.get(url);
+        if url.starts_with("https://api.github.com/")
+            && let Ok(t) = std::env::var("GITHUB_TOKEN")
+            && !t.is_empty()
+        {
+            req = req.bearer_auth(t);
+        }
+        let (why, after) = match req.send().await {
+            Ok(resp) if resp.status().is_success() => match resp.text().await {
+                Ok(t) => return Ok(t),
+                Err(e) if net::transient_error(&e) => (e.to_string(), None),
+                Err(e) => return Err(e.to_string()),
+            },
+            Ok(resp) if net::transient_status(resp.status().as_u16()) => (
+                format!("HTTP {}", resp.status()),
+                net::retry_after(resp.headers()),
+            ),
+            Ok(resp) => return Err(format!("HTTP {}", resp.status())),
+            Err(e) if net::transient_error(&e) => (e.to_string(), None),
+            Err(e) => return Err(e.to_string()),
+        };
+        match policy.delay(n, after) {
+            Some(d) => {
+                tokio::time::sleep(d).await;
+                n += 1;
+            }
+            None => return Err(why),
+        }
     }
-    let resp = req.send().await.map_err(|e| e.to_string())?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("HTTP {status}"));
-    }
-    resp.text().await.map_err(|e| e.to_string())
 }
 
 /// Environment every command runs with.
@@ -292,6 +313,8 @@ pub mod fake {
         /// Substrings of commands that flip to succeed once a matching stream command ran,
         /// e.g. detect of a tool after its install.
         pub installs: Mutex<BTreeMap<String, String>>,
+        /// Substrings of streamed commands that never exit on their own (until cancelled).
+        pub hangs: Mutex<Vec<String>>,
         pub log: Mutex<Vec<String>>,
     }
 
@@ -322,6 +345,11 @@ pub mod fake {
                 .find(|(n, _, _)| cmd.contains(n.as_str()))
                 .map(|(_, c, o)| (*c, o.clone()))
                 .unwrap_or((1, String::new()))
+        }
+
+        pub fn hang(&self, needle: &str) -> &Self {
+            self.hangs.lock().unwrap().push(needle.into());
+            self
         }
 
         pub fn ran(&self) -> Vec<String> {
@@ -357,9 +385,19 @@ pub mod fake {
             cmd: &'a str,
             _cwd: &'a Path,
             lines: mpsc::UnboundedSender<String>,
-            _cancel: watch::Receiver<bool>,
+            mut cancel: watch::Receiver<bool>,
         ) -> BoxFuture<'a, StreamEnd> {
             self.log.lock().unwrap().push(cmd.to_string());
+            if self.hangs.lock().unwrap().iter().any(|h| cmd.contains(h)) {
+                return Box::pin(async move {
+                    while !*cancel.borrow() {
+                        if cancel.changed().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                    StreamEnd::Cancelled
+                });
+            }
             let (code, output) = self.lookup(cmd);
             for l in output.lines() {
                 let _ = lines.send(l.to_string());

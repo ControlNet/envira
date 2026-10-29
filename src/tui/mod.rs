@@ -6,7 +6,6 @@ pub mod theme;
 pub mod ui;
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::app::Session;
-use crate::exec::{self, Control, ExecCtx};
+use crate::exec::{self, Control};
 use crate::latest::{self, Fetch, Latest};
 use crate::plan::Plan;
 use crate::state::{self, State};
@@ -260,18 +259,10 @@ fn start_run(
     command: String,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
-    let run_id = state::new_run_id(&sess.paths);
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
     let (etx, mut erx) = mpsc::unbounded_channel();
-    let ctx = ExecCtx {
-        catalog: Arc::clone(&sess.catalog),
-        facts: Arc::clone(&sess.facts),
-        paths: sess.paths.clone(),
-        runner: sess.runner.clone(),
-        run_id: run_id.clone(),
-        command,
-        shell_env: true,
-    };
+    let ctx = sess.exec_ctx(command, true);
+    let run_id = ctx.run_id.clone();
     let st = app.state.clone().unwrap_or_default();
     tokio::spawn(exec::execute(plan.clone(), ctx, st, etx, ctl_rx));
     tokio::spawn(async move {

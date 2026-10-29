@@ -20,6 +20,8 @@ use crate::state::{
 use crate::status::{probe_config, probe_tool};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default wall-clock limit of one step (source builds such as ripgrep or yazi take minutes).
+pub const STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const KEEP_RUNS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +90,8 @@ pub struct ExecCtx {
     pub command: String,
     /// Regenerate the managed shell environment at the end.
     pub shell_env: bool,
+    /// A step still running after this long is stopped and fails.
+    pub step_timeout: Duration,
 }
 
 pub async fn execute(
@@ -99,12 +103,8 @@ pub async fn execute(
 ) -> (RunRecord, State) {
     let run_dir = ctx.paths.run_dir(&ctx.run_id);
     let _ = state::create_dir_all_owned(&run_dir, &ctx.facts);
-    let mut record = RunRecord {
-        id: ctx.run_id.clone(),
-        command: ctx.command.clone(),
-        started: state::now_rfc3339(),
-        ..Default::default()
-    };
+    let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
+    let _ = record.save(&ctx.paths, &ctx.facts);
     let mut bad: BTreeSet<String> = BTreeSet::new();
 
     for (idx, unit) in plan.units.iter().enumerate() {
@@ -122,14 +122,14 @@ pub async fn execute(
         }
         let elapsed = started.elapsed();
         update_state(&mut state, unit, &outcome, &ctx.run_id);
-        record.units.push(UnitRecord {
+        record.units[idx] = UnitRecord {
             id: unit.id.clone(),
             action: unit.action.as_str().into(),
             via: unit.via.clone(),
             outcome: outcome.as_str().into(),
             detail: outcome.detail(),
             seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
-        });
+        };
         if let Err(e) = state
             .save(&ctx.paths, &ctx.facts)
             .and_then(|_| record.save(&ctx.paths, &ctx.facts))
@@ -230,10 +230,17 @@ async fn run_unit(
         };
         let fut = ctx.runner.stream(cmd, tmp.path(), ltx, crx);
         tokio::pin!(fut);
+        let deadline = tokio::time::sleep(ctx.step_timeout);
+        tokio::pin!(deadline);
         let mut watching = true;
+        let mut timed_out = false;
         let end = loop {
             tokio::select! {
                 end = &mut fut => break end,
+                _ = &mut deadline, if !timed_out => {
+                    timed_out = true;
+                    let _ = ctx_cancel.send(true);
+                }
                 changed = ctl.changed(), if watching => {
                     if changed.is_err() {
                         watching = false;
@@ -249,6 +256,13 @@ async fn run_unit(
             StreamEnd::Exit(code) => {
                 emit(format!("[envira] {label} exited with code {code}"));
                 return Outcome::Failed(format!("{} exited with code {code}", step.label));
+            }
+            StreamEnd::Cancelled if timed_out => {
+                let limit = crate::commands::fmt_duration(ctx.step_timeout);
+                emit(format!(
+                    "[envira] {label} timed out after {limit}; stopped it"
+                ));
+                return Outcome::Failed(format!("{} timed out after {limit}", step.label));
             }
             StreamEnd::Cancelled => {
                 emit("[envira] cancelled".into());
@@ -411,6 +425,7 @@ mod tests {
             run_id: "20261029-140500".into(),
             command: "test".into(),
             shell_env: false,
+            step_timeout: STEP_TIMEOUT,
         };
         Setup {
             _dir: dir,
@@ -428,10 +443,8 @@ mod tests {
         Planner::new(&ctx.catalog, &ctx.facts, &present).plan(&t, false)
     }
 
-    async fn run(s: &Setup, p: Plan) -> (RunRecord, State, Vec<Event>) {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
-        let ctx = ExecCtx {
+    fn ctx_of(s: &Setup) -> ExecCtx {
+        ExecCtx {
             catalog: s.ctx.catalog.clone(),
             facts: s.ctx.facts.clone(),
             paths: s.ctx.paths.clone(),
@@ -439,8 +452,14 @@ mod tests {
             run_id: s.ctx.run_id.clone(),
             command: "test".into(),
             shell_env: false,
-        };
-        let (rec, st) = execute(p, ctx, State::default(), tx, ctl_rx).await;
+            step_timeout: s.ctx.step_timeout,
+        }
+    }
+
+    async fn run(s: &Setup, p: Plan) -> (RunRecord, State, Vec<Event>) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let (rec, st) = execute(p, ctx_of(s), State::default(), tx, ctl_rx).await;
         let mut events = Vec::new();
         while let Ok(e) = rx.try_recv() {
             events.push(e);
@@ -506,6 +525,52 @@ mod tests {
             .unwrap();
         assert!(log.contains("403"), "{log}");
         assert!(RunRecord::load(&s.ctx.paths, "20261029-140500").is_ok());
+    }
+
+    #[tokio::test]
+    async fn stopped_runs_leave_skipped_units_for_retry() {
+        let s = setup();
+        let p = plan(&s.ctx, &["herdr", "bun"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (_ctl_tx, ctl_rx) = watch::channel(Control {
+            stop: true,
+            ..Default::default()
+        });
+        let (rec, _) = execute(p, ctx_of(&s), State::default(), tx, ctl_rx).await;
+        assert_eq!(
+            outcomes(&rec),
+            vec![("herdr", "skipped"), ("bun", "skipped")]
+        );
+        assert_eq!(rec.unfinished(), vec!["herdr", "bun"]);
+    }
+
+    #[tokio::test]
+    async fn hung_steps_time_out_and_fail() {
+        let mut s = setup();
+        s.ctx.step_timeout = Duration::from_millis(100);
+        s.runner.hang("herdr.dev").rule("bun.sh", 0, "").on_install(
+            "bun.sh",
+            "bun --version",
+            "1.3.0",
+        );
+        let (rec, _, _) = run(&s, plan(&s.ctx, &["herdr", "bun"])).await;
+        assert_eq!(outcomes(&rec), vec![("herdr", "failed"), ("bun", "ok")]);
+        let detail = rec.units[0].detail.as_deref().unwrap();
+        assert!(detail.contains("timed out after"), "{detail}");
+    }
+
+    #[test]
+    fn interrupted_runs_keep_pending_units() {
+        // A record saved before a crash lists every planned unit; the ones never reached
+        // are `pending` and retried.
+        let s = setup();
+        let p = plan(&s.ctx, &["herdr", "bun"]);
+        let rec = RunRecord::planned(&p, "20261029-140500", "sync");
+        assert_eq!(
+            outcomes(&rec),
+            vec![("herdr", "pending"), ("bun", "pending")]
+        );
+        assert_eq!(rec.unfinished(), vec!["herdr", "bun"]);
     }
 
     #[tokio::test]

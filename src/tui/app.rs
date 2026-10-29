@@ -145,6 +145,7 @@ impl RunView {
         self.units.iter().filter(|u| f(u)).count()
     }
 
+    /// Units to retry: failed, blocked, cancelled, or skipped after a stop.
     pub fn failed_ids(&self) -> Vec<String> {
         self.plan
             .units
@@ -154,7 +155,10 @@ impl RunView {
                 matches!(
                     s,
                     UnitState::Done(
-                        Outcome::Failed(_) | Outcome::Blocked(_) | Outcome::Cancelled,
+                        Outcome::Failed(_)
+                            | Outcome::Blocked(_)
+                            | Outcome::Cancelled
+                            | Outcome::Skipped,
                         _
                     )
                 )
@@ -821,7 +825,7 @@ impl App {
                     let n = failed.len();
                     self.run = None;
                     self.screen = Screen::Dashboard;
-                    self.open_plan(plan, format!("retry · {n} failed"));
+                    self.open_plan(plan, format!("retry · {n} unfinished"));
                 }
             }
             KeyCode::Enter | KeyCode::Esc if finished => {

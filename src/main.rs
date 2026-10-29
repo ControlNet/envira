@@ -7,6 +7,7 @@ mod facts;
 mod fetch;
 mod fs;
 mod latest;
+mod net;
 mod plan;
 mod runner;
 mod shellenv;

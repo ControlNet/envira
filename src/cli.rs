@@ -22,6 +22,14 @@ pub struct Global {
     /// Where `any`-scope methods install: system (needs sudo) or user. Default: system when sudo is available.
     #[arg(long, global = true, value_enum)]
     pub scope: Option<ScopeArg>,
+    /// Stop and fail a step that runs longer than this many seconds.
+    #[arg(
+        long,
+        global = true,
+        env = "ENVIRA_STEP_TIMEOUT",
+        value_name = "SECONDS"
+    )]
+    pub step_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

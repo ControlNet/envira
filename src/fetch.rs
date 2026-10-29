@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::net;
+
 pub struct FetchArgs {
     pub repo: String,
     /// Globs tried in order against the asset names.
@@ -53,6 +55,49 @@ fn token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// GET with the token, retrying transient failures (`net::Retry::DOWNLOAD`). Returns the final
+/// status and body; non-transient errors such as 403/404 come back on the first try.
+fn get(c: &reqwest::blocking::Client, url: &str, accept: Option<&str>) -> Result<(u16, Vec<u8>)> {
+    let policy = net::Retry::DOWNLOAD;
+    let mut n = 1;
+    loop {
+        let mut req = c.get(url);
+        if let Some(a) = accept {
+            req = req.header("Accept", a);
+        }
+        if let Some(t) = token() {
+            req = req.bearer_auth(t);
+        }
+        let sent = req.send().and_then(|r| {
+            let status = r.status().as_u16();
+            let after = net::retry_after(r.headers());
+            r.bytes().map(|b| (status, after, b.to_vec()))
+        });
+        let (why, after, last) = match sent {
+            Ok((status, _, body)) if !net::transient_status(status) => return Ok((status, body)),
+            Ok((status, after, body)) => (format!("HTTP {status}"), after, Some((status, body))),
+            Err(e) if net::transient_error(&e) => (format!("{e}"), None, None),
+            Err(e) => return Err(e).with_context(|| format!("requesting {url}")),
+        };
+        match policy.delay(n, after) {
+            Some(d) => {
+                eprintln!(
+                    "[envira] {why} from {url}; retrying in {}s (attempt {}/{})",
+                    d.as_secs(),
+                    n + 1,
+                    policy.attempts
+                );
+                std::thread::sleep(d);
+                n += 1;
+            }
+            None => match last {
+                Some(r) => return Ok(r),
+                None => bail!("{why} (requesting {url}, {n} attempts)"),
+            },
+        }
+    }
+}
+
 pub fn run(args: &FetchArgs) -> Result<()> {
     let c = client()?;
     let url = match &args.tag {
@@ -62,27 +107,23 @@ pub fn run(args: &FetchArgs) -> Result<()> {
         ),
         None => format!("https://api.github.com/repos/{}/releases/latest", args.repo),
     };
-    let mut req = c.get(&url).header("Accept", "application/vnd.github+json");
-    if let Some(t) = token() {
-        req = req.bearer_auth(t);
-    }
     eprintln!("[envira] GET {url}");
-    let resp = req.send().with_context(|| format!("requesting {url}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().unwrap_or_default();
+    let (status, body) = get(&c, &url, Some("application/vnd.github+json"))?;
+    if !(200..300).contains(&status) {
+        let body = String::from_utf8_lossy(&body).into_owned();
         let msg = serde_json::from_str::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| v["message"].as_str().map(String::from))
             .unwrap_or(body);
-        let hint = if status.as_u16() == 403 && token().is_none() {
+        let hint = if status == 403 && token().is_none() {
             " (set GITHUB_TOKEN to raise the rate limit)"
         } else {
             ""
         };
-        bail!("HTTP {} from GitHub: {msg}{hint}", status.as_u16());
+        bail!("HTTP {status} from GitHub: {msg}{hint}");
     }
-    let release: serde_json::Value = resp.json()?;
+    let release: serde_json::Value =
+        serde_json::from_slice(&body).context("parsing the GitHub release")?;
     let tag = release["tag_name"].as_str().unwrap_or("?").to_string();
     let assets: Vec<(String, String)> = release["assets"]
         .as_array()
@@ -112,12 +153,10 @@ pub fn run(args: &FetchArgs) -> Result<()> {
         .expect("picked from list")
         .1;
     eprintln!("[envira] downloading {name} ({tag})");
-    let mut req = c.get(dl);
-    if let Some(t) = token() {
-        req = req.bearer_auth(t);
+    let (status, bytes) = get(&c, dl, None)?;
+    if !(200..300).contains(&status) {
+        bail!("HTTP {status} downloading {dl}");
     }
-    let resp = req.send()?.error_for_status()?;
-    let bytes = resp.bytes()?;
     let files = extract(name, &bytes, &args.bins)?;
     std::fs::create_dir_all(&args.to).with_context(|| format!("creating {}", args.to.display()))?;
     for (bin, data) in files {

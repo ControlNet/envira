@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, watch};
 use crate::app::{self, Session};
 use crate::catalog::{self, Catalog, validate};
 use crate::cli::{CatalogCmd, FsCmd, Global, RunOpts};
-use crate::exec::{self, Control, Event, ExecCtx, Outcome};
+use crate::exec::{self, Control, Event, Outcome};
 use crate::fs;
 use crate::latest::Fetch;
 use crate::plan::Route;
@@ -608,7 +608,7 @@ pub async fn plan_cmd(sess: &Session, items: &[String], script: bool) -> Result<
 }
 
 pub async fn env_cmd(sess: &Session) -> Result<i32> {
-    let ctx = exec_ctx(sess, "env".into(), true);
+    let ctx = sess.exec_ctx("env".into(), true);
     match exec::regenerate_shell_env(&ctx).await {
         Ok(files) if files.is_empty() => println!(
             "Shell environment is up to date ({}).",
@@ -623,18 +623,6 @@ pub async fn env_cmd(sess: &Session) -> Result<i32> {
         Err(e) => bail!(e),
     }
     Ok(0)
-}
-
-fn exec_ctx(sess: &Session, command: String, shell_env: bool) -> ExecCtx {
-    ExecCtx {
-        catalog: sess.catalog.clone(),
-        facts: sess.facts.clone(),
-        paths: sess.paths.clone(),
-        runner: sess.runner.clone(),
-        run_id: state::new_run_id(&sess.paths),
-        command,
-        shell_env,
-    }
 }
 
 pub fn print_plan(plan: &Plan, sess: &Session) {
@@ -718,7 +706,7 @@ async fn run_plan(
         .collect();
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
-    let ctx = exec_ctx(sess, command.into(), true);
+    let ctx = sess.exec_ctx(command.into(), true);
     let run_id = ctx.run_id.clone();
     let paths = sess.paths.clone();
     let handle = tokio::spawn(exec::execute(plan, ctx, state, tx, ctl_rx));
@@ -739,7 +727,7 @@ async fn run_plan(
                         match &o {
                             Outcome::Ok { version } => println!("  ✓ {id} {} ({})", version.as_deref().unwrap_or(""), fmt_duration(d)),
                             Outcome::Blocked(dep) => { failed += 1; println!("  ⊘ {id} blocked: needs {dep}") }
-                            Outcome::Skipped => println!("  · {id} skipped (run stopped)"),
+                            Outcome::Skipped => { failed += 1; println!("  · {id} skipped (run stopped)") }
                             Outcome::Cancelled => { failed += 1; println!("  ✗ {id} cancelled") }
                             Outcome::Failed(e) => {
                                 failed += 1;
@@ -780,7 +768,7 @@ async fn run_plan(
         paths.run_dir(&record.id).display()
     );
     if failed > 0 {
-        println!("Retry what failed with `envira retry`.");
+        println!("Retry what did not finish with `envira retry`.");
     }
     Ok(if failed > 0 { 1 } else { 0 })
 }

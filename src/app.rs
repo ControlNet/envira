@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 
 use crate::catalog::{self, Catalog, CatalogOptions, Loaded, validate};
 use crate::cli::{Global, ScopeArg};
+use crate::exec::{self, ExecCtx};
 use crate::facts::{Facts, Privilege};
 use crate::latest::{self, Fetch};
 use crate::plan::{Plan, Planner, UpdateTarget};
@@ -55,6 +56,24 @@ impl Session {
         self.catalog = Arc::new(loaded.catalog.clone());
         self.loaded = loaded;
         Ok(())
+    }
+
+    /// Execution context for a run of `command`.
+    pub fn exec_ctx(&self, command: String, shell_env: bool) -> ExecCtx {
+        ExecCtx {
+            catalog: self.catalog.clone(),
+            facts: self.facts.clone(),
+            paths: self.paths.clone(),
+            runner: self.runner.clone(),
+            run_id: crate::state::new_run_id(&self.paths),
+            command,
+            shell_env,
+            step_timeout: self
+                .global
+                .step_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(exec::STEP_TIMEOUT),
+        }
     }
 
     pub fn state(&self) -> Result<Option<State>> {
