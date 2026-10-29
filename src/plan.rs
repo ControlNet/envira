@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn dependencies_come_first_and_present_ones_are_skipped() {
         let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
-        let present = set(&[]);
+        let present = set(&["curl"]);
         let mut p = Planner::new(&c, &f, &present);
         let plan = p.plan(&["codex-sandbox-network".into()], false);
         assert_eq!(
@@ -818,7 +818,7 @@ mod tests {
         );
         assert_eq!(plan.units[1].reason, "needed by nodejs");
 
-        let present = set(&["unzip", "libatomic"]);
+        let present = set(&["curl", "unzip", "libatomic"]);
         let mut p = Planner::new(&c, &f, &present);
         let plan = p.plan(&["codex-sandbox-network".into()], false);
         assert_eq!(
@@ -959,7 +959,7 @@ mod tests {
     #[test]
     fn force_reinstalls_present_target() {
         let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
-        let present = set(&["herdr"]);
+        let present = set(&["herdr", "curl"]);
         let mut p = Planner::new(&c, &f, &present);
         assert!(p.plan(&["herdr".into()], false).is_empty());
         let plan = p.plan(&["herdr".into()], true);

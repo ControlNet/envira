@@ -3,6 +3,7 @@
 
 [tools.miniconda]
 desc = "Miniconda in ~/miniconda3"
+depends = ["curl"]
 bin = "conda"
 detect = { cmd = '"$HOME/miniconda3/bin/conda" --version', version = 'conda (\S+)' }
 install = [{ run = 'curl -fsSL -o miniconda.sh "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-{arch}.sh" && bash miniconda.sh -b -p "$HOME/miniconda3"', update = '"$HOME/miniconda3/bin/conda" update -y -n base conda' }]

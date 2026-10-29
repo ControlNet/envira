@@ -599,7 +599,13 @@ mod tests {
         let r = FakeRunner::default();
         r.rule("bat --version", 0, "bat 0.24.0\n")
             .rule("command -v bat", 0, "/usr/bin/batcat\n")
-            .rule("dpkg-query -W -f='${Version}\\n' bat", 0, "0.24.0-1build1\n")
+            .rule(
+                "dpkg-query -W -f='${Version}\\n' bat",
+                0,
+                "0.24.0-1build1\n",
+            )
+            .rule("curl --version", 0, "curl 8.5.0\n")
+            .rule("command -v curl", 0, "/usr/bin/curl\n")
             .rule("herdr --version", 0, "herdr 0.3.1\n")
             .rule("command -v herdr", 0, "/home/user/.local/bin/herdr\n")
             .rule("yazi --version", 0, "Yazi 25.5.31\n")
@@ -681,6 +687,8 @@ mod tests {
         let r = FakeRunner::default();
         r.rule("yazi --version", 0, "Yazi 25.5.31\n")
             .rule("command -v yazi", 0, "/home/user/.cargo/bin/yazi\n")
+            .rule("curl --version", 0, "curl 8.5.0\n")
+            .rule("command -v curl", 0, "/usr/bin/curl\n")
             .rule("herdr --version", 0, "herdr 0.3.1\n")
             .rule("command -v herdr", 0, "/home/user/.local/bin/herdr\n")
             .rule("bat --version", 0, "bat 0.24.0\n")

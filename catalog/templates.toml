@@ -125,6 +125,7 @@ latest = { http = "https://api.github.com/repos/{repo}/releases/latest", json = 
 
 [methods.script]
 desc = "Vendor install script fetched over HTTPS"
+expects = ["curl"]
 scope = "user"
 defaults = { shell = "sh", args = [] }
 install = "curl -fsSL {url} | {sudo} {shell} -s -- {args}"

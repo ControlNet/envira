@@ -3,6 +3,7 @@
 
 [tools.neovim]
 desc = "Neovim (release build in ~/.nvim)"
+depends = ["curl"]
 bin = "nvim"
 detect = { cmd = "nvim --version", version = 'NVIM v(\S+)' }
 # The release is a directory (binary plus runtime), so it lives in ~/.nvim with a link in the

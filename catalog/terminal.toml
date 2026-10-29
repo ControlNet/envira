@@ -30,7 +30,7 @@ install = [
   { method = "pacman", package = "ncdu" },
   { method = "zypper", package = "ncdu" },
   # Static build (run_user.sh); the download site has no "latest" link, so the version is pinned.
-  { run = "curl -fsSL https://dev.yorhel.nl/download/ncdu-2.9.1-linux-{arch}.tar.gz | tar -xz -C {bin_dir}" },
+  { run = "curl -fsSL https://dev.yorhel.nl/download/ncdu-2.9.1-linux-{arch}.tar.gz | tar -xz -C {bin_dir}", depends = ["curl"] },
 ]
 
 [tools.fzf]
@@ -52,12 +52,13 @@ shell = { alias = { zel = "zellij" } }
 
 [configs.zellij-config]
 desc = "zellij starts locked, Ctrl-b passes through to tmux (fix_zellij_kdl.py)"
-depends = ["zellij", "python3"]
+depends = ["zellij", "python3", "curl"]
 check = "grep -Eq '^[[:space:]]*default_mode[[:space:]]+\"locked\"' \"$HOME/.config/zellij/config.kdl\""
 apply = "curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3"
 
 [tools.herdr]
 desc = "Terminal workspace manager"
+depends = ["curl"]
 detect = { cmd = "herdr --version", version = '(\d+\.\d+\S*)' }
 # No published latest-version source; `envira update herdr` runs the built-in updater.
 install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "herdr update" }]
@@ -126,23 +127,26 @@ install = [{ run = 'go install github.com/gotify/cli@latest && mv "$(go env GOPA
 
 [tools.zoxide]
 desc = "Smarter cd"
+depends = ["curl"]
 install = [{ method = "script", url = "https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/ajeetdsouza/zoxide/releases/latest", json = "tag_name" } }]
 shell = { init = { zsh = 'eval "$(zoxide init zsh)"', bash = 'eval "$(zoxide init bash)"' } }
 
 [tools.micro]
 desc = "Terminal text editor (nano replacement)"
+depends = ["curl"]
 # getmic.ro downloads into the current directory (a fresh temp dir per step).
 install = [{ run = "curl -fsSL https://getmic.ro | bash && install -D -m 755 micro {bin_dir}/micro", portable = true, latest = { http = "https://api.github.com/repos/zyedidia/micro/releases/latest", json = "tag_name" } }]
 shell = { alias = { nano = "micro" } }
 
 [tools.superfile]
 desc = "Terminal file manager"
+depends = ["curl"]
 bin = "spf"
 install = [{ method = "script", url = "https://superfile.dev/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/yorukot/superfile/releases/latest", json = "tag_name" } }]
 
 [configs.superfile-config]
 desc = "superfile default config without update checks"
-depends = ["superfile"]
+depends = ["superfile", "curl"]
 steps = [
   { check = 'test -f "$HOME/.config/superfile/config.toml"', run = 'mkdir -p "$HOME/.config/superfile" && curl -fsSL https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml -o "$HOME/.config/superfile/config.toml"' },
   { use = "toml-set", file = "~/.config/superfile/config.toml", key = "auto_check_update", value = false },

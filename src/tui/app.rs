@@ -932,7 +932,9 @@ pub mod tests {
                     Kind::Tool
                 };
                 let label = match id.as_str() {
-                    "bat" | "yazi" | "rust-toolchain" | "unzip" | "libatomic" => Label::Installed,
+                    "bat" | "yazi" | "rust-toolchain" | "unzip" | "libatomic" | "curl" => {
+                        Label::Installed
+                    }
                     "herdr" => Label::New,
                     "codex" => Label::Missing,
                     "nvitop" => Label::NotApplicable,

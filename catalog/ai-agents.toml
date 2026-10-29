@@ -14,21 +14,25 @@ steps = [{ use = "toml-set", file = "~/.codex/config.toml", key = "sandbox_works
 
 [tools.antigravity]
 desc = "Google Antigravity CLI"
+depends = ["curl"]
 bin = "agy"
 install = [{ method = "script", url = "https://antigravity.google/cli/install.sh", shell = "bash" }]
 
 [tools.cursor-agent]
 desc = "Cursor agent CLI"
+depends = ["curl"]
 bin = "agent"
 bins = ["agent", "cursor-agent"]
 install = [{ method = "script", url = "https://cursor.com/install", shell = "bash", update = "agent update" }]
 
 [tools.claude]
 desc = "Claude Code"
+depends = ["curl"]
 install = [{ method = "script", url = "https://claude.ai/install.sh", shell = "bash", update = "claude update", latest = { http = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest", json = "version" } }]
 
 [tools.opencode]
 desc = "opencode agent"
+depends = ["curl"]
 install = [{ method = "script", url = "https://opencode.ai/install", shell = "bash", update = "opencode upgrade", latest = { http = "https://registry.npmjs.org/opencode-ai/latest", json = "version" } }]
 shell = { path = ["~/.opencode/bin"] }
 
@@ -45,6 +49,7 @@ install = [{ run = "bun add -g @openchamber/web", depends = ["bun"], latest = { 
 
 [tools.omp]
 desc = "omp agent CLI"
+depends = ["curl"]
 install = [{ method = "script", url = "https://omp.sh/install" }]
 
 [bundles.ai-agents]

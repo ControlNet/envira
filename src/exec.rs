@@ -420,7 +420,10 @@ mod tests {
     }
 
     fn plan(ctx: &ExecCtx, targets: &[&str]) -> Plan {
-        let present: BTreeSet<String> = ["unzip".to_string(), "libatomic".to_string()].into();
+        let present: BTreeSet<String> = ["curl", "unzip", "libatomic"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let t: Vec<String> = targets.iter().map(|s| s.to_string()).collect();
         Planner::new(&ctx.catalog, &ctx.facts, &present).plan(&t, false)
     }

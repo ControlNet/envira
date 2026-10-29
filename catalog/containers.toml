@@ -3,6 +3,7 @@
 
 [tools.docker]
 desc = "Docker engine and CLI"
+depends = ["curl"]
 detect = { cmd = "docker --version", version = 'Docker version ([^,\s]+)' }
 install = [
   { method = "pacman", package = "docker" },
@@ -26,6 +27,7 @@ steps = [{ use = "user-group", group = "docker" }]
 
 [tools.lazydocker]
 desc = "Terminal UI for docker"
+depends = ["curl"]
 install = [{ method = "script", url = "https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh", shell = "bash", latest = { http = "https://api.github.com/repos/jesseduffield/lazydocker/releases/latest", json = "tag_name" } }]
 
 [tools.dive]
