@@ -36,6 +36,12 @@ pub enum Command {
     Status {
         #[arg(long)]
         json: bool,
+        /// Check for newer versions (cached for 6 hours; uses the network).
+        #[arg(long)]
+        latest: bool,
+        /// With --latest: ignore the cache.
+        #[arg(long)]
+        refresh: bool,
     },
     /// Install whatever the selected bundles need.
     Sync {
@@ -54,6 +60,29 @@ pub enum Command {
         force: bool,
         #[command(flatten)]
         run: RunOpts,
+    },
+    /// Update outdated tools (all, or the given ids/bundles) in place.
+    Update {
+        items: Vec<String>,
+        /// Only list what is outdated.
+        #[arg(long)]
+        check: bool,
+        /// Ignore cached latest versions.
+        #[arg(long, conflicts_with = "offline")]
+        refresh: bool,
+        /// Use cached latest versions only (no network).
+        #[arg(long)]
+        offline: bool,
+        #[command(flatten)]
+        run: RunOpts,
+    },
+    /// Record tools installed outside envira (adoptable) as managed, without reinstalling.
+    Adopt {
+        /// Tool ids or bundles; default: every adoptable tool.
+        items: Vec<String>,
+        /// Show what would be adopted.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Retry what failed or was blocked in the last run.
     Retry {

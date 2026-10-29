@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::catalog::{Catalog, ScopeSpec};
+use crate::catalog::{Catalog, InstallEntry, ScopeSpec};
 use crate::facts::Facts;
 use crate::state::Scope;
 use crate::template::{Ctx, Vars, shell_quote, unmet};
@@ -20,6 +20,7 @@ pub enum Kind {
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Install,
+    Update,
     Apply,
     Revert,
 }
@@ -28,6 +29,7 @@ impl Action {
     pub fn as_str(self) -> &'static str {
         match self {
             Action::Install => "install",
+            Action::Update => "update",
             Action::Apply => "apply",
             Action::Revert => "revert",
         }
@@ -58,6 +60,9 @@ pub struct Unit {
     pub deps: Vec<String>,
     /// Why it is in the plan: `requested`, `needed by X`, ...
     pub reason: String,
+    /// Version an update is expected to reach (the latest known).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -97,6 +102,17 @@ pub struct Choice {
     pub verify: Vec<String>,
 }
 
+/// A tool to update and where it lives.
+#[derive(Debug, Clone)]
+pub struct UpdateTarget {
+    pub id: String,
+    pub route: Route,
+    /// Shown in the plan, e.g. `0.24.0 → 0.25.0`.
+    pub reason: String,
+    /// Latest known version.
+    pub expect: Option<String>,
+}
+
 /// A config step with all templates expanded.
 #[derive(Debug, Clone)]
 pub struct ConfigStep {
@@ -112,6 +128,97 @@ fn resolve_scope(spec: Option<ScopeSpec>, prefer_system: bool) -> Scope {
         Some(ScopeSpec::Any) if prefer_system => Scope::System,
         _ => Scope::User,
     }
+}
+
+/// Where a present tool lives: the install entry that put it there and its scope. Updates run
+/// that entry's update command in that scope, so the tool is replaced in place.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Route {
+    pub entry: usize,
+    pub via: String,
+    pub scope: Scope,
+}
+
+fn entry_name(e: &InstallEntry) -> &str {
+    e.method.as_deref().unwrap_or("run")
+}
+
+/// The entry's own and its method's `when` hold.
+fn entry_usable(cat: &Catalog, facts: &Facts, e: &InstallEntry) -> bool {
+    unmet(&e.when, facts).is_none()
+        && e.method.as_ref().is_none_or(|m| {
+            cat.methods
+                .get(m)
+                .is_some_and(|m| unmet(&m.when, facts).is_none())
+        })
+}
+
+fn entry_scope_spec(cat: &Catalog, e: &InstallEntry) -> Option<ScopeSpec> {
+    e.scope.or(e
+        .method
+        .as_ref()
+        .and_then(|m| cat.methods.get(m))
+        .and_then(|m| m.scope))
+}
+
+/// Install template of an entry (method template or raw command).
+fn install_template<'c>(cat: &'c Catalog, e: &'c InstallEntry) -> Option<&'c str> {
+    match &e.method {
+        Some(m) => cat.methods.get(m).and_then(|m| m.install.as_deref()),
+        None => e.run.as_deref(),
+    }
+}
+
+/// Route of a tool recorded (managed) or matched (adoption query) with method `via`.
+pub fn route_for(
+    cat: &Catalog,
+    facts: &Facts,
+    id: &str,
+    via: &str,
+    scope: Option<Scope>,
+    prefer_system: bool,
+) -> Option<Route> {
+    let tool = cat.tools.get(id)?;
+    let (idx, e) = tool
+        .install
+        .iter()
+        .enumerate()
+        .find(|(_, e)| entry_name(e) == via && entry_usable(cat, facts, e))?;
+    Some(Route {
+        entry: idx,
+        via: via.to_string(),
+        scope: scope.unwrap_or_else(|| resolve_scope(entry_scope_spec(cat, e), prefer_system)),
+    })
+}
+
+/// Route of a tool found only by its binary path in the user's home: the first usable user-scope
+/// entry that would install it there. Entries whose method has an `installed` query are skipped
+/// (that query already said no), and entries that install into `{bin_dir}` must match the
+/// binary's directory, so an update never leaves a second copy elsewhere.
+pub fn path_route(cat: &Catalog, facts: &Facts, id: &str, path: &str) -> Option<Route> {
+    let tool = cat.tools.get(id)?;
+    let user_bin = facts.expand_home(bin_dir(cat, Scope::User));
+    let parent = std::path::Path::new(path).parent()?;
+    tool.install.iter().enumerate().find_map(|(idx, e)| {
+        let user_ok = matches!(
+            entry_scope_spec(cat, e),
+            None | Some(ScopeSpec::User) | Some(ScopeSpec::Any)
+        );
+        let queried = e
+            .method
+            .as_ref()
+            .and_then(|m| cat.methods.get(m))
+            .is_some_and(|m| m.installed.is_some());
+        let dir_ok = !queried
+            && install_template(cat, e).is_some_and(|t| {
+                !t.contains("{bin_dir}") || parent == std::path::Path::new(&user_bin)
+            });
+        (entry_usable(cat, facts, e) && user_ok && dir_ok).then(|| Route {
+            entry: idx,
+            via: entry_name(e).to_string(),
+            scope: Scope::User,
+        })
+    })
 }
 
 pub fn bin_dir(cat: &Catalog, scope: Scope) -> &str {
@@ -292,8 +399,8 @@ impl<'a> Planner<'a> {
         }
         let verify = vec![detect_cmd(cat, facts, id)];
         let mut notes: Vec<String> = Vec::new();
-        for entry in &tool.install {
-            let name = entry.method.as_deref().unwrap_or("run");
+        for (idx, entry) in tool.install.iter().enumerate() {
+            let name = entry_name(entry);
             if let Some(w) = unmet(&entry.when, facts) {
                 notes.push(format!("{name}: {w}"));
                 continue;
@@ -325,64 +432,174 @@ impl<'a> Planner<'a> {
                 notes.push(format!("{name}: {e}"));
                 continue;
             }
-            let vars = Vars::new(
-                facts,
-                id,
-                tool.bin(id),
-                bin_dir(cat, scope),
-                scope == Scope::System,
-            );
-            let (label, tpl, vars) = match (method, &entry.run) {
-                (Some(m), _) => (
-                    format!("{name} install"),
-                    m.install.clone().unwrap_or_else(|| "false".into()),
-                    vars.with_params(&m.defaults).with_params(&entry.params),
-                ),
-                (None, Some(run)) => ("install".to_string(), run.clone(), vars),
-                (None, None) => continue,
-            };
-            let cmd = match vars.expand(&tpl, Ctx::Shell) {
-                Ok(c) => c,
-                Err(e) => {
-                    notes.push(format!("{name}: {e}"));
-                    continue;
-                }
-            };
-            let mut steps = vec![UnitStep {
-                label,
-                check: None,
-                cmd: Some(cmd),
-            }];
-            // Portable binaries built as the user are copied into the system bin dir.
-            if entry.portable
-                && scope == Scope::User
-                && self.prefer_system
-                && facts.privilege.can_elevate()
-            {
-                for b in tool.bins(id) {
-                    let sv = Vars::new(facts, id, b, bin_dir(cat, Scope::System), true);
-                    let c = sv
-                        .expand(
-                            "{sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/{bin}",
-                            Ctx::Shell,
-                        )
-                        .unwrap_or_default();
-                    steps.push(UnitStep {
-                        label: format!("copy {b} to {}", bin_dir(cat, Scope::System)),
-                        check: None,
-                        cmd: Some(c),
+            match self.entry_steps(id, idx, scope, false) {
+                Ok(steps) => {
+                    return Ok(Choice {
+                        via: name.to_string(),
+                        scope,
+                        deps,
+                        steps,
+                        verify,
                     });
                 }
+                Err(e) => notes.push(format!("{name}: {e}")),
             }
-            return Ok(Choice {
-                via: name.to_string(),
-                scope,
-                deps,
-                steps,
-                verify,
-            });
         }
         Err(summarize(&notes, facts))
+    }
+
+    /// Expanded steps of one install entry in `scope`: its install (or update) command, plus
+    /// copies into the system bin dir for portable binaries built as the user.
+    fn entry_steps(
+        &self,
+        id: &str,
+        idx: usize,
+        scope: Scope,
+        update: bool,
+    ) -> Result<Vec<UnitStep>, String> {
+        let (cat, facts) = (self.cat, self.facts);
+        let tool = &cat.tools[id];
+        let entry = tool
+            .install
+            .get(idx)
+            .ok_or_else(|| format!("no install entry {idx}"))?;
+        let name = entry_name(entry);
+        let verb = if update { "update" } else { "install" };
+        let vars = Vars::new(
+            facts,
+            id,
+            tool.bin(id),
+            bin_dir(cat, scope),
+            scope == Scope::System,
+        );
+        let (label, tpl, vars) = match (&entry.method, &entry.run) {
+            (Some(m), _) => {
+                let method = cat
+                    .methods
+                    .get(m)
+                    .ok_or_else(|| format!("unknown method {m:?}"))?;
+                let install = method.install.clone().unwrap_or_else(|| "false".into());
+                let tpl = if update {
+                    entry
+                        .update
+                        .clone()
+                        .or(method.update.clone())
+                        .unwrap_or(install)
+                } else {
+                    install
+                };
+                (
+                    format!("{name} {verb}"),
+                    tpl,
+                    vars.with_params(&method.defaults)
+                        .with_params(&entry.params),
+                )
+            }
+            (None, Some(run)) => {
+                let tpl = if update {
+                    entry.update.clone().unwrap_or_else(|| run.clone())
+                } else {
+                    run.clone()
+                };
+                (verb.to_string(), tpl, vars)
+            }
+            (None, None) => return Err("needs `method` or `run`".into()),
+        };
+        let mut steps = vec![UnitStep {
+            label,
+            check: None,
+            cmd: Some(vars.expand(&tpl, Ctx::Shell)?),
+        }];
+        if entry.portable
+            && scope == Scope::User
+            && self.prefer_system
+            && facts.privilege.can_elevate()
+        {
+            for b in tool.bins(id) {
+                let sv = Vars::new(facts, id, b, bin_dir(cat, Scope::System), true);
+                let c = sv.expand(
+                    "{sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/{bin}",
+                    Ctx::Shell,
+                )?;
+                steps.push(UnitStep {
+                    label: format!("copy {b} to {}", bin_dir(cat, Scope::System)),
+                    check: None,
+                    cmd: Some(c),
+                });
+            }
+        }
+        Ok(steps)
+    }
+
+    /// Updates present tools in place along their routes. Targets that depend on each other
+    /// are ordered dependencies first; nothing else is added.
+    pub fn update(&mut self, targets: &[UpdateTarget]) -> Plan {
+        let mut plan = Plan::default();
+        let ids: BTreeSet<&str> = targets.iter().map(|t| t.id.as_str()).collect();
+        let mut order: Vec<&UpdateTarget> = Vec::new();
+        fn visit<'t>(
+            t: &'t UpdateTarget,
+            all: &'t [UpdateTarget],
+            cat: &Catalog,
+            order: &mut Vec<&'t UpdateTarget>,
+            seen: &mut BTreeSet<String>,
+        ) {
+            if !seen.insert(t.id.clone()) {
+                return;
+            }
+            let tool = &cat.tools[&t.id];
+            let entry_deps = tool.install.get(t.route.entry).map(|e| &e.depends);
+            for d in tool.depends.iter().chain(entry_deps.into_iter().flatten()) {
+                if let Some(dt) = all.iter().find(|x| &x.id == d) {
+                    visit(dt, all, cat, order, seen);
+                }
+            }
+            order.push(t);
+        }
+        let mut seen = BTreeSet::new();
+        for t in targets {
+            if !self.cat.tools.contains_key(&t.id) {
+                plan.skipped
+                    .push((t.id.clone(), "only tools can be updated".into()));
+                continue;
+            }
+            visit(t, targets, self.cat, &mut order, &mut seen);
+        }
+        for t in order {
+            if t.route.scope == Scope::System && !self.facts.privilege.can_elevate() {
+                plan.skipped.push((t.id.clone(), "needs sudo".into()));
+                continue;
+            }
+            match self.entry_steps(&t.id, t.route.entry, t.route.scope, true) {
+                Ok(steps) => {
+                    let tool = &self.cat.tools[&t.id];
+                    let entry_deps = tool.install.get(t.route.entry).map(|e| &e.depends);
+                    let deps = tool
+                        .depends
+                        .iter()
+                        .chain(entry_deps.into_iter().flatten())
+                        .filter(|d| {
+                            ids.contains(d.as_str()) && plan.units.iter().any(|u| &u.id == *d)
+                        })
+                        .cloned()
+                        .collect();
+                    plan.units.push(Unit {
+                        id: t.id.clone(),
+                        kind: Kind::Tool,
+                        action: Action::Update,
+                        via: t.route.via.clone(),
+                        scope: t.route.scope,
+                        steps,
+                        verify: vec![detect_cmd(self.cat, self.facts, &t.id)],
+                        deps,
+                        reason: t.reason.clone(),
+                        expect: t.expect.clone(),
+                    });
+                }
+                Err(e) => plan.skipped.push((t.id.clone(), e)),
+            }
+        }
+        plan
     }
 
     fn choose_config(&mut self, id: &str) -> Result<Choice, String> {
@@ -469,6 +686,7 @@ impl<'a> Planner<'a> {
             verify: choice.verify,
             deps: in_plan,
             reason,
+            expect: None,
         });
     }
 
@@ -509,6 +727,7 @@ impl<'a> Planner<'a> {
                     verify: vec![],
                     deps: vec![],
                     reason: "requested".into(),
+                    expect: None,
                 }),
                 Err(e) => plan.skipped.push((id.clone(), e)),
             }
@@ -742,5 +961,72 @@ mod tests {
             "curl -fsSL https://herdr.dev/install.sh | sh -s --"
         );
         assert!(as_script(&plan).contains("# install herdr via script (requested)"));
+    }
+
+    fn target(id: &str, entry: usize, via: &str, scope: Scope) -> UpdateTarget {
+        UpdateTarget {
+            id: id.into(),
+            route: Route {
+                entry,
+                via: via.into(),
+                scope,
+            },
+            reason: "outdated".into(),
+            expect: None,
+        }
+    }
+
+    #[test]
+    fn update_uses_the_route_and_orders_dependencies() {
+        let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
+        let present = set(&["fnm", "nodejs", "codex", "bat", "herdr", "bun"]);
+        let mut p = Planner::new(&c, &f, &present);
+        let plan = p.update(&[
+            target("codex", 0, "npm", Scope::User),
+            target("nodejs", 0, "run", Scope::User),
+            target("fnm", 0, "script", Scope::User),
+            // bat lives in ~/.local/bin: github-release (entry 3) in user scope, not apt.
+            target("bat", 3, "github-release", Scope::User),
+            target("herdr", 0, "script", Scope::User),
+            target("bun", 0, "run", Scope::User),
+        ]);
+        // codex's npm entry depends on nodejs, which depends on fnm.
+        assert_eq!(
+            ids(&plan),
+            vec!["fnm", "nodejs", "codex", "bat", "herdr", "bun"]
+        );
+        let cmd = |id: &str| {
+            plan.units.iter().find(|u| u.id == id).unwrap().steps[0]
+                .cmd
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(cmd("codex"), "npm install -g @openai/codex@latest");
+        assert_eq!(cmd("herdr"), "herdr update");
+        assert_eq!(cmd("bun"), "bun upgrade");
+        assert!(
+            cmd("bat").contains("--to /home/user/.local/bin"),
+            "{}",
+            cmd("bat")
+        );
+        assert!(!cmd("bat").contains("sudo"));
+        // No update template: the install command is run again.
+        assert!(cmd("nodejs").starts_with("fnm install --lts"));
+        let node = plan.units.iter().find(|u| u.id == "nodejs").unwrap();
+        assert_eq!(node.deps, vec!["fnm"]);
+        assert_eq!(plan.units[2].deps, vec!["nodejs"]);
+        assert_eq!(node.action, Action::Update);
+        assert!(plan.units.iter().all(|u| u.reason == "outdated"));
+    }
+
+    #[test]
+    fn system_updates_need_sudo() {
+        let c = cat();
+        let mut f = Facts::sample(Path::new("/home/user"));
+        f.privilege = Privilege::None;
+        let present = set(&["bat"]);
+        let plan = Planner::new(&c, &f, &present).update(&[target("bat", 0, "apt", Scope::System)]);
+        assert!(plan.is_empty());
+        assert_eq!(plan.skipped[0].1, "needs sudo");
     }
 }

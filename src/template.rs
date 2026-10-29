@@ -18,6 +18,8 @@ pub enum Ctx {
     Shell,
     /// Values are regex-escaped.
     Regex,
+    /// Values are inserted verbatim (URLs); whitespace in a value is an error.
+    Url,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +184,12 @@ impl Vars {
                     .map(|w| regex::escape(w))
                     .collect::<Vec<_>>()
                     .join("|"),
+                Ctx::Url => {
+                    if words.len() != 1 || words[0].contains(char::is_whitespace) {
+                        return Err(format!("{{{name}}} must be one word inside a URL"));
+                    }
+                    words[0].clone()
+                }
             });
         }
         if let Some(v) = self.builtins.get(name) {
@@ -189,6 +197,7 @@ impl Vars {
                 Ctx::Shell if name == "sudo" || v.is_empty() => v.clone(),
                 Ctx::Shell => shell_quote(v),
                 Ctx::Regex => regex::escape(v),
+                Ctx::Url => v.clone(),
             });
         }
         Err(format!("unknown placeholder {{{name}}}"))

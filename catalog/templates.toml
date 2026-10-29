@@ -10,7 +10,13 @@
 #   {envira}   absolute path of the running envira binary
 #   {id}       item id                   {bin}   item's primary binary
 # `${...}` is left to the shell, and `{{` / `}}` produce literal braces.
-# Templates for `installed` regexes get regex-escaped values instead of shell-quoted ones.
+# Templates for `installed` regexes get regex-escaped values instead of shell-quoted ones, and
+# `http` URLs get values verbatim.
+#
+# `update` (default: the `install` template) upgrades a present tool in place; `latest` finds the
+# newest version: `{ cmd | http, json?, regex? }`, where `json` is a dotted path into an HTTP JSON
+# answer and `regex`'s first group (default: a generic version pattern) is the version.
+# Install entries may override both, e.g. `{ run = "...", update = "...", latest = {...} }`.
 
 schema = 1
 min_envira = "0.1.0"
@@ -46,12 +52,16 @@ scope = "system"
 # Retries after `apt-get update` when the package lists are missing or stale (fresh images).
 install = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package} || { {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package}; }"
 installed = { cmd = "dpkg-query -W -f='${Version}' {package}", regex = '^(?:\d+:)?([^-\s]+)' }
+update = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {package}"
+# Candidate from the local package lists (what an upgrade would install), no network.
+latest = { cmd = "apt-cache policy {package}", regex = 'Candidate: (?:\d+:)?([^-\s]+)' }
 
 [methods.dnf]
 desc = "Fedora/RHEL package"
 when = ["family:fedora"]
 scope = "system"
 install = "{sudo} dnf install -y {package}"
+update = "{sudo} dnf upgrade -y {package}"
 installed = { cmd = "rpm -q --qf '%{{VERSION}}' {package}", regex = '^(\S+)$' }
 
 [methods.pacman]
@@ -60,12 +70,15 @@ when = ["family:arch"]
 scope = "system"
 install = "{sudo} pacman -S --needed --noconfirm {package}"
 installed = { cmd = "pacman -Q {package}", regex = '^\S+ (?:\d+:)?([^-\s]+)' }
+# Version in the local sync database.
+latest = { cmd = "pacman -Si {package}", regex = 'Version\s*: (?:\d+:)?([^-\s]+)' }
 
 [methods.zypper]
 desc = "openSUSE package"
 when = ["family:suse"]
 scope = "system"
 install = "{sudo} zypper --non-interactive install {package}"
+update = "{sudo} zypper --non-interactive update {package}"
 installed = { cmd = "rpm -q --qf '%{{VERSION}}' {package}", regex = '^(\S+)$' }
 
 [methods.cargo]
@@ -74,20 +87,25 @@ expects = ["rust-toolchain"]
 scope = "user"
 install = "if command -v cargo-binstall >/dev/null 2>&1; then cargo binstall -y --force {package}; else cargo install --locked --force {package}; fi"
 installed = { cmd = "cargo install --list", regex = '(?m)^{package} v(\S+):' }
+latest = { http = "https://crates.io/api/v1/crates/{package}", json = "crate.max_stable_version" }
 
 [methods.pipx]
 desc = "Python application in an isolated venv"
 expects = ["pipx"]
 scope = "user"
 install = "pipx install --force {package}"
+update = "pipx upgrade {package}"
 installed = { cmd = "pipx list --short", regex = '(?m)^{package} (\S+)' }
+latest = { http = "https://pypi.org/pypi/{package}/json", json = "info.version" }
 
 [methods.npm]
 desc = "Global npm package"
 expects = ["nodejs"]
 scope = "user"
 install = "npm install -g {package}"
+update = "npm install -g {package}@latest"
 installed = { cmd = "npm ls -g --depth=0 {package}", regex = '{package}@(\S+)' }
+latest = { http = "https://registry.npmjs.org/{package}/latest", json = "version" }
 
 [methods.go]
 desc = "Go module built with go install"
@@ -100,6 +118,8 @@ scope = "any"
 # `asset` is a glob (or a list of globs) for the release asset; a table keyed by arch picks one per arch.
 defaults = { bins = ["{bin}"] }
 install = "{sudo} {envira} fetch-release --repo {repo} --asset {asset} --bin {bins} --to {bin_dir}"
+# Tags such as `v0.25.0` or `bun-v1.3.1`: the generic version pattern takes the number.
+latest = { http = "https://api.github.com/repos/{repo}/releases/latest", json = "tag_name" }
 
 [methods.script]
 desc = "Vendor install script fetched over HTTPS"

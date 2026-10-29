@@ -44,6 +44,36 @@ pub trait Runner: Send + Sync {
         lines: mpsc::UnboundedSender<String>,
         cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, StreamEnd>;
+
+    /// HTTP GET of a text body (latest-version queries).
+    fn http_get<'a>(
+        &'a self,
+        url: &'a str,
+        timeout: Duration,
+    ) -> BoxFuture<'a, Result<String, String>>;
+}
+
+/// GET with envira's User-Agent (crates.io rejects requests without one) and `GITHUB_TOKEN`
+/// for the GitHub API (higher rate limit).
+async fn http_get_text(url: &str, timeout: Duration) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("envira/", env!("CARGO_PKG_VERSION")))
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut req = client.get(url);
+    if url.starts_with("https://api.github.com/")
+        && let Ok(t) = std::env::var("GITHUB_TOKEN")
+        && !t.is_empty()
+    {
+        req = req.bearer_auth(t);
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    resp.text().await.map_err(|e| e.to_string())
 }
 
 /// Environment every command runs with.
@@ -138,6 +168,14 @@ pub fn strip_ansi(s: &str) -> String {
 }
 
 impl Runner for RealRunner {
+    fn http_get<'a>(
+        &'a self,
+        url: &'a str,
+        timeout: Duration,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(http_get_text(url, timeout))
+    }
+
     fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe> {
         Box::pin(async move {
             let mut c = self.command(cmd);
@@ -288,6 +326,23 @@ pub mod fake {
     }
 
     impl Runner for FakeRunner {
+        /// URLs are matched against the same rules as commands; exit 0 means HTTP 200.
+        fn http_get<'a>(
+            &'a self,
+            url: &'a str,
+            _t: Duration,
+        ) -> BoxFuture<'a, Result<String, String>> {
+            self.log.lock().unwrap().push(format!("GET {url}"));
+            let (code, output) = self.lookup(url);
+            Box::pin(async move {
+                if code == 0 {
+                    Ok(output)
+                } else {
+                    Err("HTTP 404 Not Found".into())
+                }
+            })
+        }
+
         fn capture<'a>(&'a self, cmd: &'a str, _t: Duration) -> BoxFuture<'a, Probe> {
             let (code, output) = self.lookup(cmd);
             Box::pin(async move { Probe { code, output } })

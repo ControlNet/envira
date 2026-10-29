@@ -35,7 +35,8 @@ steps = [
 [tools.herdr]
 desc = "Terminal workspace manager"
 detect = { cmd = "herdr --version", version = '(\d+\.\d+\S*)' }
-install = [{ method = "script", url = "https://herdr.dev/install.sh" }]
+# No published latest-version source; `envira update herdr` runs the built-in updater.
+install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "herdr update" }]
 
 [bundles.terminal]
 name = "Terminal"

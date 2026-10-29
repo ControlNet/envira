@@ -11,10 +11,13 @@ use crate::catalog::{self, Catalog, validate};
 use crate::cli::{CatalogCmd, FsCmd, Global, RunOpts};
 use crate::exec::{self, Control, Event, ExecCtx, Outcome};
 use crate::fs;
+use crate::latest::Fetch;
 use crate::plan::{Plan, as_script};
+use crate::plan::{Route, UpdateTarget};
 use crate::shellenv;
+use crate::state::ToolRecord;
 use crate::state::{self, Paths, RunRecord, State};
-use crate::status::{Label, Snapshot};
+use crate::status::{ItemStatus, Label, Ownership, Snapshot};
 
 pub fn fmt_duration(d: Duration) -> String {
     let s = d.as_secs();
@@ -29,9 +32,15 @@ pub fn fmt_duration(d: Duration) -> String {
 // status / doctor / log
 // ------------------------------------------------------------------------------------------------
 
-pub async fn status(sess: &Session, json: bool) -> Result<i32> {
+pub async fn status(sess: &Session, json: bool, latest: bool, refresh: bool) -> Result<i32> {
     let state = sess.state()?;
-    let snap = sess.snapshot(state.as_ref()).await;
+    let mut snap = sess.snapshot(state.as_ref()).await;
+    let fetch = match (latest, refresh) {
+        (_, true) => Fetch::Force,
+        (true, false) => Fetch::IfStale,
+        _ => Fetch::CacheOnly,
+    };
+    sess.apply_latest(&mut snap, fetch).await;
     if json {
         println!("{}", serde_json::to_string_pretty(&snap.items)?);
         return Ok(0);
@@ -64,6 +73,11 @@ fn print_items(snap: &Snapshot) {
         }
         let detail = match i.label {
             Label::Installed => i.ownership.map(|o| o.as_str()).unwrap_or("").to_string(),
+            Label::Outdated => format!(
+                "{} · latest {}",
+                i.ownership.map(|o| o.as_str()).unwrap_or(""),
+                i.latest.as_deref().unwrap_or("?")
+            ),
             Label::NotApplicable => i.reason.clone().unwrap_or_default(),
             Label::Failed => i.last_error.clone().unwrap_or_default(),
             _ => String::new(),
@@ -91,8 +105,9 @@ pub fn summary_line(snap: &Snapshot) -> String {
     let missing = snap.count(|i| i.label == Label::Missing);
     let new = snap.count(|i| i.label == Label::New);
     let failed = snap.count(|i| matches!(i.label, Label::Failed | Label::Drifted));
+    let outdated = snap.count(|i| i.label == Label::Outdated);
     format!(
-        "{present}/{applicable} present · {missing} missing · {new} new · {failed} failed or drifted"
+        "{present}/{applicable} present · {outdated} outdated · {missing} missing · {new} new · {failed} failed or drifted"
     )
 }
 
@@ -340,6 +355,211 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
     let snap = sess.snapshot(state.as_ref()).await;
     let plan = sess.plan(&snap.present(), &targets, force);
     run_plan(sess, plan, state.unwrap_or_default(), "install", opts).await
+}
+
+/// Why a present item is not updated, or the update target for it.
+fn update_target(i: &ItemStatus, explicit: bool) -> Result<UpdateTarget, String> {
+    if i.kind != crate::plan::Kind::Tool {
+        return Err("configs are applied, not updated".into());
+    }
+    if !i.present {
+        return Err("not installed (use `envira install`)".into());
+    }
+    let Some(route) = i.route.clone() else {
+        return Err(format!(
+            "installed outside envira's reach{}",
+            i.path
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default()
+        ));
+    };
+    let current = i
+        .method_version
+        .as_deref()
+        .or(i.version.as_deref())
+        .unwrap_or("?");
+    let reason = match (&i.latest, i.label) {
+        (Some(l), Label::Outdated) => format!("{current} → {l}"),
+        (Some(l), _) if explicit => return Err(format!("up to date ({current}, latest {l})")),
+        (Some(_), _) => return Err("up to date".into()),
+        (None, _) if explicit => format!("{current} → latest (unknown)"),
+        (None, _) => return Err("latest version unknown".into()),
+    };
+    Ok(UpdateTarget {
+        id: i.id.clone(),
+        route,
+        reason,
+        expect: i.latest.clone(),
+    })
+}
+
+pub async fn update(
+    sess: &Session,
+    items: &[String],
+    check: bool,
+    refresh: bool,
+    offline: bool,
+    opts: &RunOpts,
+) -> Result<i32> {
+    let state = sess.state()?;
+    let mut snap = sess.snapshot(state.as_ref()).await;
+    let fetch = if offline {
+        Fetch::CacheOnly
+    } else if refresh {
+        Fetch::Force
+    } else {
+        Fetch::IfStale
+    };
+    sess.apply_latest(&mut snap, fetch).await;
+    let explicit = !items.is_empty();
+    let ids = if explicit {
+        sess.expand_targets(items)?
+    } else {
+        snap.outdated()
+    };
+    let mut targets = Vec::new();
+    let mut skipped = Vec::new();
+    for id in &ids {
+        let Some(i) = snap.get(id) else { continue };
+        match update_target(i, explicit) {
+            Ok(t) => targets.push(t),
+            Err(why) if explicit => skipped.push((id.clone(), why)),
+            Err(_) => {}
+        }
+    }
+    if check {
+        print_outdated(&snap);
+        return Ok(0);
+    }
+    if targets.is_empty() && skipped.is_empty() {
+        println!("Everything envira can update is up to date.");
+        let unknown = snap.count(|i| i.route.is_some() && i.latest.is_none());
+        if unknown > 0 {
+            println!(
+                "({unknown} without a known latest version; `envira update <id>` runs their updater.)"
+            );
+        }
+        return Ok(0);
+    }
+    let mut plan = sess.update_plan(&targets);
+    plan.skipped.extend(skipped);
+    run_plan(sess, plan, state.unwrap_or_default(), "update", opts).await
+}
+
+fn print_outdated(snap: &Snapshot) {
+    let tools: Vec<&ItemStatus> = snap
+        .items
+        .iter()
+        .filter(|i| i.present && i.kind == crate::plan::Kind::Tool)
+        .collect();
+    let outdated: Vec<&&ItemStatus> = tools
+        .iter()
+        .filter(|i| i.label == Label::Outdated)
+        .collect();
+    if outdated.is_empty() {
+        println!("Nothing is outdated.");
+    } else {
+        println!("Outdated ({}):", outdated.len());
+        for i in &outdated {
+            println!(
+                "  ↑ {:<24} {:<12} → {:<12} via {:<15} {}",
+                i.id,
+                i.method_version
+                    .as_deref()
+                    .or(i.version.as_deref())
+                    .unwrap_or("?"),
+                i.latest.as_deref().unwrap_or("?"),
+                i.via.as_deref().unwrap_or("—"),
+                i.ownership.map(|o| o.as_str()).unwrap_or("")
+            );
+        }
+    }
+    let unknown: Vec<String> = tools
+        .iter()
+        .filter(|i| i.route.is_some() && i.latest.is_none())
+        .map(|i| match &i.latest_error {
+            Some(e) => format!("{} ({e})", i.id),
+            None => i.id.clone(),
+        })
+        .collect();
+    if !unknown.is_empty() {
+        println!("Latest version unknown: {}", unknown.join(", "));
+    }
+    let external: Vec<&str> = tools
+        .iter()
+        .filter(|i| i.ownership == Some(Ownership::External))
+        .map(|i| i.id.as_str())
+        .collect();
+    if !external.is_empty() {
+        println!("Not updated by envira (external): {}", external.join(", "));
+    }
+}
+
+/// Records adoptable tools as managed so later updates and `status` treat them as envira's.
+pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i32> {
+    let mut state = sess.state()?.unwrap_or_default();
+    let snap = sess.snapshot(Some(&state)).await;
+    let explicit = !items.is_empty();
+    let ids = if explicit {
+        sess.expand_targets(items)?
+    } else {
+        snap.items
+            .iter()
+            .filter(|i| i.ownership == Some(Ownership::Adoptable))
+            .map(|i| i.id.clone())
+            .collect()
+    };
+    let mut adopted = 0;
+    for id in &ids {
+        let Some(i) = snap.get(id) else { continue };
+        let route: Option<&Route> = i.route.as_ref();
+        match (i.ownership, route) {
+            (Some(Ownership::Adoptable), Some(r)) => {
+                println!(
+                    "  adopt {:<24} {:<12} via {} ({})",
+                    id,
+                    i.method_version
+                        .as_deref()
+                        .or(i.version.as_deref())
+                        .unwrap_or("?"),
+                    r.via,
+                    r.scope
+                );
+                if !dry_run {
+                    state.tools.insert(
+                        id.clone(),
+                        ToolRecord {
+                            method: Some(r.via.clone()),
+                            scope: Some(r.scope),
+                            version: i.method_version.clone().or(i.version.clone()),
+                            installed_at: Some(state::now_rfc3339()),
+                            last_result: state::LastResult::Ok,
+                            last_error: None,
+                            last_run: None,
+                        },
+                    );
+                }
+                adopted += 1;
+            }
+            (Some(Ownership::Managed), _) if explicit => println!("  skip {id}: already managed"),
+            (Some(Ownership::External), _) if explicit => {
+                println!("  skip {id}: external (not installed where envira would install it)")
+            }
+            _ if explicit => println!("  skip {id}: not installed"),
+            _ => {}
+        }
+    }
+    if adopted == 0 {
+        println!("Nothing to adopt.");
+    } else if dry_run {
+        println!("{adopted} would be adopted (dry run).");
+    } else {
+        state.mark_all_seen(&sess.catalog);
+        state.save(&sess.paths, &sess.facts)?;
+        println!("{adopted} adopted; `envira update` can now update them in place.");
+    }
+    Ok(0)
 }
 
 pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {

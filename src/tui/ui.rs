@@ -82,6 +82,7 @@ fn label_color(t: &Theme, l: Label) -> Color {
         Label::Missing | Label::Failed => t.red,
         Label::New => t.cyan,
         Label::Drifted => t.yellow,
+        Label::Outdated => t.blue,
         Label::Available | Label::NotApplicable => t.dim,
     }
 }
@@ -396,6 +397,7 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     for u in &plan.units {
         let (g, c) = match u.action {
             Action::Install => ("+", t.cyan),
+            Action::Update => ("↑", t.blue),
             Action::Apply => ("◇", t.magenta),
             Action::Revert => ("↺", t.yellow),
         };
@@ -1044,6 +1046,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .map(|(i, u)| {
             let c = match u.action {
                 Action::Install => t.cyan,
+                Action::Update => t.blue,
                 Action::Apply => t.magenta,
                 Action::Revert => t.yellow,
             };

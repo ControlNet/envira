@@ -6,6 +6,7 @@ mod exec;
 mod facts;
 mod fetch;
 mod fs;
+mod latest;
 mod plan;
 mod runner;
 mod shellenv;
@@ -13,6 +14,7 @@ mod state;
 mod status;
 mod template;
 mod tui;
+mod version;
 
 use clap::Parser;
 
@@ -58,8 +60,22 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         let sess = app::Session::open(&cli.global)?;
         match cli.command {
             None if std::io::IsTerminal::is_terminal(&std::io::stdout()) => tui::run(sess).await,
-            None => commands::status(&sess, false).await,
-            Some(Command::Status { json }) => commands::status(&sess, json).await,
+            None => commands::status(&sess, false, false, false).await,
+            Some(Command::Status {
+                json,
+                latest,
+                refresh,
+            }) => commands::status(&sess, json, latest || refresh, refresh).await,
+            Some(Command::Update {
+                items,
+                check,
+                refresh,
+                offline,
+                run,
+            }) => commands::update(&sess, &items, check, refresh, offline, &run).await,
+            Some(Command::Adopt { items, dry_run }) => {
+                commands::adopt(&sess, &items, dry_run).await
+            }
             Some(Command::Sync { bundles, run }) => commands::sync(&sess, &bundles, &run).await,
             Some(Command::Install { items, force, run }) => {
                 commands::install(&sess, &items, force, &run).await

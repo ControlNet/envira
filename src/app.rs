@@ -9,7 +9,8 @@ use anyhow::{Result, bail};
 use crate::catalog::{self, Catalog, CatalogOptions, Loaded, validate};
 use crate::cli::{Global, ScopeArg};
 use crate::facts::{Facts, Privilege};
-use crate::plan::{Plan, Planner};
+use crate::latest::{self, Fetch};
+use crate::plan::{Plan, Planner, UpdateTarget};
 use crate::runner::{CmdEnv, RealRunner, Runner};
 use crate::state::{Paths, State};
 use crate::status::{self, Snapshot};
@@ -62,6 +63,31 @@ impl Session {
 
     pub async fn snapshot(&self, state: Option<&State>) -> Snapshot {
         status::snapshot(&self.catalog, &self.facts, state, self.runner.as_ref()).await
+    }
+
+    /// Adds latest versions (from the cache, or queried per `fetch`) and marks outdated tools.
+    pub async fn apply_latest(&self, snap: &mut Snapshot, fetch: Fetch) {
+        let mut cache = latest::Cache::load(&self.paths);
+        let answers = latest::check(
+            &self.catalog,
+            &self.facts,
+            snap,
+            self.runner.as_ref(),
+            &mut cache,
+            fetch,
+        )
+        .await;
+        if fetch != Fetch::CacheOnly {
+            let _ = cache.save(&self.paths, &self.facts);
+        }
+        snap.apply_latest(&answers);
+    }
+
+    pub fn update_plan(&self, targets: &[UpdateTarget]) -> Plan {
+        let present = BTreeSet::new();
+        let mut p = Planner::new(&self.catalog, &self.facts, &present);
+        p.prefer_system = self.prefer_system();
+        p.update(targets)
     }
 
     pub fn prefer_system(&self) -> bool {

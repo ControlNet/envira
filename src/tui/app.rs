@@ -807,7 +807,7 @@ pub mod tests {
     use std::path::Path;
 
     pub fn item(id: &str, kind: Kind, label: Label, desired: bool) -> ItemStatus {
-        let present = matches!(label, Label::Installed | Label::Applied);
+        let present = matches!(label, Label::Installed | Label::Applied | Label::Outdated);
         ItemStatus {
             id: id.into(),
             kind,
@@ -815,12 +815,20 @@ pub mod tests {
             label,
             present,
             version: present.then(|| "1.0.0".into()),
+            method_version: None,
             ownership: present.then_some(Ownership::Adoptable),
             path: None,
             desired,
             seen: label != Label::New,
             via: Some("script".into()),
             scope: None,
+            route: (present && kind == Kind::Tool).then(|| crate::plan::Route {
+                entry: 0,
+                via: "script".into(),
+                scope: crate::state::Scope::User,
+            }),
+            latest: (label == Label::Outdated).then(|| "2.0.0".into()),
+            latest_error: None,
             reason: (label == Label::NotApplicable).then(|| "when gpu is not met".into()),
             last_error: (label == Label::Failed).then(|| "exit 1".into()),
         }

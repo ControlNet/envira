@@ -84,18 +84,22 @@ pub struct Method {
     #[serde(default)]
     pub defaults: Params,
     pub install: Option<String>,
+    /// Upgrades an installed tool in place; defaults to `install`.
     pub update: Option<String>,
+    /// Finds a tool installed by this method (adoption); the regex's first group is the version.
     pub installed: Option<Query>,
+    /// Newest available version.
     pub latest: Option<Query>,
 }
 
-/// A command or HTTP query whose output yields a version.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+/// A command or HTTP GET whose output yields a version. With `http`, `json` (a dotted path,
+/// numbers index arrays) picks a value first; `regex` (first capture group) is applied last.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Query {
     pub cmd: Option<String>,
     pub http: Option<String>,
-    /// Dotted path into a JSON response.
+    /// Dotted path into a JSON response, e.g. `crate.max_stable_version`.
     pub json: Option<String>,
     /// Regex whose first capture group is the version.
     pub regex: Option<String>,
@@ -158,6 +162,10 @@ pub struct InstallEntry {
     /// Self-contained binary that may be copied into the system bin dir.
     #[serde(default)]
     pub portable: bool,
+    /// Update command for this entry (raw, or overriding the method's `update`).
+    pub update: Option<String>,
+    /// Latest-version query for this entry (overrides the method's `latest`).
+    pub latest: Option<Query>,
     /// Template parameters.
     #[serde(flatten)]
     pub params: Params,

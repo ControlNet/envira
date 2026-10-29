@@ -273,6 +273,14 @@ async fn run_unit(
                         .map(|v| format!(" {v}"))
                         .unwrap_or_default()
                 ));
+                if let (Some(want), Some(got)) = (&unit.expect, &version)
+                    && crate::version::is_newer(want, got)
+                {
+                    emit(format!(
+                        "[envira] note: {} is still {got}; the latest is {want} (the source may lag behind)",
+                        unit.id
+                    ));
+                }
                 Outcome::Ok { version }
             } else {
                 let cmd = unit.verify.first().cloned().unwrap_or_default();
@@ -525,5 +533,45 @@ mod tests {
         let ran = s.runner.ran();
         assert_eq!(ran.len(), 1, "{ran:?}");
         assert!(ran[0].contains("toml-set"));
+    }
+
+    #[tokio::test]
+    async fn update_adopts_and_records_the_new_version() {
+        let s = setup();
+        s.runner
+            .rule("codex --version", 0, "codex-cli 0.46.0")
+            .rule(
+                "npm install -g @openai/codex@latest",
+                0,
+                "changed 1 package",
+            )
+            .on_install(
+                "@openai/codex@latest",
+                "codex --version",
+                "codex-cli 0.48.0",
+            );
+        let present: BTreeSet<String> = ["codex".to_string()].into();
+        let p = Planner::new(&s.ctx.catalog, &s.ctx.facts, &present).update(&[
+            crate::plan::UpdateTarget {
+                id: "codex".into(),
+                route: crate::plan::Route {
+                    entry: 0,
+                    via: "npm".into(),
+                    scope: crate::state::Scope::User,
+                },
+                reason: "0.46.0 → 0.50.0".into(),
+                expect: Some("0.50.0".into()),
+            },
+        ]);
+        let (rec, st, events) = run(&s, p).await;
+        assert_eq!(outcomes(&rec), vec![("codex", "ok")]);
+        assert_eq!(rec.units[0].action, "update");
+        // Not in state before: the update makes it managed, with the method it lives in.
+        assert!(st.is_managed("codex"));
+        assert_eq!(st.tools["codex"].method.as_deref(), Some("npm"));
+        assert_eq!(st.tools["codex"].version.as_deref(), Some("0.48.0"));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Line(0, l) if l.contains("still 0.48.0; the latest is 0.50.0"))
+        ));
     }
 }

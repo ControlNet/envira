@@ -9,7 +9,8 @@ use serde::Serialize;
 
 use crate::catalog::Catalog;
 use crate::facts::Facts;
-use crate::plan::{Kind, Planner, bin_dir, config_steps, detect_cmd};
+use crate::latest::Latest;
+use crate::plan::{Kind, Planner, Route, bin_dir, config_steps, detect_cmd, path_route, route_for};
 use crate::runner::Runner;
 use crate::state::{LastResult, Scope, State};
 use crate::template::{Ctx, Vars, shell_quote, unmet};
@@ -43,6 +44,8 @@ impl Ownership {
 #[serde(rename_all = "snake_case")]
 pub enum Label {
     Installed,
+    /// Installed, updatable by envira, and a newer version exists.
+    Outdated,
     Applied,
     Missing,
     New,
@@ -56,6 +59,7 @@ impl Label {
     pub fn glyph(self) -> &'static str {
         match self {
             Label::Installed | Label::Applied => "✓",
+            Label::Outdated => "↑",
             Label::Missing => "✗",
             Label::New => "◆",
             Label::Available => "·",
@@ -67,6 +71,7 @@ impl Label {
     pub fn text(self) -> &'static str {
         match self {
             Label::Installed => "installed",
+            Label::Outdated => "outdated",
             Label::Applied => "applied",
             Label::Missing => "missing",
             Label::New => "new",
@@ -86,6 +91,10 @@ pub struct ItemStatus {
     pub label: Label,
     pub present: bool,
     pub version: Option<String>,
+    /// Version reported by the method's `installed` query; compared with the
+    /// latest version instead of `version`, which may come from another copy earlier on PATH.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method_version: Option<String>,
     pub ownership: Option<Ownership>,
     /// Resolved executable for present tools.
     pub path: Option<String>,
@@ -94,6 +103,11 @@ pub struct ItemStatus {
     /// Method used (managed), matched (adoptable) or planned (absent).
     pub via: Option<String>,
     pub scope: Option<Scope>,
+    /// Install entry and scope an update would use (managed and adoptable tools).
+    pub route: Option<Route>,
+    /// Newest version from the `latest` query, when checked.
+    pub latest: Option<String>,
+    pub latest_error: Option<String>,
     /// Why the item cannot be installed here.
     pub reason: Option<String>,
     pub last_error: Option<String>,
@@ -121,6 +135,38 @@ impl Snapshot {
 
     pub fn count(&self, f: impl Fn(&ItemStatus) -> bool) -> usize {
         self.items.iter().filter(|i| f(i)).count()
+    }
+
+    /// Present tools envira can update with a newer version available.
+    pub fn outdated(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter(|i| i.label == Label::Outdated)
+            .map(|i| i.id.clone())
+            .collect()
+    }
+
+    /// Folds latest-version answers in; managed and adoptable tools behind them become outdated.
+    pub fn apply_latest(&mut self, answers: &BTreeMap<String, Latest>) {
+        for i in &mut self.items {
+            let Some(a) = answers.get(&i.id) else {
+                continue;
+            };
+            match a {
+                Latest::Version(v) => {
+                    i.latest = Some(v.clone());
+                    i.latest_error = None;
+                }
+                Latest::Error(e) => i.latest_error = Some(e.clone()),
+            }
+            let current = i.method_version.as_ref().or(i.version.as_ref());
+            let behind = matches!((&i.latest, current), (Some(l), Some(c)) if crate::version::is_newer(l, c));
+            if i.label == Label::Installed && i.route.is_some() && behind {
+                i.label = Label::Outdated;
+            } else if i.label == Label::Outdated && !behind {
+                i.label = Label::Installed;
+            }
+        }
     }
 
     /// Desired and not present (what `sync` installs), excluding items that cannot be installed.
@@ -270,130 +316,168 @@ pub async fn snapshot(
         .filter(|(_, p)| p.present)
         .map(|(id, _)| id.clone())
         .collect();
-    let adoptable = adoption_queries(cat, facts, state, &probes, runner).await;
+    let queried = installed_queries(cat, facts, state, &probes, runner).await;
     let empty = State::default();
     let st = state.unwrap_or(&empty);
     let desired = st.desired(cat);
     let mut planner = Planner::new(cat, facts, &present);
 
-    let items =
-        ids.iter()
-            .map(|id| {
-                let p = &probes[id];
-                let kind = if cat.tools.contains_key(id) {
-                    Kind::Tool
-                } else {
-                    Kind::Config
-                };
-                let when = if kind == Kind::Tool {
-                    &cat.tools[id].when
-                } else {
-                    &cat.configs[id].when
-                };
-                let choice = planner.choose(id);
-                let (mut via, mut scope) = match &choice {
-                    Ok(c) => (Some(c.via.clone()), Some(c.scope)),
-                    Err(_) => (None, None),
-                };
-                let reason = match &choice {
-                    Err(e) if !p.present => Some(e.clone()),
-                    _ if !p.present => unmet(when, facts).map(|w| format!("when {w} is not met")),
-                    _ => None,
-                };
-                let rec = st.tools.get(id);
-                let crec = st.configs.get(id);
-                let last_error = match kind {
-                    Kind::Tool => rec
-                        .filter(|r| r.last_result == LastResult::Failed)
-                        .and_then(|r| r.last_error.clone()),
-                    Kind::Config => crec
-                        .filter(|r| r.last_result == LastResult::Failed)
-                        .and_then(|r| r.last_error.clone()),
-                };
-                let ownership =
-                    (p.present && kind == Kind::Tool).then(|| {
-                        if st.is_managed(id) {
-                            if let Some(r) = rec {
-                                via = r.method.clone().or(via.clone());
-                                scope = r.scope.or(scope);
-                            }
-                            Ownership::Managed
-                        } else if let Some(m) = adoptable.get(id) {
-                            via = Some(m.clone());
-                            Ownership::Adoptable
-                        } else if p.path.as_deref().is_some_and(|path| {
-                            path.starts_with(&format!("{}/", facts.home.display()))
-                        }) {
-                            Ownership::Adoptable
-                        } else {
-                            Ownership::External
-                        }
-                    });
-                let drifted = kind == Kind::Config && !p.present && crec.is_some_and(|r| r.applied);
-                let seen = state.is_none() || st.seen.contains(id);
-                let is_desired = desired.contains(id);
-                let label = if p.present {
-                    if kind == Kind::Tool {
-                        Label::Installed
-                    } else {
-                        Label::Applied
-                    }
-                } else if reason.is_some() {
-                    Label::NotApplicable
-                } else if last_error.is_some() {
-                    Label::Failed
-                } else if drifted {
-                    Label::Drifted
-                } else if !seen {
-                    Label::New
-                } else if is_desired {
-                    Label::Missing
-                } else {
-                    Label::Available
-                };
-                ItemStatus {
-                    id: id.clone(),
-                    kind,
-                    category: cat.category(id).to_string(),
-                    label,
-                    present: p.present,
-                    version: p.version.clone(),
-                    ownership,
-                    path: p.path.clone(),
-                    desired: is_desired,
-                    seen,
-                    via,
-                    scope,
-                    reason,
-                    last_error,
+    let items = ids
+        .iter()
+        .map(|id| {
+            let p = &probes[id];
+            let kind = if cat.tools.contains_key(id) {
+                Kind::Tool
+            } else {
+                Kind::Config
+            };
+            let when = if kind == Kind::Tool {
+                &cat.tools[id].when
+            } else {
+                &cat.configs[id].when
+            };
+            let choice = planner.choose(id);
+            let (mut via, mut scope) = match &choice {
+                Ok(c) => (Some(c.via.clone()), Some(c.scope)),
+                Err(_) => (None, None),
+            };
+            let reason = match &choice {
+                Err(e) if !p.present => Some(e.clone()),
+                _ if !p.present => unmet(when, facts).map(|w| format!("when {w} is not met")),
+                _ => None,
+            };
+            let rec = st.tools.get(id);
+            let crec = st.configs.get(id);
+            let last_error = match kind {
+                Kind::Tool => rec
+                    .filter(|r| r.last_result == LastResult::Failed)
+                    .and_then(|r| r.last_error.clone()),
+                Kind::Config => crec
+                    .filter(|r| r.last_result == LastResult::Failed)
+                    .and_then(|r| r.last_error.clone()),
+            };
+            let (ownership, route) = if !(p.present && kind == Kind::Tool) {
+                (None, None)
+            } else if st.is_managed(id) {
+                let r = rec.and_then(|r| {
+                    let m = r.method.as_deref()?;
+                    route_for(cat, facts, id, m, r.scope, planner.prefer_system)
+                });
+                if let Some(r) = rec {
+                    via = r.method.clone().or(via.clone());
+                    scope = r.scope.or(scope);
                 }
-            })
-            .collect();
+                (Some(Ownership::Managed), r)
+            } else {
+                let home = format!("{}/", facts.home.display());
+                let r = queried
+                    .get(id)
+                    .and_then(|(m, _)| route_for(cat, facts, id, m, None, planner.prefer_system))
+                    .or_else(|| {
+                        p.path
+                            .as_deref()
+                            .filter(|path| path.starts_with(&home))
+                            .and_then(|path| path_route(cat, facts, id, path))
+                    })
+                    // A system-wide install is only ours to update with sudo, and the entry's
+                    // dependencies must be here (node from nvm is not fnm's to update).
+                    .filter(|r| r.scope == Scope::User || facts.privilege.can_elevate())
+                    .filter(|r| deps_present(cat, id, r, &present));
+                match r {
+                    Some(r) => {
+                        via = Some(r.via.clone());
+                        scope = Some(r.scope);
+                        (Some(Ownership::Adoptable), Some(r))
+                    }
+                    None => (Some(Ownership::External), None),
+                }
+            };
+            let drifted = kind == Kind::Config && !p.present && crec.is_some_and(|r| r.applied);
+            let seen = state.is_none() || st.seen.contains(id);
+            let is_desired = desired.contains(id);
+            let label = if p.present {
+                if kind == Kind::Tool {
+                    Label::Installed
+                } else {
+                    Label::Applied
+                }
+            } else if reason.is_some() {
+                Label::NotApplicable
+            } else if last_error.is_some() {
+                Label::Failed
+            } else if drifted {
+                Label::Drifted
+            } else if !seen {
+                Label::New
+            } else if is_desired {
+                Label::Missing
+            } else {
+                Label::Available
+            };
+            ItemStatus {
+                id: id.clone(),
+                kind,
+                category: cat.category(id).to_string(),
+                label,
+                present: p.present,
+                version: p.version.clone(),
+                method_version: queried.get(id).and_then(|(_, v)| v.clone()),
+                ownership,
+                path: p.path.clone(),
+                desired: is_desired,
+                seen,
+                via,
+                scope,
+                route,
+                latest: None,
+                latest_error: None,
+                reason,
+                last_error,
+            }
+        })
+        .collect();
     Snapshot {
         items,
         first_run: state.is_none(),
     }
 }
 
-/// For present tools not managed by envira: the first install method whose `installed` query
-/// finds the tool. Queries shared by many tools (e.g. `pipx list`) run once.
-async fn adoption_queries(
+fn deps_present(cat: &Catalog, id: &str, r: &Route, present: &BTreeSet<String>) -> bool {
+    let tool = &cat.tools[id];
+    let entry = tool.install.get(r.entry).map(|e| &e.depends);
+    tool.depends
+        .iter()
+        .chain(entry.into_iter().flatten())
+        .all(|d| present.contains(d))
+}
+
+/// For present tools: the first install method whose `installed` query finds the tool (for
+/// managed tools only the recorded method), with the version that query reports. Queries shared by many tools (e.g.
+/// `pipx list`) run once.
+async fn installed_queries(
     cat: &Catalog,
     facts: &Facts,
     state: Option<&State>,
     probes: &BTreeMap<String, ToolProbe>,
     runner: &dyn Runner,
-) -> BTreeMap<String, String> {
+) -> BTreeMap<String, (String, Option<String>)> {
     let mut wanted: Vec<(String, String, String, String)> = Vec::new(); // id, method, cmd, regex
     for (id, p) in probes {
-        if !p.present || state.is_some_and(|s| s.is_managed(id)) {
+        if !p.present {
             continue;
         }
         let Some(tool) = cat.tools.get(id) else {
             continue;
         };
+        // Managed tools only ask the method they were installed with (for its version).
+        let recorded = state
+            .filter(|s| s.is_managed(id))
+            .map(|s| s.tools[id].method.clone().unwrap_or_default());
         for e in &tool.install {
             let Some(mname) = &e.method else { continue };
+            if recorded.as_ref().is_some_and(|r| r != mname) {
+                continue;
+            }
             let Some(m) = cat.methods.get(mname) else {
                 continue;
             };
@@ -427,8 +511,12 @@ async fn adoption_queries(
             continue;
         }
         let out = &outputs[&cmd];
-        if !out.is_empty() && Regex::new(&re).is_ok_and(|r| r.is_match(out)) {
-            found.insert(id, method);
+        if out.is_empty() {
+            continue;
+        }
+        if let Some(c) = Regex::new(&re).ok().and_then(|r| r.captures(out)) {
+            let version = c.get(1).map(|m| m.as_str().to_string());
+            found.insert(id, (method, version));
         }
     }
     found
@@ -529,6 +617,7 @@ mod tests {
             (Label::Installed, Some(Ownership::Adoptable), Some("apt"))
         );
         assert_eq!(bat.version.as_deref(), Some("0.24.0"));
+        assert_eq!(bat.method_version.as_deref(), Some("0.24.0"));
         assert_eq!(get("herdr").ownership, Some(Ownership::Adoptable));
         assert_eq!(get("yazi").ownership, Some(Ownership::External));
         assert_eq!(get("codex").ownership, Some(Ownership::Managed));
@@ -541,6 +630,94 @@ mod tests {
         assert_eq!(get("pipx").label, Label::Available);
         assert!(snap.to_sync().contains(&"yazi-theme".to_string()));
         assert!(!snap.to_sync().contains(&"bat".to_string()));
+    }
+
+    #[tokio::test]
+    async fn routes_follow_where_tools_live() {
+        let c = cat();
+        let f = Facts::sample(Path::new("/home/user"));
+        let r = FakeRunner::default();
+        r.rule("yazi --version", 0, "Yazi 25.5.31\n")
+            .rule("command -v yazi", 0, "/home/user/.cargo/bin/yazi\n")
+            .rule("herdr --version", 0, "herdr 0.3.1\n")
+            .rule("command -v herdr", 0, "/home/user/.local/bin/herdr\n")
+            .rule("bat --version", 0, "bat 0.24.0\n")
+            .rule("command -v bat", 0, "/home/user/.local/bin/bat\n")
+            .rule("codex --version", 0, "codex-cli 0.46.0\n")
+            .rule(
+                "command -v codex",
+                0,
+                "/home/user/.local/share/fnm/aliases/default/bin/codex\n",
+            )
+            .rule(
+                "npm ls -g --depth=0 @openai/codex",
+                0,
+                "/x/lib\n└── @openai/codex@0.47.0\n",
+            )
+            .rule("node --version", 0, "v24.11.1\n")
+            .rule(
+                "command -v node",
+                0,
+                "/home/user/.nvm/versions/node/v24.11.1/bin/node\n",
+            );
+        let mut st = State::default();
+        st.tools.insert(
+            "codex".into(),
+            ToolRecord {
+                method: Some("npm".into()),
+                scope: Some(Scope::User),
+                version: Some("0.46.0".into()),
+                installed_at: Some("t".into()),
+                last_result: LastResult::Ok,
+                last_error: None,
+                last_run: None,
+            },
+        );
+        let mut snap = snapshot(&c, &f, Some(&st), &r).await;
+        let get = |s: &Snapshot, id: &str| s.get(id).unwrap().clone();
+        // Built from source into ~/.cargo/bin: the github-release entry installs elsewhere and the
+        // cargo entry's `installed` query did not match, so envira leaves it alone.
+        assert_eq!(get(&snap, "yazi").ownership, Some(Ownership::External));
+        assert_eq!(get(&snap, "yazi").route, None);
+        // Vendor script: the installer decides the location, so it updates in place.
+        let herdr = get(&snap, "herdr").route.unwrap();
+        assert_eq!((herdr.via.as_str(), herdr.scope), ("script", Scope::User));
+        // A user-dir binary on a sudo machine is updated in user scope, not via apt.
+        let bat = get(&snap, "bat").route.unwrap();
+        assert_eq!(
+            (bat.via.as_str(), bat.scope),
+            ("github-release", Scope::User)
+        );
+        // node from nvm: the fnm-based entry needs fnm, which is absent.
+        assert_eq!(get(&snap, "nodejs").ownership, Some(Ownership::External));
+        let codex = get(&snap, "codex").route.unwrap();
+        assert_eq!((codex.via.as_str(), codex.scope), ("npm", Scope::User));
+        // Managed tools still ask their own method for the version it installed.
+        assert_eq!(
+            get(&snap, "codex").method_version.as_deref(),
+            Some("0.47.0")
+        );
+
+        let answers = BTreeMap::from([
+            ("codex".to_string(), Latest::Version("0.50.0".into())),
+            ("yazi".to_string(), Latest::Version("26.1.1".into())),
+            ("bat".to_string(), Latest::Version("0.24.0".into())),
+            ("herdr".to_string(), Latest::Error("HTTP 500".into())),
+        ]);
+        snap.apply_latest(&answers);
+        assert_eq!(get(&snap, "codex").label, Label::Outdated);
+        assert_eq!(
+            get(&snap, "yazi").label,
+            Label::Installed,
+            "external stays installed"
+        );
+        assert_eq!(get(&snap, "yazi").latest.as_deref(), Some("26.1.1"));
+        assert_eq!(get(&snap, "bat").label, Label::Installed);
+        assert_eq!(
+            get(&snap, "herdr").latest_error.as_deref(),
+            Some("HTTP 500")
+        );
+        assert_eq!(snap.outdated(), vec!["codex"]);
     }
 
     #[tokio::test]

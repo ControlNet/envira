@@ -273,6 +273,17 @@
             "type": "string"
           }
         },
+        "latest": {
+          "description": "Latest-version query for this entry (overrides the method's `latest`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Query"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "method": {
           "description": "Name of a `[methods.*]` template.",
           "type": [
@@ -300,6 +311,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "update": {
+          "description": "Update command for this entry (raw, or overriding the method's `update`).",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "when": {
@@ -342,6 +360,7 @@
           ]
         },
         "installed": {
+          "description": "Finds a tool installed by this method (adoption); the regex's first group is the version.",
           "anyOf": [
             {
               "$ref": "#/$defs/Query"
@@ -352,6 +371,7 @@
           ]
         },
         "latest": {
+          "description": "Newest available version.",
           "anyOf": [
             {
               "$ref": "#/$defs/Query"
@@ -372,6 +392,7 @@
           ]
         },
         "update": {
+          "description": "Upgrades an installed tool in place; defaults to `install`.",
           "type": [
             "string",
             "null"
@@ -389,7 +410,7 @@
       "additionalProperties": false
     },
     "Query": {
-      "description": "A command or HTTP query whose output yields a version.",
+      "description": "A command or HTTP GET whose output yields a version. With `http`, `json` (a dotted path,\nnumbers index arrays) picks a value first; `regex` (first capture group) is applied last.",
       "type": "object",
       "properties": {
         "cmd": {
@@ -405,7 +426,7 @@
           ]
         },
         "json": {
-          "description": "Dotted path into a JSON response.",
+          "description": "Dotted path into a JSON response, e.g. `crate.max_stable_version`.",
           "type": [
             "string",
             "null"

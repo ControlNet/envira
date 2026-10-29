@@ -3,10 +3,11 @@
 
 [tools.rust-toolchain]
 desc = "Rust toolchain via rustup (rustc, cargo)"
+# `rustup check` exits 100 when an update is available.
 bins = ["rustup", "rustc", "cargo"]
 detect = { cmd = "rustc --version", version = 'rustc (\S+)' }
 install = [
-  { method = "script", url = "https://sh.rustup.rs", args = ["-y", "--no-modify-path"] },
+  { method = "script", url = "https://sh.rustup.rs", args = ["-y", "--no-modify-path"], update = "rustup update", latest = { cmd = "rustup check || [ $? -eq 100 ]", regex = '(?m)^stable-\S+ - (?:update available: \S+ \([^)]*\) -> |up to date: )(\S+)' } },
 ]
 shell = { path = ["~/.cargo/bin"] }
 
@@ -25,7 +26,7 @@ desc = "Fast Node.js version manager"
 depends = ["unzip"]
 detect = { cmd = "fnm --version", version = 'fnm (\S+)' }
 install = [
-  { method = "script", url = "https://fnm.vercel.app/install", shell = "bash", args = ["--skip-shell"] },
+  { method = "script", url = "https://fnm.vercel.app/install", shell = "bash", args = ["--skip-shell"], latest = { http = "https://api.github.com/repos/Schniz/fnm/releases/latest", json = "tag_name" } },
 ]
 shell = { path = ["~/.local/share/fnm"], init = { zsh = 'eval "$(fnm env --use-on-cd --shell zsh)"', bash = 'eval "$(fnm env --use-on-cd --shell bash)"' } }
 
@@ -47,7 +48,8 @@ bin = "node"
 bins = ["node", "npm"]
 depends = ["fnm", "libatomic"]
 detect = { cmd = "node --version", version = 'v(\S+)' }
-install = [{ run = "fnm install --lts && fnm default lts-latest" }]
+# Updating installs the newest LTS and makes it the default; older versions stay installed.
+install = [{ run = "fnm install --lts && fnm default lts-latest", latest = { cmd = "fnm ls-remote --lts | tail -n 1", regex = 'v(\d\S*)' } }]
 
 [tools.pipx]
 desc = "Install Python applications in isolated environments"
@@ -66,7 +68,7 @@ bins = ["bun", "bunx"]
 detect = { cmd = "bun --version", version = '(\S+)' }
 # Raw form: SHELL=/bin/sh stops the vendor script from appending to ~/.zshrc / ~/.bashrc;
 # envira renders the PATH and completions itself (see `shell`).
-install = [{ run = "curl -fsSL https://bun.sh/install | SHELL=/bin/sh bash" }]
+install = [{ run = "curl -fsSL https://bun.sh/install | SHELL=/bin/sh bash", update = "bun upgrade", latest = { http = "https://api.github.com/repos/oven-sh/bun/releases/latest", json = "tag_name" } }]
 shell = { path = ["~/.bun/bin"], env = { BUN_INSTALL = "~/.bun" }, init = { zsh = '[ -s "$HOME/.bun/_bun" ] && . "$HOME/.bun/_bun"' } }
 
 [bundles.toolchains]

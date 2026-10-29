@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::load::Loaded;
-use super::schema::{Catalog, Params};
+use super::schema::{Catalog, Params, Query};
 use crate::template::{BUILTINS, parse_pred, placeholders};
 
 pub const SUPPORTED_SCHEMA: u32 = 1;
@@ -56,7 +56,7 @@ pub fn validate(loaded: &Loaded) -> Report {
         ));
     }
     if let Some(min) = &cat.min_envira
-        && version_tuple(min) > version_tuple(env!("CARGO_PKG_VERSION"))
+        && crate::version::is_newer(min, env!("CARGO_PKG_VERSION"))
     {
         c.report.errors.push(format!(
             "catalog needs envira >= {min}, this is {}",
@@ -126,6 +126,38 @@ fn check_regex(c: &mut Ctx, section: &str, id: &str, what: &str, re: &str) {
     }
 }
 
+/// A query needs exactly one source; `json` only applies to HTTP responses.
+fn check_query(c: &mut Ctx, section: &str, id: &str, what: &str, q: &Query) {
+    match (&q.cmd, &q.http) {
+        (Some(_), Some(_)) => c.err(section, id, format!("{what}: has both `cmd` and `http`")),
+        (None, None) => c.err(section, id, format!("{what}: needs `cmd` or `http`")),
+        _ => {}
+    }
+    if q.json.is_some() && q.http.is_none() {
+        c.err(section, id, format!("{what}: `json` needs `http`"));
+    }
+    if q.cmd.is_some() && q.regex.is_none() {
+        c.warn(
+            section,
+            id,
+            format!("{what}: no `regex`; the generic version pattern is used"),
+        );
+    }
+    if let Some(r) = &q.regex {
+        check_regex(c, section, id, &format!("{what}.regex"), r);
+    }
+}
+
+fn query_templates(q: Option<&Query>) -> Vec<&str> {
+    q.map(|q| {
+        [&q.cmd, &q.http, &q.regex]
+            .into_iter()
+            .filter_map(|s| s.as_deref())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 fn check_methods(c: &mut Ctx, cat: &Catalog) {
     for (id, m) in &cat.methods {
         check_when(c, "methods", id, &m.when);
@@ -133,12 +165,10 @@ fn check_methods(c: &mut Ctx, cat: &Catalog) {
             c.err("methods", id, "missing `install` template");
         }
         if let Some(q) = &m.installed {
-            if q.cmd.is_none() && q.http.is_none() {
-                c.err("methods", id, "installed: needs `cmd` or `http`");
-            }
-            if let Some(r) = &q.regex {
-                check_regex(c, "methods", id, "installed.regex", r);
-            }
+            check_query(c, "methods", id, "installed", q);
+        }
+        if let Some(q) = &m.latest {
+            check_query(c, "methods", id, "latest", q);
         }
         for e in &m.expects {
             if !cat.tools.contains_key(e) && !cat.configs.contains_key(e) {
@@ -237,6 +267,9 @@ fn check_tools(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
         for (i, e) in t.install.iter().enumerate() {
             let what = format!("install[{i}]");
             check_when(c, "tools", id, &e.when);
+            if let Some(q) = &e.latest {
+                check_query(c, "tools", id, &format!("{what}.latest"), q);
+            }
             for d in &e.depends {
                 if !ids.contains(d.as_str()) {
                     c.err(
@@ -253,6 +286,12 @@ fn check_tools(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                 (None, None) => c.err("tools", id, format!("{what}: needs `method` or `run`")),
                 (None, Some(run)) => {
                     check_raw(c, "tools", id, &what, run);
+                    if let Some(u) = &e.update {
+                        check_raw(c, "tools", id, &format!("{what}.update"), u);
+                    }
+                    for t in query_templates(e.latest.as_ref()) {
+                        check_raw(c, "tools", id, &format!("{what}.latest"), t);
+                    }
                     for k in e.params.keys() {
                         c.err(
                             "tools",
@@ -266,12 +305,11 @@ fn check_tools(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                     Some(method) => {
                         let mut tpls: Vec<&str> = Vec::new();
                         tpls.extend(method.install.as_deref());
-                        tpls.extend(method.update.as_deref());
-                        if let Some(q) = &method.installed {
-                            tpls.extend(q.cmd.as_deref());
-                            tpls.extend(q.http.as_deref());
-                            tpls.extend(q.regex.as_deref());
-                        }
+                        tpls.extend(e.update.as_deref().or(method.update.as_deref()));
+                        tpls.extend(query_templates(method.installed.as_ref()));
+                        tpls.extend(query_templates(
+                            e.latest.as_ref().or(method.latest.as_ref()),
+                        ));
                         check_params(
                             c,
                             "tools",
@@ -458,21 +496,6 @@ fn check_cycles(c: &mut Ctx, cat: &Catalog) {
     }
 }
 
-pub fn version_tuple(v: &str) -> (u64, u64, u64) {
-    let mut it = v.trim_start_matches('v').split('.').map(|p| {
-        p.chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .parse()
-            .unwrap_or(0)
-    });
-    (
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,17 +590,44 @@ mod tests {
     }
 
     #[test]
+    fn latest_and_update_are_checked() {
+        let r = check(concat!(
+            "[tools.a]\n",
+            "install = [{ run = \"x\", update = \"up {pkg}\", latest = { cmd = \"c\", http = \"h\" } }]\n",
+            "[tools.b]\n",
+            "install = [{ run = \"x\", latest = { cmd = \"c\", json = \"v\", regex = \"(\" } }]\n",
+            "[tools.c]\n",
+            "install = [{ method = \"npm\", package = \"c\", latest = { http = \"https://x/{pkgname}\" } }]\n",
+        ));
+        assert!(
+            has(&r.errors, "update: unknown placeholder {pkg}"),
+            "{:?}",
+            r.errors
+        );
+        assert!(
+            has(&r.errors, "has both `cmd` and `http`"),
+            "{:?}",
+            r.errors
+        );
+        assert!(has(&r.errors, "`json` needs `http`"), "{:?}", r.errors);
+        assert!(
+            has(&r.errors, "latest.regex: invalid regex"),
+            "{:?}",
+            r.errors
+        );
+        assert!(
+            has(&r.errors, "missing parameter {pkgname}"),
+            "{:?}",
+            r.errors
+        );
+    }
+
+    #[test]
     fn bad_predicate_and_bundle_item() {
         let r = check(
             "[tools.a]\nwhen=[\"gpuu\"]\ninstall=[{run=\"true\"}]\n[bundles.b]\nitems=[\"zzz\"]\n",
         );
         assert!(has(&r.errors, "unknown predicate"), "{:?}", r.errors);
         assert!(has(&r.errors, "unknown item \"zzz\""), "{:?}", r.errors);
-    }
-
-    #[test]
-    fn version_compare() {
-        assert!(version_tuple("0.10.0") > version_tuple("0.9.9"));
-        assert_eq!(version_tuple("v1.2"), (1, 2, 0));
     }
 }
