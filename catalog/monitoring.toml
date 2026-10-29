@@ -1,0 +1,13 @@
+#:schema ./schema.json
+# System and GPU monitoring.
+
+[tools.nvitop]
+desc = "Interactive NVIDIA GPU process viewer"
+when = ["gpu"]
+detect = { cmd = "nvitop --version", version = 'nvitop (\S+)' }
+install = [{ method = "pipx", package = "nvitop", depends = ["pipx"] }]
+
+[bundles.monitoring]
+name = "Monitoring"
+desc = "System and GPU monitors"
+items = ["nvitop"]

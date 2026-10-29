@@ -1,0 +1,16 @@
+#:schema ./schema.json
+# Kernel and system settings.
+
+[configs.inotify-watches]
+desc = "Raise the inotify watch limit (editors, file watchers)"
+scope = "system"
+when = ["!container"]
+steps = [
+  { use = "file", path = "/etc/sysctl.d/60-envira-inotify.conf", content = "fs.inotify.max_user_watches=524288\n" },
+  { run = "{sudo} sysctl --system" },
+]
+
+[bundles.system]
+name = "System"
+desc = "Kernel and system settings"
+items = ["inotify-watches"]

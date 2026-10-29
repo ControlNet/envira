@@ -1,0 +1,155 @@
+#:schema ./schema.json
+# Install methods and config actions used by the catalog items.
+#
+# Templates are plain shell with `{param}` placeholders. Placeholders are filled with the
+# parameters of the item entry that uses the template (shell-quoted), plus these built-ins:
+#   {arch}     x86_64 | aarch64
+#   {home}     target user's home        {user}  target user's name
+#   {bin_dir}  [env.bin_dir] for the chosen scope
+#   {sudo}     `sudo -n` for system scope when not root, else nothing (unquoted)
+#   {envira}   absolute path of the running envira binary
+#   {id}       item id                   {bin}   item's primary binary
+# `${...}` is left to the shell, and `{{` / `}}` produce literal braces.
+# Templates for `installed` regexes get regex-escaped values instead of shell-quoted ones.
+
+schema = 1
+min_envira = "0.1.0"
+
+[env]
+# Directories prepended to PATH for detection and execution (mirrors verify.sh), so tools
+# installed by the legacy scripts or by envira are found even from a non-login shell.
+path = [
+  "~/.local/bin",
+  "~/.cargo/bin",
+  "~/go/bin",
+  "~/.go/bin",
+  "~/.fzf/bin",
+  "~/.local/share/fnm",
+  "~/.local/share/fnm/aliases/default/bin",
+  "~/.pixi/bin",
+  "~/.bun/bin",
+  "~/.opencode/bin",
+  "~/.nvim/bin",
+]
+# Always rendered into ~/.config/envira/env.sh (guarded by a directory check).
+shell_path = ["~/.local/bin"]
+bin_dir = { user = "~/.local/bin", system = "/usr/local/bin" }
+
+# ---------------------------------------------------------------------------------------------
+# Install methods
+# ---------------------------------------------------------------------------------------------
+
+[methods.apt]
+desc = "Debian/Ubuntu package"
+when = ["family:debian"]
+scope = "system"
+# Retries after `apt-get update` when the package lists are missing or stale (fresh images).
+install = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package} || { {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package}; }"
+installed = { cmd = "dpkg-query -W -f='${Version}' {package}", regex = '^(?:\d+:)?([^-\s]+)' }
+
+[methods.dnf]
+desc = "Fedora/RHEL package"
+when = ["family:fedora"]
+scope = "system"
+install = "{sudo} dnf install -y {package}"
+installed = { cmd = "rpm -q --qf '%{{VERSION}}' {package}", regex = '^(\S+)$' }
+
+[methods.pacman]
+desc = "Arch package"
+when = ["family:arch"]
+scope = "system"
+install = "{sudo} pacman -S --needed --noconfirm {package}"
+installed = { cmd = "pacman -Q {package}", regex = '^\S+ (?:\d+:)?([^-\s]+)' }
+
+[methods.zypper]
+desc = "openSUSE package"
+when = ["family:suse"]
+scope = "system"
+install = "{sudo} zypper --non-interactive install {package}"
+installed = { cmd = "rpm -q --qf '%{{VERSION}}' {package}", regex = '^(\S+)$' }
+
+[methods.cargo]
+desc = "Rust crate (prebuilt via cargo-binstall when available)"
+expects = ["rust-toolchain"]
+scope = "user"
+install = "if command -v cargo-binstall >/dev/null 2>&1; then cargo binstall -y --force {package}; else cargo install --locked --force {package}; fi"
+installed = { cmd = "cargo install --list", regex = '(?m)^{package} v(\S+):' }
+
+[methods.pipx]
+desc = "Python application in an isolated venv"
+expects = ["pipx"]
+scope = "user"
+install = "pipx install --force {package}"
+installed = { cmd = "pipx list --short", regex = '(?m)^{package} (\S+)' }
+
+[methods.npm]
+desc = "Global npm package"
+expects = ["nodejs"]
+scope = "user"
+install = "npm install -g {package}"
+installed = { cmd = "npm ls -g --depth=0 {package}", regex = '{package}@(\S+)' }
+
+[methods.go]
+desc = "Go module built with go install"
+scope = "user"
+install = "go install {package}@latest"
+
+[methods.github-release]
+desc = "Prebuilt binary from a GitHub release"
+scope = "any"
+# `asset` is a glob (or a list of globs) for the release asset; a table keyed by arch picks one per arch.
+defaults = { bins = ["{bin}"] }
+install = "{sudo} {envira} fetch-release --repo {repo} --asset {asset} --bin {bins} --to {bin_dir}"
+
+[methods.script]
+desc = "Vendor install script fetched over HTTPS"
+scope = "user"
+defaults = { shell = "sh", args = [] }
+install = "curl -fsSL {url} | {sudo} {shell} -s -- {args}"
+
+[methods.file]
+desc = "Copy a local binary (self-built tools in a local overlay)"
+scope = "any"
+install = "{sudo} install -D -m 755 {source} {bin_dir}/{bin}"
+
+# ---------------------------------------------------------------------------------------------
+# Config actions (check / apply / revert)
+# ---------------------------------------------------------------------------------------------
+
+[actions.file]
+desc = "Whole file with fixed content"
+defaults = { mode = "644" }
+check = "{sudo} {envira} fs write --check {path} --mode {mode} --content {content}"
+apply = "{sudo} {envira} fs write {path} --mode {mode} --content {content}"
+revert = "{sudo} {envira} fs restore {path}"
+
+[actions.block]
+desc = "Marked block inside a file (rc files, config fragments)"
+defaults = { comment = "#" }
+check = "{sudo} {envira} fs block --check {path} --id {block} --comment {comment} --content {content}"
+apply = "{sudo} {envira} fs block {path} --id {block} --comment {comment} --content {content}"
+revert = "{sudo} {envira} fs block --remove {path} --id {block} --comment {comment}"
+
+[actions.toml-set]
+desc = "Set one key in a TOML file, keeping the rest of the file"
+check = "{sudo} {envira} fs toml-set --check {file} {key} {value}"
+apply = "{sudo} {envira} fs toml-set {file} {key} {value}"
+revert = "{sudo} {envira} fs restore {file} --key {key}"
+
+[actions.ini-set]
+desc = "Set one key in an INI file section"
+check = "{sudo} {envira} fs ini-set --check {file} {section} {key} {value}"
+apply = "{sudo} {envira} fs ini-set {file} {section} {key} {value}"
+revert = "{sudo} {envira} fs restore {file} --key {section}.{key}"
+
+[actions.link]
+desc = "Symbolic link"
+check = "{sudo} {envira} fs link --check {target} {link}"
+apply = "{sudo} {envira} fs link {target} {link}"
+revert = "{sudo} {envira} fs restore {link}"
+
+[actions.user-group]
+desc = "Supplementary group membership for the target user"
+check = "id -nG {user} | tr ' ' '\\n' | grep -qx {group}"
+apply = "{sudo} groupadd -f {group} && {sudo} usermod -aG {group} {user}"
+revert = "{sudo} gpasswd -d {user} {group}"

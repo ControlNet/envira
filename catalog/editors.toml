@@ -1,0 +1,13 @@
+#:schema ./schema.json
+# Editors and language servers.
+
+[tools.texlab]
+desc = "LaTeX language server"
+detect = { cmd = "texlab --version", version = 'texlab (\S+)' }
+# Static binary: with system scope it is built as the user and copied into /usr/local/bin.
+install = [{ method = "cargo", package = "texlab", depends = ["rust-toolchain"], portable = true }]
+
+[bundles.latex]
+name = "LaTeX"
+desc = "LaTeX editing support"
+items = ["texlab"]

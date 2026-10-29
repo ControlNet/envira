@@ -1,0 +1,30 @@
+#:schema ./schema.json
+# Containers.
+
+[tools.docker]
+desc = "Docker engine and CLI"
+detect = { cmd = "docker --version", version = 'Docker version ([^,\s]+)' }
+install = [
+  { method = "pacman", package = "docker" },
+  { method = "script", url = "https://get.docker.com", scope = "system", when = ["!family:arch"] },
+]
+
+[configs.docker-service]
+desc = "Start the docker daemon at boot"
+scope = "system"
+when = ["!container"]
+depends = ["docker"]
+check = "systemctl is-enabled --quiet docker"
+apply = "{sudo} systemctl enable --now docker"
+revert = "{sudo} systemctl disable --now docker"
+
+[configs.docker-group]
+desc = "Run docker without sudo (takes effect at next login)"
+scope = "system"
+depends = ["docker"]
+steps = [{ use = "user-group", group = "docker" }]
+
+[bundles.containers]
+name = "Containers"
+desc = "Docker and its setup"
+items = ["docker", "docker-service", "docker-group"]

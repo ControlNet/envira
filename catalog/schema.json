@@ -1,0 +1,584 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalog",
+  "type": "object",
+  "properties": {
+    "actions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Action"
+      },
+      "default": {}
+    },
+    "bundles": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Bundle"
+      },
+      "default": {}
+    },
+    "configs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Config"
+      },
+      "default": {}
+    },
+    "env": {
+      "$ref": "#/$defs/EnvSettings",
+      "default": {
+        "bin_dir": {
+          "system": "/usr/local/bin",
+          "user": "~/.local/bin"
+        },
+        "path": [],
+        "shell_path": []
+      }
+    },
+    "methods": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Method"
+      },
+      "default": {}
+    },
+    "min_envira": {
+      "description": "Oldest envira release that can read this catalog.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema": {
+      "description": "Catalog format version understood by this envira.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Tool"
+      },
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Action": {
+      "type": "object",
+      "properties": {
+        "apply": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "check": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "desc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revert": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "BinDirs": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "user": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "user",
+        "system"
+      ]
+    },
+    "Bundle": {
+      "type": "object",
+      "properties": {
+        "desc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Config": {
+      "type": "object",
+      "properties": {
+        "apply": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "check": {
+          "description": "Raw form: used instead of `steps`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "desc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revert": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "description": "`system` configs need sudo. Defaults to `user`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScopeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Step"
+          }
+        },
+        "when": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Detect": {
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "description": "Shell command that succeeds when the tool is present. Defaults to `{bin} --version`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Regex whose first capture group is the version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnvSettings": {
+      "type": "object",
+      "properties": {
+        "bin_dir": {
+          "$ref": "#/$defs/BinDirs",
+          "default": {
+            "system": "/usr/local/bin",
+            "user": "~/.local/bin"
+          }
+        },
+        "path": {
+          "description": "Extra PATH directories for detection and execution (`~/` is the target user's home).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "shell_path": {
+          "description": "PATH directories always rendered into the managed shell environment.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "InstallEntry": {
+      "type": "object",
+      "properties": {
+        "depends": {
+          "description": "Needed only when this entry is chosen.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "method": {
+          "description": "Name of a `[methods.*]` template.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "portable": {
+          "description": "Self-contained binary that may be copied into the system bin dir.",
+          "type": "boolean",
+          "default": false
+        },
+        "run": {
+          "description": "Raw shell command (instead of `method`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScopeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "when": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "Method": {
+      "type": "object",
+      "properties": {
+        "defaults": {
+          "description": "Default parameter values.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "desc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expects": {
+          "description": "Items an entry using this method normally depends on (lint only, never injected).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "install": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "installed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Query"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Query"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScopeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "update": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "when": {
+          "description": "Facts the machine must satisfy, e.g. `[\"family:debian\"]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Query": {
+      "description": "A command or HTTP query whose output yields a version.",
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "json": {
+          "description": "Dotted path into a JSON response.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regex": {
+          "description": "Regex whose first capture group is the version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ScopeSpec": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "user",
+            "system"
+          ]
+        },
+        {
+          "description": "Follows the machine preference: system when sudo is available, else user.",
+          "type": "string",
+          "const": "any"
+        }
+      ]
+    },
+    "ShellSpec": {
+      "type": "object",
+      "properties": {
+        "alias": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "init": {
+          "description": "Init lines per shell (`zsh`, `bash`).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "path": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Step": {
+      "type": "object",
+      "properties": {
+        "check": {
+          "description": "Raw step: optional check, the command, optional revert.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revert": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "use": {
+          "description": "Name of an `[actions.*]` template.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "Tool": {
+      "type": "object",
+      "properties": {
+        "bin": {
+          "description": "Primary executable; defaults to the tool id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bins": {
+          "description": "All executables the tool provides; defaults to `[bin]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "category": {
+          "description": "Defaults to the catalog file name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "desc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Detect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "install": {
+          "description": "Install methods in order of preference; the first feasible one is used.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/InstallEntry"
+          }
+        },
+        "shell": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShellSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "when": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

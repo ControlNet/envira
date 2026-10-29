@@ -1,0 +1,43 @@
+#:schema ./schema.json
+# Everyday terminal tools.
+
+[tools.bat]
+desc = "cat with syntax highlighting"
+# Debian/Ubuntu ship the binary as `batcat`.
+bins = ["bat", "batcat"]
+detect = { cmd = "bat --version 2>/dev/null || batcat --version", version = 'bat (\S+)' }
+install = [
+  { method = "apt", package = "bat" },
+  { method = "dnf", package = "bat" },
+  { method = "pacman", package = "bat" },
+  { method = "github-release", repo = "sharkdp/bat", bins = ["bat"], asset = { x86_64 = "bat-v*-x86_64-unknown-linux-musl.tar.gz", aarch64 = "bat-v*-aarch64-unknown-linux-gnu.tar.gz" } },
+]
+shell = { alias = { bat = "batcat" } }
+
+[tools.yazi]
+desc = "Terminal file manager"
+bins = ["yazi", "ya"]
+detect = { cmd = "yazi --version", version = 'Yazi (\S+)' }
+install = [
+  { method = "github-release", repo = "sxyazi/yazi", asset = "yazi-{arch}-unknown-linux-musl.zip", bins = ["yazi", "ya"] },
+  { method = "cargo", package = "yazi-build", depends = ["rust-toolchain"] },
+]
+shell = { alias = { y = "yazi" } }
+
+[configs.yazi-theme]
+desc = "yazi onedark flavor"
+depends = ["yazi"]
+steps = [
+  { check = 'test -d "$HOME/.config/yazi/flavors/onedark.yazi"', run = "ya pkg add damjee/onedark" },
+  { use = "toml-set", file = "~/.config/yazi/theme.toml", key = "flavor.dark", value = "onedark" },
+]
+
+[tools.herdr]
+desc = "Terminal workspace manager"
+detect = { cmd = "herdr --version", version = '(\d+\.\d+\S*)' }
+install = [{ method = "script", url = "https://herdr.dev/install.sh" }]
+
+[bundles.terminal]
+name = "Terminal"
+desc = "Daily terminal tools"
+items = ["bat", "yazi", "yazi-theme", "herdr"]

@@ -1,0 +1,17 @@
+#:schema ./schema.json
+# AI coding agents.
+
+[tools.codex]
+desc = "OpenAI Codex CLI"
+detect = { cmd = "codex --version", version = 'codex-cli (\S+)' }
+install = [{ method = "npm", package = "@openai/codex", depends = ["nodejs"] }]
+
+[configs.codex-sandbox-network]
+desc = "Allow network access in the codex workspace-write sandbox"
+depends = ["codex"]
+steps = [{ use = "toml-set", file = "~/.codex/config.toml", key = "sandbox_workspace_write.network_access", value = true }]
+
+[bundles.ai-agents]
+name = "AI agents"
+desc = "Coding agents and their settings"
+items = ["codex", "codex-sandbox-network"]

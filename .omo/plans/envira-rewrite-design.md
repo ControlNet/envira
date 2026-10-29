@@ -1,6 +1,7 @@
 # envira Rewrite Design (Rust + ratatui)
 
-Status: draft for review (2026-10-29). Supersedes the architecture on `origin/feature/cli-app`.
+Status: M1–M3 implemented on `feature/rust-cli` (2026-10-29); M4–M5 open. Supersedes the architecture on
+`origin/feature/cli-app`.
 
 ## Intent
 A single static binary that installs, updates, and tracks the user's Linux toolset on any machine:
@@ -247,17 +248,20 @@ duplicates (e.g. an existing `alias ls='lsd'`) so the user can clean them up.
 
 ## Command line
 ```
-envira                      # TUI
-envira status [--json] [--check-updates]
-envira sync   [--bundle B] [-y] [--dry-run]
-envira install <tool>... [-y] [--dry-run]
-envira update  [<tool>... | --all] [-y]
-envira retry
-envira log [<tool>] [--run <id>]
-envira env                  # regenerate shell files only
-envira doctor               # facts, PATH issues, rc duplicates, catalog source
-envira catalog [--refresh]
-Global: --offline, --catalog <path|url>, --json, -y
+envira                      # TUI on a terminal, `status` otherwise
+envira status [--json]
+envira sync   [--bundle B]... [-y] [--dry-run] [-q]
+envira install <item|bundle>... [--force] [-y] [--dry-run] [-q]
+envira retry  [-y]          # failed + blocked units of the last run
+envira config apply|revert <config>... [-y]
+envira plan   [<item|bundle>...] [--script]
+envira env                  # regenerate shell files and rc blocks only
+envira log    [<item>] [--run <id>]
+envira doctor               # facts, PATH, rc integration and duplicates, catalog layers
+envira catalog check|schema|show
+envira update ...           # M4
+Global: --catalog <path>, --no-overlay, --scope user|system
+Hidden, used by templates: envira fs ..., envira fetch-release ...
 ```
 Headless commands are the same engine as the TUI; `sync -y --bundle full` is the Docker / CI path.
 
@@ -313,6 +317,95 @@ Editing ergonomics:
 - Release: `release_web.yaml` publishes the merged `catalog.toml` next to the binaries; `build.rs`
   embeds the same merged file as the snapshot.
 
+## Catalog format spec (v1, as implemented)
+The source of truth is the Rust types in `src/catalog/schema.rs`; `envira catalog schema` prints the
+JSON Schema (committed as `catalog/schema.json`, referenced by `#:schema ./schema.json` in every file).
+
+**Files and layers.** `catalog/*.toml` are merged in name order into one document; every table is
+merged per field (arrays are replaced, not appended). Items without `category` get the file name.
+Base layer: `--catalog <file|dir>` (or `ENVIRA_CATALOG`, `:`-separated) if given, else the embedded
+snapshot; then `~/.config/envira/catalog.d/*.toml` (skip with `--no-overlay`). The remote layer is M5.
+The same id defined twice inside one layer is a warning.
+
+**Top level.** `schema = 1`, `min_envira = "0.1.0"`, `[env]`, `[methods.*]`, `[actions.*]`,
+`[tools.*]`, `[configs.*]`, `[bundles.*]`. Ids of tools and configs share one namespace.
+
+**`[env]`.** `path`: dirs prepended to PATH for detection and execution; `shell_path`: dirs always
+rendered into `env.sh`; `bin_dir = { user, system }`: the `{bin_dir}` builtin per scope.
+
+**Templates.** Plain shell with `{name}` placeholders, filled from the entry's parameters (after the
+template's `defaults`) and the builtins `arch home user bin_dir sudo envira id bin`.
+- Shell context quotes values (safe words stay bare); `installed.regex` regex-escapes them.
+- `{sudo}` expands to `sudo -n` for system scope when not root, else to nothing (one adjacent space is
+  dropped); checks always expand it to nothing, since checks are read-only.
+- Parameter values may use builtins (`asset = "yazi-{arch}-…"`) and a leading `~/`. An array value
+  becomes several words; a table keyed by arch (`{ x86_64 = "…", aarch64 = "…" }`) picks one, and a
+  missing arch makes that entry infeasible.
+- `${…}` belongs to the shell; `{{` / `}}` produce literal braces (`rpm --qf '%{{VERSION}}'`).
+- Raw commands (`run`, `check`, `apply`, `revert`, `detect.cmd`) get builtins only.
+
+**`[methods.<name>]`.** `desc`, `when`, `scope = "user" | "system" | "any"`, `expects` (lint only),
+`defaults`, `install`, optional `update` / `latest` (M4) and `installed = { cmd, regex }` (adoption).
+
+**`[actions.<name>]`.** `desc`, `defaults`, `check` (exit 0 = in place), `apply`, optional `revert`.
+The library calls the `envira fs` primitives: `write`, `block`, `toml-set`, `ini-set`, `link` (each
+with `--check`) and `restore [--key K]`.
+
+**`[tools.<id>]`.** `desc`, `category`, `bin` (default: id), `bins` (default: `[bin]`; used for
+`command -v` and portable copies), `detect = { cmd, version }` (default `{bin} --version` and a
+generic version regex), `depends`, `when`, `shell = { path, env, alias, init = { zsh, bash } }`, and
+`install = [ … ]` in order of preference. An entry is either `{ method = "…", <params> }` or
+`{ run = "…" }`, plus optional `depends` (needed only for this entry), `when`, `scope`, `portable`.
+
+**`[configs.<id>]`.** `desc`, `category`, `depends`, `when`, `scope` (default user), and either
+`steps = [ { use = "<action>", <params> } | { run = "…", check = "…", revert = "…" } ]` or raw
+`check` / `apply` / `revert`. Status = all checks pass. A step whose check passes is skipped on apply.
+Raw `apply` needs `check`, and a config without any check is rejected.
+
+**`[bundles.<id>]`.** `name`, `desc`, `items` (tool or config ids).
+
+**`when` predicates** (all must hold; `!` negates): `gpu`, `container`, `wsl`, `sudo`, `root`,
+`distro:<ID>`, `family:<ID or ID_LIKE>`, `arch:<arch>`, `shell:<name>`.
+
+**Choosing a method** (per tool, first feasible entry wins): the entry's and the method's `when` hold;
+scope resolves (`any` → system when sudo is available, unless `--scope user`); system scope needs root
+or sudo; every dependency is present or itself plannable; the template expands (e.g. there is an asset
+for this arch). Otherwise the tool is "n/a" with the most specific reason. A `portable` entry with
+user scope on a sudo machine gets an extra step that copies its `bins` into the system bin dir.
+
+**`envira catalog check`** rejects: unknown methods, actions, dependencies and bundle items; a dependency
+cycle (item and entry `depends` together); a missing template parameter; non-builtin placeholders in raw
+commands; invalid regexes or predicates; a tool without install entries; a config without any check.
+It warns about parameters that no template uses, about `expects` not covered by `depends`, and about
+duplicate ids.
+
+### Format findings from porting the first 14 tools and 5 configs
+1. Vendor scripts edit rc files on their own. bun's installer appends to `~/.zshrc` unless
+   `SHELL=/bin/sh`, so `bun` uses a raw `run`. Each new vendor-script tool needs this check; record the
+   flag in a comment (fnm: `--skip-shell`, rustup: `--no-modify-path`).
+2. Vendor scripts have prerequisites: the fnm and bun installers need `unzip`. That is now an ordinary
+   item that both depend on, so these explicit dependencies are not limited to toolchains.
+3. Arch naming differs per project (`x86_64` / `x64` / `amd64`). Tables keyed by arch cover this
+   without new builtins; bat also differs in libc (musl vs gnu on aarch64).
+4. Distro-renamed binaries (`batcat`) need both `bins` and a detect fallback
+   (`bat --version || batcat --version`). An alias renders only when the target exists.
+5. Fresh images have no apt lists, so the apt template retries after `apt-get update`.
+6. Stateful vendor commands such as `ya pkg add` need a raw step with its own `check`, which the step
+   form supports. Without it, re-applying a config would fail.
+7. Effective-value checks and file checks differ. The inotify config checks its own
+   `/etc/sysctl.d` file, so a legacy machine with the line in `/etc/sysctl.conf` shows "not applied" and
+   gets the managed file on sync. That is acceptable, but it is a choice made per config.
+8. Without a TTY, tools still open `/dev/tty`: `yazi --version` blocked inside the TUI. All commands now
+   run in a new session (`setsid`), so they have no controlling terminal.
+9. Ownership comes from the method's `installed` query or the binary path. A tool built from source
+   into `~/.cargo/bin` shows its planned method (github-release) under "via" until M4 adoption decides
+   how to take it over.
+10. Shared libraries are items too. Node.js 25+ from fnm links against `libatomic.so.1`, which minimal
+   images lack (the node binary installs but does not start). `libatomic` has `bins = []`, detects
+   through `ldconfig -p`, installs the distro package, and `nodejs` depends on it.
+11. Not modelled yet: per-entry `update` commands and the `latest` query (M4); the uninstall of tools
+   (out of v1); prerequisites that are not catalog items, such as `curl` for the `script` method.
+
 ## Legacy script parity (long-term parallel maintenance)
 CI check (`tests/legacy_parity.rs` or a small script) that:
 - collects command names from `verify.sh` `check_cmd` / `check_optional_cmd` lines;
@@ -338,19 +431,15 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
 ## Crate layout
 ```
 src/
-  main.rs, cli.rs
-  catalog/   (schema, load, merge, validate)
-  facts.rs
-  template/  (method/action templates: expand, shell quoting, installed/latest queries)
-  fs.rs      (`envira fs` idempotent edit primitives, backups, revert records)
-  fetch.rs   (`envira fetch-release`: arch asset selection, download, extract)
-  detect.rs, status.rs
-  state.rs   (state.toml, run records, logs)
-  plan.rs    (target selection, deps, method choice, topo sort, blocking)
-  exec.rs    (step runner, process groups, temp dirs, sudo keepalive)
-  shellenv.rs
-  tui/       (app.rs event loop, dashboard.rs, plan.rs, run.rs, history.rs, widgets.rs)
-catalog/*.toml, catalog/templates.toml
+  main.rs, cli.rs (clap), commands.rs (headless commands), app.rs (session: catalog, facts, runner)
+  catalog/   (schema.rs, load.rs layers + merge, validate.rs)
+  facts.rs, template.rs (expansion, quoting, `when`), plan.rs (method choice, deps, order)
+  runner.rs  (Runner trait; real runner: bash -eo pipefail in its own session; fake for tests)
+  status.rs  (detection, ownership, labels), exec.rs (units, blocking, state per unit, shell env)
+  state.rs, fs.rs (`envira fs`), fetch.rs (`envira fetch-release`), shellenv.rs
+  tui/       (mod.rs event loop, app.rs state + keys, ui.rs BC1 rendering, theme.rs)
+catalog/*.toml, catalog/templates.toml, catalog/schema.json
+tests/integration/ (Docker: run.sh, check.sh, Dockerfile.ubuntu)
 ```
 
 ## Testing
@@ -363,11 +452,12 @@ catalog/*.toml, catalog/templates.toml
   `envira status --json` must report all core tools installed; run twice to prove idempotence.
 
 ## Milestones
-1. **M1 status (headless)**: catalog schema + templates + facts + detect + `status` / `doctor` /
+1. **M1 status (headless)** (done): catalog schema + templates + facts + detect + `status` / `doctor` /
    `catalog check`; port ~12 representative items covering every method and action template.
-2. **M2 execute**: plan + exec + state + logs; `sync`, `install`, `retry`; configs apply / revert;
+2. **M2 execute** (done): plan + exec + state + logs; `sync`, `install`, `retry`; configs apply / revert;
    `envira fs` primitives; shellenv + rc block.
-3. **M3 TUI**: dashboard, plan review, run view with live logs, first-run picker.
+3. **M3 TUI** (done): dashboard, plan review, run view with live logs, first-run picker. History screen
+   deferred; `envira log` covers it.
 4. **M4 updates**: `latest` for all backends, `update`, outdated filter, adoption of existing installs.
 5. **M5 delivery**: remote catalog + cache + overlays, musl release CI + maturin wheels (see Repo
    transition), Python package removal, `envira.sh` bootstrap, legacy parity check; port the remaining catalog.
