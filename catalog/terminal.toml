@@ -81,7 +81,6 @@ shell = { alias = { df = "duf" } }
 [tools.dust]
 desc = "Directory sizes (du replacement)"
 install = [{ method = "cargo", package = "du-dust", depends = ["cargo-binstall"], portable = true }]
-shell = { alias = { du = "dust" } }
 
 [tools.fd]
 desc = "Fast find alternative"
@@ -97,12 +96,10 @@ install = [{ run = "cargo install --locked --force --features pcre2 ripgrep", de
 [tools.gping]
 desc = "ping with a graph"
 install = [{ method = "cargo", package = "gping", depends = ["cargo-binstall"], portable = true }]
-shell = { alias = { ping = "gping" } }
 
 [tools.procs]
 desc = "Modern ps"
 install = [{ method = "cargo", package = "procs", depends = ["cargo-binstall"], portable = true }]
-shell = { alias = { ps = "procs" } }
 
 [tools.xh]
 desc = "Friendly HTTP client"
@@ -137,7 +134,6 @@ desc = "Terminal text editor (nano replacement)"
 depends = ["curl"]
 # getmic.ro downloads into the current directory (a fresh temp dir per step).
 install = [{ run = "curl -fsSL https://getmic.ro | bash && install -D -m 755 micro {bin_dir}/micro", portable = true, latest = { http = "https://api.github.com/repos/zyedidia/micro/releases/latest", json = "tag_name" } }]
-shell = { alias = { nano = "micro" } }
 
 [tools.superfile]
 desc = "Terminal file manager"
@@ -197,7 +193,7 @@ install = [{ method = "github-release", repo = "cli/cli", asset = { x86_64 = "gh
 
 [bundles.terminal]
 name = "Terminal"
-desc = "Daily terminal tools and their aliases"
+desc = "Daily terminal tools"
 items = [
   "bat", "bat-link", "ncdu", "fzf", "lazygit", "zellij", "zellij-config", "herdr", "lsd", "delta",
   "duf", "dust", "fd", "ripgrep", "gping", "procs", "xh", "viu", "rustscan", "scc", "gotify",

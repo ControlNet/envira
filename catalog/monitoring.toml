@@ -10,7 +10,6 @@ install = [
   # Ubuntu and machines without sudo: the static release build.
   { method = "github-release", repo = "aristocratos/btop", asset = { x86_64 = "btop-x86_64-unknown-linux-musl.tar.gz", aarch64 = "btop-aarch64-unknown-linux-musl.tar.gz" } },
 ]
-shell = { alias = { top = "btop" } }
 
 [tools.bottom]
 desc = "Graphical process and system monitor"
