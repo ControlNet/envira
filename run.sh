@@ -504,6 +504,7 @@ sudo ln -sf "$HOME/.local/bin/tldr" /usr/local/bin/tldr
 
 # install huggingface CLI
 pipx install "huggingface-hub[cli,hf_xet]"
+pipx inject huggingface-hub hf_transfer
 sudo ln -sf "$HOME/.local/bin/hf" /usr/local/bin/hf
 
 # install superfile (CLI file manager)

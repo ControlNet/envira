@@ -310,6 +310,7 @@ pipx install tldr
 
 # install huggingface CLI
 pipx install "huggingface-hub[cli,hf_xet]"
+pipx inject huggingface-hub hf_transfer
 
 # install superfile (CLI file manager)
 bash -c "$(curl -sLo- https://superfile.dev/install.sh)"
