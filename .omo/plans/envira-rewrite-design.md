@@ -233,6 +233,9 @@ Ownership:
    is cancelled like `c` and fails with "timed out after ...". Release downloads and latest
    queries retry connection errors, timeouts, 429 and 5xx with backoff (3 tries from 2 s for
    downloads, 2 tries for queries; `Retry-After` up to 30 s); 403/404 are never retried.
+   `fetch-release` checks the download's SHA-256 against GitHub's asset `digest` (recorded for
+   uploads since 2025), else against a published `<asset>.sha256` or `checksums.txt` /
+   `SHA256SUMS`; a mismatch fails the step, a release without either is noted in the log.
 9. Regenerate the managed shell environment from the resulting state.
 10. Crash, Ctrl-C, SIGTERM or SIGHUP mid-run: state is per-unit and `state.last_run` points at the
     run from its start. Ctrl-C stops after the current step (twice cancels it); SIGTERM/SIGHUP

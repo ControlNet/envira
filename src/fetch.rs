@@ -157,6 +157,19 @@ pub fn run(args: &FetchArgs) -> Result<()> {
     if !(200..300).contains(&status) {
         bail!("HTTP {status} downloading {dl}");
     }
+    // GitHub records a digest for assets uploaded since 2025; older releases may publish
+    // checksum files instead.
+    let digest = release["assets"].as_array().and_then(|a| {
+        a.iter()
+            .find(|x| x["name"].as_str() == Some(name.as_str()))
+            .and_then(|x| x["digest"].as_str())
+            .and_then(|d| d.strip_prefix("sha256:"))
+            .map(str::to_ascii_lowercase)
+    });
+    match digest {
+        Some(want) => matches_sha256(name, "the GitHub asset digest", &want, &bytes)?,
+        None => verify_checksum(&c, name, &bytes, &assets)?,
+    }
     let files = extract(name, &bytes, &args.bins)?;
     std::fs::create_dir_all(&args.to).with_context(|| format!("creating {}", args.to.display()))?;
     for (bin, data) in files {
@@ -164,6 +177,90 @@ pub fn run(args: &FetchArgs) -> Result<()> {
         install_bytes(&dest, &data)?;
         println!("installed {bin} {tag} -> {}", dest.display());
     }
+    Ok(())
+}
+
+/// Checksum files a release may publish for `asset`, most specific first: `<asset>.sha256`
+/// (bat, fd) or a shared list such as `checksums.txt` / `SHA256SUMS` (goreleaser projects).
+pub fn checksum_assets<'a>(asset: &str, names: &'a [String]) -> Vec<&'a String> {
+    let own = [format!("{asset}.sha256"), format!("{asset}.sha256sum")];
+    let mut v: Vec<&String> = names.iter().filter(|n| own.contains(n)).collect();
+    v.extend(names.iter().filter(|n| {
+        let l = n.to_ascii_lowercase();
+        !own.contains(n)
+            && !l.ends_with(".sig")
+            && !l.ends_with(".asc")
+            && !l.ends_with(".pem")
+            && (l.contains("checksums") || l.contains("sha256sums"))
+    }));
+    v
+}
+
+/// The SHA-256 a checksum file gives for `asset`: the line naming it (`<hex>  [*]<asset>`), or
+/// the only hash of a single-asset `.sha256` file.
+pub fn expected_sha256(asset: &str, text: &str) -> Option<String> {
+    let is_hex = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut lone = None;
+    let mut hashes = 0;
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(hash), file) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if !is_hex(hash) {
+            continue;
+        }
+        hashes += 1;
+        match file.map(|f| f.trim_start_matches('*')) {
+            Some(f) if f == asset || f.rsplit('/').next() == Some(asset) => {
+                return Some(hash.to_ascii_lowercase());
+            }
+            None => lone = Some(hash.to_ascii_lowercase()),
+            _ => {}
+        }
+    }
+    lone.filter(|_| hashes == 1)
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn matches_sha256(asset: &str, source: &str, want: &str, data: &[u8]) -> Result<()> {
+    let got = sha256_hex(data);
+    if got != want {
+        bail!("checksum mismatch for {asset}: {source} says {want}, the download is {got}");
+    }
+    eprintln!("[envira] sha256 verified against {source}");
+    Ok(())
+}
+
+/// Verifies the download against a published checksum when the release has one; a mismatch is
+/// an error, a release without checksums is only noted.
+fn verify_checksum(
+    c: &reqwest::blocking::Client,
+    asset: &str,
+    data: &[u8],
+    assets: &[(String, String)],
+) -> Result<()> {
+    let names: Vec<String> = assets.iter().map(|a| a.0.clone()).collect();
+    for sums in checksum_assets(asset, &names) {
+        let url = &assets.iter().find(|a| &a.0 == sums).expect("from list").1;
+        let (status, body) = get(c, url, None)?;
+        if !(200..300).contains(&status) {
+            eprintln!("[envira] could not read {sums} (HTTP {status}); checksum not verified");
+            return Ok(());
+        }
+        let Some(want) = expected_sha256(asset, &String::from_utf8_lossy(&body)) else {
+            continue;
+        };
+        return matches_sha256(asset, sums, &want, data);
+    }
+    eprintln!("[envira] the release publishes no checksum for {asset}; not verified");
     Ok(())
 }
 
@@ -294,6 +391,43 @@ mod tests {
             b.append_data(&mut h, p, *d).unwrap();
         }
         b.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn finds_checksum_files_and_hashes() {
+        let names: Vec<String> = [
+            "lazygit_0.55.1_linux_x86_64.tar.gz",
+            "checksums.txt",
+            "checksums.txt.sig",
+            "bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz",
+            "bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz.sha256",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            checksum_assets("bat-v0.26.1-x86_64-unknown-linux-musl.tar.gz", &names),
+            vec![&names[4], &names[1]]
+        );
+        let a = "0".repeat(64);
+        let b = "Ab".repeat(32);
+        let list = format!("{a}  other.tar.gz\n{b} *lazygit_0.55.1_linux_x86_64.tar.gz\n");
+        assert_eq!(
+            expected_sha256("lazygit_0.55.1_linux_x86_64.tar.gz", &list),
+            Some(b.to_ascii_lowercase())
+        );
+        assert_eq!(expected_sha256("missing.tar.gz", &list), None);
+        assert_eq!(
+            expected_sha256("x.tar.gz", &format!("{a}\n")),
+            Some(a.clone())
+        );
+        assert_eq!(expected_sha256("x.tar.gz", "not a hash  x.tar.gz"), None);
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(sha256_hex(b"abc"), abc);
+        assert!(matches_sha256("x", "digest", abc, b"abc").is_ok());
+        let err = matches_sha256("x", "digest", abc, b"abd")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("checksum mismatch for x"), "{err}");
     }
 
     #[test]

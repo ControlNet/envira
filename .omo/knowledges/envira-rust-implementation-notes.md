@@ -75,6 +75,9 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   cancel the step; the TUI keeps winding down even when drawing fails after SIGHUP.
 - `flock` locks belong to the open file description: a second `open` + `flock(LOCK_NB)` in the same
   process conflicts, which makes the lock unit-testable without a second process.
+- GitHub's release API gives every asset uploaded since 2025 a `digest` (`sha256:<hex>`), so
+  release downloads can be verified even when the project publishes no checksum file (bat, fd).
+  goreleaser projects (lazygit) publish `checksums.txt` lines `<hex>  <asset>`.
 - Retry only transient HTTP failures. A 403 from GitHub is the rate limit; retrying spends more of it.
 - Safe end-to-end checks on the host: a throwaway catalog with raw `run` entries (`sleep`, `touch`)
   plus `HOME`, `ENVIRA_STATE_DIR`, `ENVIRA_CONFIG_DIR` in a scratch dir and `ENVIRA_PRIVILEGE=none`;
