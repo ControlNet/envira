@@ -82,4 +82,48 @@ import json, sys
 s = {i["id"]: i for i in json.load(sys.stdin)}
 assert s["bun"]["ownership"] == "managed", s["bun"]'
 
+echo "=== recovery: lock, SIGTERM, retry and step timeout"
+# A throwaway catalog and state, so the managed shell files of the runs above stay untouched.
+export ENVIRA_STATE_DIR=$(mktemp -d) ENVIRA_CONFIG_DIR=$(mktemp -d)
+cat > /tmp/recovery.toml <<'TOML'
+[tools.slow]
+desc = "test only"
+category = "test"
+detect = { cmd = "test -f \"$HOME/slow-done\"" }
+install = [{ run = "echo begin; sleep ${SLOW:-600}; touch \"$HOME/slow-done\"" }]
+
+[tools.quick]
+desc = "test only"
+category = "test"
+detect = { cmd = "test -f \"$HOME/quick-done\"" }
+install = [{ run = "touch \"$HOME/quick-done\"" }]
+TOML
+r=(envira --no-overlay --catalog /tmp/recovery.toml)
+"${r[@]}" install -y slow quick > /tmp/first.txt 2>&1 &
+pid=$!
+for _ in $(seq 50); do grep -q begin /tmp/first.txt && break; sleep 0.2; done
+if "${r[@]}" install -y quick > /tmp/second.txt 2>&1; then echo 'a second run got past the lock'; exit 1; fi
+grep -q "another envira run is in progress" /tmp/second.txt
+kill -TERM "$pid"
+if wait "$pid"; then echo 'a terminated run exited 0'; exit 1; fi
+running() { # a process with exactly this command line exists (the image has no procps)
+  local c
+  for c in /proc/[0-9]*/cmdline; do
+    [ "$(tr '\0' ' ' < "$c" 2>/dev/null || true)" = "$1 " ] && return 0
+  done
+  return 1
+}
+if running 'sleep 600'; then echo 'the step outlived envira'; exit 1; fi
+"${r[@]}" log | tee /tmp/log.txt
+grep -Eq '^  cancelled +slow' /tmp/log.txt
+grep -Eq '^  skipped +quick' /tmp/log.txt
+"${r[@]}" log slow > /tmp/slow.log
+grep -q '^# finished cancelled' /tmp/slow.log
+SLOW=0 "${r[@]}" retry -y -q | tee /tmp/retry.txt
+grep -q "2/2 succeeded" /tmp/retry.txt
+rm "$HOME/slow-done"
+out=$(ENVIRA_STEP_TIMEOUT=1 "${r[@]}" install -y -q slow) && { echo 'a hung step succeeded'; exit 1; }
+grep -q "timed out after" <<<"$out"
+unset ENVIRA_STATE_DIR ENVIRA_CONFIG_DIR
+
 echo "=== PASS (${ENVIRA_MODE:-sudo})"
