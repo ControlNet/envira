@@ -39,7 +39,8 @@ shell = { path = ["~/.opencode/bin"] }
 [configs.oh-my-opencode]
 desc = "oh-my-opencode plugin for opencode (no provider logins)"
 depends = ["opencode", "bun"]
-check = "grep -qs oh-my-opencode \"$HOME/.config/opencode/opencode.json\" \"$HOME/.config/opencode/opencode.jsonc\""
+# The plugin was renamed oh-my-openagent; the installer writes the new name.
+check = "grep -qsE 'oh-my-(opencode|openagent)' \"$HOME/.config/opencode/opencode.json\" \"$HOME/.config/opencode/opencode.jsonc\""
 apply = "bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no"
 
 [tools.openchamber]

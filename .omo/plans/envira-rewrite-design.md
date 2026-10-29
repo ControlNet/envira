@@ -369,8 +369,10 @@ Routes need the entry's dependencies present and, for system scope, sudo; otherw
 falling back to the detected version.
 
 **`[actions.<name>]`.** `desc`, `defaults`, `check` (exit 0 = in place), `apply`, optional `revert`.
-The library calls the `envira fs` primitives: `write`, `block`, `toml-set`, `ini-set`, `link` (each
-with `--check`) and `restore [--key K]`.
+The library calls the `envira fs` primitives: `write`, `block`, `toml-set`, `ini-set`, `line`, `link`
+(each with `--check`) and `restore [--key K]`. `line FILE --match RE --line TEXT [--after RE]`
+replaces the first line matching `RE`, or inserts after the first `--after` match (appends when
+there is none); the previous line is recorded under the key `RE` for `restore --key`.
 
 **`[tools.<id>]`.** `desc`, `category`, `bin` (default: id), `bins` (default: `[bin]`; used for
 `command -v` and portable copies), `detect = { cmd, version }` (default `{bin} --version` and a
@@ -383,7 +385,8 @@ generic version regex), `depends`, `when`, `shell = { path, env, alias, init = {
 `check` / `apply` / `revert`. Status = all checks pass. A step whose check passes is skipped on apply.
 Raw `apply` needs `check`, and a config without any check is rejected.
 
-**`[bundles.<id>]`.** `name`, `desc`, `items` (tool or config ids).
+**`[bundles.<id>]`.** `name`, `desc`, `items` (tool or config ids), `bundles` (other bundles included
+whole; flattened in order without duplicates, cycles rejected).
 
 **`when` predicates** (all must hold; `!` negates): `gpu`, `container`, `wsl`, `sudo`, `root`,
 `distro:<ID>`, `family:<ID or ID_LIKE>`, `arch:<arch>`, `shell:<name>`.
@@ -397,8 +400,8 @@ user scope on a sudo machine gets an extra step that copies its `bins` into the 
 **`envira catalog check`** rejects: unknown methods, actions, dependencies and bundle items; a dependency
 cycle (item and entry `depends` together); a missing template parameter; non-builtin placeholders in raw
 commands; invalid regexes or predicates; a tool without install entries; a config without any check.
-It warns about parameters that no template uses, about `expects` not covered by `depends`, and about
-duplicate ids.
+It warns about parameters that no template uses, about `expects` not covered by `depends` (directly or
+through dependencies of dependencies), and about duplicate ids.
 
 ### Format findings from porting the first 14 tools and 5 configs
 1. Vendor scripts edit rc files on their own. bun's installer appends to `~/.zshrc` unless
@@ -413,9 +416,9 @@ duplicate ids.
 5. Fresh images have no apt lists, so the apt template retries after `apt-get update`.
 6. Stateful vendor commands such as `ya pkg add` need a raw step with its own `check`, which the step
    form supports. Without it, re-applying a config would fail.
-7. Effective-value checks and file checks differ. The inotify config checks its own
-   `/etc/sysctl.d` file, so a legacy machine with the line in `/etc/sysctl.conf` shows "not applied" and
-   gets the managed file on sync. That is acceptable, but it is a choice made per config.
+7. Effective-value checks and file checks differ. The inotify config first used its own
+   `/etc/sysctl.d` file, so machines set up by run.sh (line in `/etc/sysctl.conf`) showed "not
+   applied". It now sets that line in `/etc/sysctl.conf` (`fs line`), plus the live value.
 8. Without a TTY, tools still open `/dev/tty`: `yazi --version` blocked inside the TUI. All commands now
    run in a new session (`setsid`), so they have no controlling terminal.
 9. Ownership comes from the method's `installed` query or the binary path. A tool built from source
@@ -436,15 +439,72 @@ duplicate ids.
 15. `latest` sources are per method where possible (crates.io, PyPI, npm registry, GitHub releases,
    `apt-cache policy`, `pacman -Si`); dnf and zypper only have `update` for now, as their query
    formats are unverified. apt and pacman answer from the local package lists (no network).
-16. Not modelled yet: the uninstall of tools (out of v1); prerequisites that are not catalog items,
-   such as `curl` for the `script` method; herdr has an updater (`herdr update`) but no latest source.
+16. Not modelled yet: the uninstall of tools (out of v1); herdr has an updater (`herdr update`) but
+   no latest source. `curl` is now an item: every entry that downloads with it depends on it, and the
+   `script` method expects it (lint).
+
+## Full catalog port (from run.sh / run_user.sh, 2026-10-29)
+The first catalog held 14 sample items. The user asked for the real software list, so every install,
+config and rc edit of `run.sh` (sudo) and `run_user.sh` (no sudo) is now an item. User decisions:
+category bundles plus `full` (= run.sh) and `user` (= run_user.sh); old or redundant tools in an
+opt-in `extras` bundle; `.zshrc` handled with single `line` edits plus envira's managed block; only
+static binaries are copied into `/usr/local/bin`.
+
+| Bundle | Items (from the legacy scripts) |
+|---|---|
+| `base` | git git-lfs curl wget zsh vim tmux screen build-tools python3 unzip p7zip xsel mosh nmap iperf3 iputils-ping net-tools pciutils openssh-server libfuse2 fontconfig apt-tools yay |
+| `shell` | oh-my-zsh, zsh-autosuggestions, zsh-syntax-highlighting, zsh-theme (mzz-ys + ZSH_DISABLE_COMPFIX), zsh-plugins, zsh-settings (DISABLE_UPDATE_PROMPT, TERM), default-shell (chsh), tmux-colors, git-settings (alias.lsd, credential.helper store) |
+| `toolchains` | rust-toolchain, cargo-binstall (+ BINSTALL_* env), cargo-cache, go (GOROOT ~/.go, GOPATH ~/go), fnm, libatomic, nodejs, npm-prefix (~/.npmrc prefix ~/.local), pm2, pipx, uv, pixi + pixi-config, bun |
+| `terminal` | bat + bat-link, ncdu, fzf, lazygit, zellij + zellij-config (fix_zellij_kdl.py), herdr, lsd, delta, duf, dust, fd, ripgrep (pcre2), gping, procs, xh, viu, rustscan, scc, gotify, zoxide, micro, superfile + superfile-config, yazi + yazi-theme, tldr, rich-cli, speedtest-cli, gdown, gh |
+| `editors` | neovim (~/.nvim), lemonade, texlab |
+| `ai-agents` | codex + codex-sandbox-network, antigravity (agy), cursor-agent (agent), claude, opencode, oh-my-opencode, openchamber, omp |
+| `monitoring` | btop, bottom, nvitop, nviwatch, bandwhich |
+| `containers` | docker, docker-service (Arch), docker-group, lazydocker, dive, ctop |
+| `data-science` | miniconda, conda-settings (changeps1), jupyter (TOS + jupyterlab), hf (+ hf_transfer) |
+| `secrets` | infisical (+ INFISICAL_* env, ienv init), ienv |
+| `system` | inotify-watches (`/etc/sysctl.conf` line + live value) |
+| `extras` | lunarvim, gedit, tigervnc, meslo-font, screenfetch, neofetch, fastfetch, archey4, genact |
+
+`full` nests every bundle except `extras`; `user` lists the run_user.sh items (no system packages,
+docker, ctop, bandwhich, chsh or inotify).
+
+**Modelling rules.**
+- Package lines become one item per user-visible command, with the package names run.sh uses per
+  family; a family run.sh does not cover gets no entry. Groups (build-tools, python3, apt-tools,
+  tigervnc) use an array `package`; the first package's version is reported.
+- System scope first, user fallback, as the two scripts do: bat/btop/ctop from GitHub releases,
+  ncdu's static build, neofetch from source, pipx via `pip --user`.
+- Vendor scripts are kept where run.sh uses them; every curl-using entry depends on `curl`.
+- Aliases, env and init lines that run.sh appended to `.zshrc` are `shell` fields of the tool, so
+  they render only while the tool is present.
+- Crates, Go modules and release binaries are `portable` (copied to `/usr/local/bin` with sudo);
+  pipx and npm tools stay in `~/.local/bin`.
+- Versions follow the latest release, except LunarVim (fixed branch), ncdu's static build (no
+  "latest" link) and neofetch (archived at 7.1.0).
+
+**Deliberate differences from run.sh.**
+| run.sh | catalog | Why |
+|---|---|---|
+| `goinstall.sh` (Go 1.25.5, edits rc files) | download the newest Go from go.dev into `~/.go` | the script pins a version and appends to rc files with no opt-out |
+| `curl https://sh.rustup.rs \| sh -s -- -y` | adds `--no-modify-path` | PATH comes from envira's env.sh |
+| `conda init zsh` | condabin on PATH + `conda shell.zsh hook` init | no rc edits |
+| fzf `install --all` | `--all --no-update-rc` + init sources `~/.fzf.zsh` | same |
+| pixi installer | `PIXI_NO_PATH_UPDATE=1` + `shell` | same |
+| bun/fnm rc lines | `SHELL=/bin/sh`, `--skip-shell` + `shell` | same |
+| `webi.sh/gh` | GitHub release `cli/cli` | webi edits rc files through envman |
+| `cargo install genact`, binstall for the rest | cargo method (binstall when present) for all crates | except ripgrep (pcre2) and yazi-build, built from source |
+| copies of rustup, cargo, go, gofmt to `/usr/local/bin` | not copied | proxies only work for the user whose `~/.rustup` / `~/.go` they read |
+| symlinks of pipx/npm tools (uv, gdown, tldr, hf, pm2, …) | none | user decision: static binaries only |
+| neovim symlinked from `/usr/local/bin` into `~/.nvim` | linked in `~/.local/bin` | a system path pointing into one user's home |
+| `sed` of the commented `# export PATH=…` line in .zshrc | not done | PATH comes from envira's env.sh |
+| `sudo update-pciids`, `cargo cache -a` | not done | refreshes and cleanups, not machine state |
+| pinned bat 0.26.1, btop 1.4.7, nvim 0.12.5, ctop 0.7.7 | latest | updates are handled by `envira update` |
 
 ## Legacy script parity (long-term parallel maintenance)
-CI check (`tests/legacy_parity.rs` or a small script) that:
-- collects command names from `verify.sh` `check_cmd` / `check_optional_cmd` lines;
-- collects detect binaries from the catalog;
-- fails on any difference not listed in `catalog/legacy-parity-allow.toml` (with a reason per entry).
-This is a drift alarm, not a translator; both sides stay hand-written.
+The unit test `catalog::load::tests::catalog_covers_verify_sh` parses `verify.sh` (`check_cmd`,
+`check_optional_cmd`, `check_any_cmd`) and fails when a checked command is not in any tool's `bins`.
+It also fails when an item is in neither `full` nor `extras`, or `user` has an item outside them.
+This is a drift alarm, not a translator; both sides stay hand-written. It found the missing `pm2`.
 
 ## Repo transition and release pipeline
 The old branch broke releases by deleting `release.yaml` without a replacement. Here:
@@ -494,7 +554,8 @@ tests/integration/ (Docker: run.sh, check.sh, Dockerfile.ubuntu)
 4. **M4 updates** (done): `latest` queries per method and entry with a cache, `update` in place along
    routes, `adopt`, outdated label / filter / `u` key in the TUI, background check on start.
 5. **M5 delivery**: remote catalog + cache + overlays, musl release CI + maturin wheels (see Repo
-   transition), Python package removal, `envira.sh` bootstrap, legacy parity check; port the remaining catalog.
+   transition), Python package removal, `envira.sh` bootstrap. (The full catalog port and the
+   legacy parity test were done early, see "Full catalog port".)
 
 ## Open questions
 - Is the `envira` crate name free on crates.io?

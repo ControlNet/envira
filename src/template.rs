@@ -252,8 +252,14 @@ pub fn envira_exe() -> String {
         return p;
     }
     std::env::current_exe()
-        .map(|p| p.display().to_string())
+        .map(|p| exe_path(&p.display().to_string()))
         .unwrap_or_else(|_| "envira".into())
+}
+
+/// Linux reports a binary replaced while running (an upgrade) as `<path> (deleted)`; the new
+/// binary is at `<path>`.
+fn exe_path(p: &str) -> String {
+    p.strip_suffix(" (deleted)").unwrap_or(p).to_string()
 }
 
 /// POSIX single-quote quoting; safe words are left bare for readable plans and logs.
@@ -341,6 +347,15 @@ pub fn unmet<'a>(when: &'a [String], facts: &Facts) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replaced_binary_resolves_to_its_path() {
+        assert_eq!(
+            exe_path("/usr/local/bin/envira (deleted)"),
+            "/usr/local/bin/envira"
+        );
+        assert_eq!(exe_path("/usr/local/bin/envira"), "/usr/local/bin/envira");
+    }
     use serde_json::json;
     use std::path::Path;
 

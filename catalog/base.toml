@@ -114,7 +114,7 @@ install = [
 [tools.p7zip]
 desc = "7-Zip archiver"
 bin = "7z"
-detect = { cmd = "7z i 2>&1 | grep -m1 '7-Zip'" }
+detect = { cmd = "7z i 2>&1 | grep '7-Zip'" }
 install = [
   { method = "apt", package = "p7zip-full" },
   { method = "pacman", package = "p7zip" },
@@ -167,7 +167,7 @@ install = [{ method = "apt", package = "iputils-ping" }]
 desc = "ifconfig, netstat, route"
 bin = "ifconfig"
 bins = ["ifconfig", "netstat"]
-detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" netstat --version 2>&1 | grep -m1 net-tools" }
+detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" netstat --version 2>&1 | grep net-tools" }
 install = [{ method = "apt", package = "net-tools" }]
 
 [tools.pciutils]

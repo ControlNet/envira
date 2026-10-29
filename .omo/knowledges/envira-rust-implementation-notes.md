@@ -1,4 +1,4 @@
-# envira Rust implementation notes (feature/rust-cli, M1–M3)
+# envira Rust implementation notes (feature/rust-cli, M1–M4 and the full catalog)
 
 Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rewrite-design.md`.
 
@@ -33,6 +33,30 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - Never re-plan an update with the machine's scope preference: a `~/.local/bin` tool on a sudo
   machine would be "updated" into `/usr/local/bin` and leave two copies. Use the route.
 - Run captures in `$HOME`; the launch directory's `rust-toolchain.toml` changed `rustc --version`.
+
+## Full catalog port (2026-10-29)
+- The catalog must follow `run.sh` / `run_user.sh` item by item; a sample catalog was rejected as
+  "the wrong software list". `catalog_covers_verify_sh` (unit test) keeps verify.sh and the catalog
+  in sync and found the missing `pm2`. Bundle `full` = run.sh, `user` = run_user.sh, `extras` = old tools.
+- Detect commands that do not use `--version`: `dolt version`, `gotify version`, `hf version`,
+  `screen -v` (non-zero exit on some versions), `tmux -V`, `7z i`, `ping -V`, `ctop -v`.
+- Under `bash -eo pipefail`, `cmd | grep -m1 x` (or `| head`) fails with SIGPIPE when `cmd` keeps
+  writing after grep exits: `7z i | grep -m1 7-Zip` reported p7zip as not installed. Use plain grep.
+- Release asset names change: lazygit went from `lazygit_<v>_Linux_x86_64.tar.gz` to
+  `..._linux_x86_64.tar.gz` (run.sh still has the old URL). Asset params take a list of globs.
+- oh-my-opencode's installer now writes the plugin as `oh-my-openagent@latest` in
+  `~/.config/opencode/opencode.json`.
+- oh-my-zsh's installer replaces `~/.zshrc` with its template; envira edits single lines
+  (`fs line`) and the managed block is re-added after every sync.
+- GitHub API: 60 requests/hour per IP without a token. Two parallel full syncs in local containers
+  used it up within ~15 minutes; vendor scripts (superfile) then download `…-v-…` and fail
+  oddly. Run full syncs in CI (`.github/workflows/rust.yaml`, job token passed as GITHUB_TOKEN) or
+  with a read-only token; never pass the broad `gh` login token into containers that run vendor scripts.
+- Do not rebuild `target/release/envira` while a container that bind-mounts it is running: the
+  mount keeps the old inode, `current_exe()` becomes `/usr/local/bin/envira (deleted)` and every
+  `{envira} fs …` step fails with 127. envira now strips the ` (deleted)` suffix.
+- Go: ControlNet/golang-tools-install-script pins a version and edits rc files with no opt-out, so
+  the catalog downloads `https://go.dev/VERSION?m=text` → `go.dev/dl/<v>.linux-<arch>.tar.gz`.
 
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
