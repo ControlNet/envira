@@ -1714,10 +1714,8 @@ mod tests {
         )];
         let s = render(&a, 100, 30);
         let first = s.lines().next().unwrap();
-        assert!(
-            first.starts_with("envira 0.1.0 · workstation · "),
-            "{first}"
-        );
+        let start = format!("envira {} · workstation · ", env!("CARGO_PKG_VERSION"));
+        assert!(first.starts_with(&start), "{first}");
         assert!(
             first.contains("…") && first.ends_with("(1 files)"),
             "{first}"

@@ -309,6 +309,9 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32>
         rec.started,
         match &rec.finished {
             Some(f) => format!(" · finished {f}"),
+            None if state::RunLock::acquire(&sess.paths, &sess.facts).is_err() => {
+                " · still running".into()
+            }
             None => " · did not finish (envira was stopped or killed)".into(),
         }
     );

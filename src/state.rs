@@ -455,7 +455,17 @@ mod tests {
         let err = format!("{:#}", RunLock::acquire(&paths, &facts).unwrap_err());
         assert!(err.contains("another envira run"), "{err}");
         drop(held);
-        assert!(RunLock::acquire(&paths, &facts).is_ok());
+        // Tests running in parallel fork children; between fork and exec a child briefly holds
+        // a copy of the descriptor (O_CLOEXEC closes it only at exec), so allow a short wait.
+        let free = (0..50).any(|_| {
+            RunLock::acquire(&paths, &facts).is_ok()
+                || (
+                    std::thread::sleep(std::time::Duration::from_millis(10)),
+                    false,
+                )
+                    .1
+        });
+        assert!(free, "lock still held after drop");
     }
 
     #[test]
