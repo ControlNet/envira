@@ -1,0 +1,62 @@
+name: Rust CLI
+
+on:
+  push:
+    branches-ignore:
+      - main
+    paths:
+      - 'src/**'
+      - 'catalog/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'tests/integration/**'
+      - 'verify.sh'
+      - '.github/workflows/rust.yaml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'catalog/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'tests/integration/**'
+      - 'verify.sh'
+      - '.github/workflows/rust.yaml'
+  workflow_dispatch:
+
+# The job token only needs to read; it is passed into the test containers to raise the
+# GitHub API rate limit of release downloads and latest-version queries.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt, clippy, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  integration:
+    name: ${{ matrix.suite }} ${{ matrix.mode }}
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [check, full]
+        mode: [sudo, user]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the ${{ matrix.suite }} suite in a container
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUITE: ${{ matrix.suite }}
+          MODES: ${{ matrix.mode }}
+        run: tests/integration/run.sh
