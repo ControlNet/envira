@@ -199,6 +199,17 @@ Ownership:
 - `state.toml`: selected bundles, explicit `include` / `exclude`, `seen` tool ids, and per tool
   `{method, version, installed_at, last_result}`. Written atomically after every unit.
 - `logs/<run-id>/<tool>.log` plus `logs/<run-id>/run.toml` (plan + per-unit outcome). Keep last N runs.
+  The logs directory is 0700. Each unit log starts with `# envira <v> · run <id> (<command>) ·
+  <machine>` and `# started <time>`, prefixes every line with `HH:MM:SS`, and ends with
+  `# finished <outcome>[: detail] in <duration>`. Values of secret-looking environment variables
+  (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, ...; 8+ chars) are replaced by `***` in logs and
+  the TUI. `run.toml` lists every planned unit as `pending` before the first step and records the
+  envira version and machine summary.
+- `lock`: `flock` held for the length of a run (sync, install, update, retry, config, adopt, TUI
+  runs). A second run fails at once with "another envira run is in progress". `envira fs` and
+  `fetch-release`, which steps invoke, never take it.
+- A `state.toml` that does not parse is moved to `state.toml.broken-<time>` with an error that says
+  so; the next start begins fresh. Writes are fsync'd before the atomic rename.
 - Desired set = expand(bundles) + include - exclude, filtered by `when` / feasibility.
 - First run on a machine without state (including legacy-provisioned ones): detect everything,
   ask for bundles (TUI picker or `--bundle`), mark the whole catalog as seen.
@@ -218,9 +229,17 @@ Ownership:
    `ENVIRA_TMP` = per-unit temp dir (deleted afterwards). Downloads go to temp, then atomic move.
 7. Post-condition: re-run detect; a unit succeeds only if the tool is now detected.
 8. Failure: mark `Failed`, mark dependents `Blocked`, continue with independent units.
+   A step running longer than the step timeout (30 min; `--step-timeout` / `ENVIRA_STEP_TIMEOUT`)
+   is cancelled like `c` and fails with "timed out after ...". Release downloads and latest
+   queries retry connection errors, timeouts, 429 and 5xx with backoff (3 tries from 2 s for
+   downloads, 2 tries for queries; `Retry-After` up to 30 s); 403/404 are never retried.
 9. Regenerate the managed shell environment from the resulting state.
-10. Crash or Ctrl-C mid-run: state is per-unit, so the next run simply re-detects and replans.
-    `envira retry` replans the failed + blocked set of the last run.
+10. Crash, Ctrl-C, SIGTERM or SIGHUP mid-run: state is per-unit and `state.last_run` points at the
+    run from its start. Ctrl-C stops after the current step (twice cancels it); SIGTERM/SIGHUP
+    cancel the current step and stop, in the CLI and the TUI, so no installer outlives envira.
+    `envira retry` (TUI: `r` on the summary, `t` on the dashboard) replans everything the last run
+    did not finish: failed, blocked, cancelled, skipped after a stop, and `pending` units of a run
+    that died.
 
 ## Managed shell environment
 Tools never append to rc files. Catalog `shell` fields (`path`, `env`, `alias`, `init.{bash,zsh}`)
@@ -252,17 +271,19 @@ envira                      # TUI on a terminal, `status` otherwise
 envira status [--json] [--latest [--refresh]]   # latest versions: cached 6 h, network only with --latest
 envira sync   [--bundle B]... [-y] [--dry-run] [-q]
 envira install <item|bundle>... [--force] [-y] [--dry-run] [-q]
-envira retry  [-y]          # failed + blocked units of the last run
+envira retry  [-y]          # every unit the last run did not finish
 envira config apply|revert <config>... [-y]
 envira plan   [<item|bundle>...] [--script]
 envira env                  # regenerate shell files and rc blocks only
 envira log    [<item>] [--run <id>]
+envira explain <item>       # detect/check commands with exit codes and output, ownership,
+                            # last result, and what (re)installing would run
 envira doctor               # facts, PATH, rc integration and duplicates, catalog layers
 envira catalog check|schema|show
 envira update [<item|bundle>...] [--check] [--refresh | --offline] [-y] [--dry-run] [-q]
                             # no items: every outdated managed/adoptable tool
 envira adopt  [<item|bundle>...] [--dry-run]   # record adoptable tools as managed, no reinstall
-Global: --catalog <path>, --no-overlay, --scope user|system
+Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <seconds>
 Hidden, used by templates: envira fs ..., envira fetch-release ...
 ```
 Headless commands are the same engine as the TUI; `sync -y --bundle full` is the Docker / CI path.

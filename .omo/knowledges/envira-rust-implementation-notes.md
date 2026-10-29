@@ -64,6 +64,23 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - Go: ControlNet/golang-tools-install-script pins a version and edits rc files with no opt-out, so
   the catalog downloads `https://go.dev/VERSION?m=text` → `go.dev/dl/<v>.linux-<arch>.tar.gz`.
 
+## Recovery, tracing and safety (2026-10-29)
+- `cargo test` and `cargo clippy` do not rebuild `target/debug/envira`; a manual end-to-end check
+  after them runs the old binary (a SIGTERM test "failed" that way). Run `cargo build` first.
+- A stopped run used to leave its never-started units out of `retry` (only failed/blocked/cancelled
+  counted), and a killed run never set `state.last_run`. Records now list every unit as `pending`
+  first and state points at the run from its start.
+- Steps run in their own session (setsid), so a SIGTERM/SIGHUP that kills envira with the default
+  action leaves the installer running orphaned. Both the CLI and the TUI handle the signals and
+  cancel the step; the TUI keeps winding down even when drawing fails after SIGHUP.
+- `flock` locks belong to the open file description: a second `open` + `flock(LOCK_NB)` in the same
+  process conflicts, which makes the lock unit-testable without a second process.
+- Retry only transient HTTP failures. A 403 from GitHub is the rate limit; retrying spends more of it.
+- Safe end-to-end checks on the host: a throwaway catalog with raw `run` entries (`sleep`, `touch`)
+  plus `HOME`, `ENVIRA_STATE_DIR`, `ENVIRA_CONFIG_DIR` in a scratch dir and `ENVIRA_PRIVILEGE=none`;
+  `shell_env` regeneration then writes rc blocks into the scratch home, not the real one.
+- ratatui: `Line::styled` puts the style on the line (`line.style`), not on its spans.
+
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
 - reqwest 0.13: TLS feature is `rustls` (not `rustls-tls`); `default-features = false, features = ["blocking", "json", "rustls"]`.
