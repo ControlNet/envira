@@ -179,7 +179,11 @@ impl Runner for RealRunner {
     fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe> {
         Box::pin(async move {
             let mut c = self.command(cmd);
-            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+            // Detection must not depend on where envira was started (rust-toolchain.toml,
+            // .nvmrc and similar files change what `rustc` / `node` report).
+            c.current_dir(&self.env.home)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             let child = match c.spawn() {
                 Ok(ch) => ch,
                 Err(e) => {
@@ -417,6 +421,13 @@ mod tests {
             .await;
         assert_ne!(p.code, 0, "{}", p.output);
         assert!(!p.output.contains("has-tty"));
+    }
+
+    #[tokio::test]
+    async fn capture_runs_in_home() {
+        let r = runner();
+        let p = r.capture("pwd", Duration::from_secs(5)).await;
+        assert_eq!(p.output.trim(), r.env.home.display().to_string());
     }
 
     #[tokio::test]

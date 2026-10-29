@@ -10,7 +10,9 @@ use serde::Serialize;
 use crate::catalog::Catalog;
 use crate::facts::Facts;
 use crate::latest::Latest;
-use crate::plan::{Kind, Planner, Route, bin_dir, config_steps, detect_cmd, path_route, route_for};
+use crate::plan::{
+    Kind, Planner, Route, UpdateTarget, bin_dir, config_steps, detect_cmd, path_route, route_for,
+};
 use crate::runner::Runner;
 use crate::state::{LastResult, Scope, State};
 use crate::template::{Ctx, Vars, shell_quote, unmet};
@@ -111,6 +113,46 @@ pub struct ItemStatus {
     /// Why the item cannot be installed here.
     pub reason: Option<String>,
     pub last_error: Option<String>,
+}
+
+impl ItemStatus {
+    /// Why a present item is not updated, or the update target for it.
+    pub fn update_target(&self, explicit: bool) -> Result<UpdateTarget, String> {
+        let i = self;
+        if i.kind != Kind::Tool {
+            return Err("configs are applied, not updated".into());
+        }
+        if !i.present {
+            return Err("not installed (use `envira install`)".into());
+        }
+        let Some(route) = i.route.clone() else {
+            return Err(format!(
+                "installed outside envira's reach{}",
+                i.path
+                    .as_deref()
+                    .map(|p| format!(" ({p})"))
+                    .unwrap_or_default()
+            ));
+        };
+        let current = i
+            .method_version
+            .as_deref()
+            .or(i.version.as_deref())
+            .unwrap_or("?");
+        let reason = match (&i.latest, i.label) {
+            (Some(l), Label::Outdated) => format!("{current} → {l}"),
+            (Some(l), _) if explicit => return Err(format!("up to date ({current}, latest {l})")),
+            (Some(_), _) => return Err("up to date".into()),
+            (None, _) if explicit => format!("{current} → latest (unknown)"),
+            (None, _) => return Err("latest version unknown".into()),
+        };
+        Ok(UpdateTarget {
+            id: i.id.clone(),
+            route,
+            reason,
+            expect: i.latest.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]

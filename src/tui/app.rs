@@ -1,6 +1,6 @@
 //! TUI state and key handling. Pure logic: side effects are returned as `Cmd`s for the runtime.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,8 @@ use tokio::sync::watch;
 use crate::catalog::{Catalog, Loaded};
 use crate::exec::{Control, Event, Outcome};
 use crate::facts::Facts;
-use crate::plan::{Plan, Planner};
+use crate::latest::{Fetch, Latest};
+use crate::plan::{Plan, Planner, UpdateTarget};
 use crate::state::{Paths, RunRecord, State};
 use crate::status::{ItemStatus, Label, Snapshot};
 
@@ -27,6 +28,7 @@ pub enum Screen {
 pub enum Filter {
     All,
     Attention,
+    Outdated,
     Missing,
     New,
     Failed,
@@ -34,9 +36,10 @@ pub enum Filter {
 }
 
 impl Filter {
-    pub const ALL: [Filter; 6] = [
+    pub const ALL: [Filter; 7] = [
         Filter::All,
         Filter::Attention,
+        Filter::Outdated,
         Filter::Missing,
         Filter::New,
         Filter::Failed,
@@ -47,6 +50,7 @@ impl Filter {
         match self {
             Filter::All => "All",
             Filter::Attention => "Attention",
+            Filter::Outdated => "Outdated",
             Filter::Missing => "Missing",
             Filter::New => "New",
             Filter::Failed => "Failed",
@@ -59,8 +63,9 @@ impl Filter {
             Filter::All => true,
             Filter::Attention => matches!(
                 i.label,
-                Label::Missing | Label::New | Label::Failed | Label::Drifted
+                Label::Missing | Label::New | Label::Failed | Label::Drifted | Label::Outdated
             ),
+            Filter::Outdated => i.label == Label::Outdated,
             Filter::Missing => i.label == Label::Missing,
             Filter::New => i.label == Label::New,
             Filter::Failed => matches!(i.label, Label::Failed | Label::Drifted),
@@ -80,8 +85,8 @@ pub enum DetailTab {
 #[derive(Debug)]
 pub enum Cmd {
     Quit,
-    /// Re-detect everything.
-    Refresh,
+    /// Re-detect everything; latest versions per the fetch mode.
+    Refresh(Fetch),
     /// Re-read catalog layers, then refresh.
     Reload,
     SaveState,
@@ -168,6 +173,8 @@ pub struct App {
     pub state: Option<State>,
     pub snap: Option<Snapshot>,
     pub detecting: bool,
+    /// A latest-version check is running in the background.
+    pub checking_latest: bool,
     pub screen: Screen,
     pub focus: usize,
     pub cursor: usize,
@@ -205,6 +212,7 @@ impl App {
             state: None,
             snap: None,
             detecting: true,
+            checking_latest: false,
             screen: Screen::Loading,
             focus: 4,
             cursor: 0,
@@ -307,6 +315,56 @@ impl App {
         let mut p = Planner::new(&self.catalog, &self.facts, &present);
         p.prefer_system = self.prefer_system;
         p.plan(targets, false)
+    }
+
+    pub fn make_update_plan(&self, targets: &[UpdateTarget]) -> Plan {
+        let present = self.present();
+        let mut p = Planner::new(&self.catalog, &self.facts, &present);
+        p.prefer_system = self.prefer_system;
+        p.update(targets)
+    }
+
+    /// Update targets: the selected tools (explicit), else every outdated tool; plus why
+    /// selected ones were left out, and a plan title.
+    fn update_targets(&self) -> (Vec<UpdateTarget>, Vec<(String, String)>, String) {
+        let Some(snap) = &self.snap else {
+            return (vec![], vec![], String::new());
+        };
+        let (mut targets, mut skipped) = (Vec::new(), Vec::new());
+        if self.selected.is_empty() {
+            for id in snap.outdated() {
+                if let Some(Ok(t)) = snap.get(&id).map(|i| i.update_target(false)) {
+                    targets.push(t);
+                }
+            }
+            let n = targets.len();
+            return (targets, skipped, format!("update · {n} outdated"));
+        }
+        for id in self.targets() {
+            match snap.get(&id).map(|i| i.update_target(true)) {
+                Some(Ok(t)) => targets.push(t),
+                Some(Err(why)) => skipped.push((id, why)),
+                None => {}
+            }
+        }
+        let n = self.selected.len();
+        (targets, skipped, format!("update · from {n} selected"))
+    }
+
+    /// Latest-version answers from the background check.
+    pub fn on_latest(&mut self, answers: BTreeMap<String, Latest>) {
+        self.checking_latest = false;
+        if let Some(snap) = &mut self.snap {
+            snap.apply_latest(&answers);
+            let n = snap.outdated().len();
+            if n > 0 {
+                self.notify(format!(
+                    "{n} {} · u updates",
+                    super::ui::plural(n, "update", "updates")
+                ));
+            }
+        }
+        self.clamp();
     }
 
     fn make_revert(&self, targets: &[String]) -> Plan {
@@ -412,7 +470,7 @@ impl App {
                 st.mark_all_seen(&self.catalog);
                 self.state = Some(st);
                 self.screen = Screen::Dashboard;
-                let cmds = vec![Cmd::SaveState, Cmd::Refresh];
+                let cmds = vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
                 if k.code == KeyCode::Enter {
                     let targets = self.picker_targets();
                     let plan = self.make_plan(&targets);
@@ -499,7 +557,28 @@ impl App {
             }
             KeyCode::Char('R') => {
                 self.detecting = true;
-                return vec![Cmd::Refresh];
+                self.checking_latest = true;
+                return vec![Cmd::Refresh(Fetch::Force)];
+            }
+            KeyCode::Char('u') => {
+                let (targets, skipped, what) = self.update_targets();
+                if targets.is_empty() {
+                    let why = skipped
+                        .first()
+                        .map(|(id, w)| format!("{id}: {w}"))
+                        .unwrap_or_else(|| {
+                            if self.checking_latest {
+                                "Checking for updates…".into()
+                            } else {
+                                "Nothing is outdated (R checks again)".into()
+                            }
+                        });
+                    self.notify(why);
+                } else {
+                    let mut plan = self.make_update_plan(&targets);
+                    plan.skipped.extend(skipped);
+                    self.open_plan(plan, what);
+                }
             }
             KeyCode::Char('r') => {
                 self.detecting = true;
@@ -617,7 +696,7 @@ impl App {
                             self.catalog.bundle_name(b)
                         ));
                     }
-                    return vec![Cmd::SaveState, Cmd::Refresh];
+                    return vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
                 }
             }
             KeyCode::Enter => {
@@ -749,7 +828,7 @@ impl App {
                 self.run = None;
                 self.screen = Screen::Dashboard;
                 self.detecting = true;
-                return vec![Cmd::Refresh];
+                return vec![Cmd::Refresh(Fetch::IfStale)];
             }
             KeyCode::Char('q') if finished => return vec![Cmd::Quit],
             _ => {}
@@ -932,6 +1011,47 @@ pub mod tests {
     }
 
     #[test]
+    fn latest_answers_mark_outdated_and_u_updates_them() {
+        let mut a = app();
+        a.checking_latest = true;
+        a.on_key(key(KeyCode::Char('u')));
+        assert_eq!(a.toast_text(), Some("Checking for updates…"));
+        a.on_latest(BTreeMap::from([
+            (
+                "rust-toolchain".to_string(),
+                Latest::Version("2.0.0".into()),
+            ),
+            ("yazi".to_string(), Latest::Version("1.0.0".into())),
+        ]));
+        assert!(!a.checking_latest);
+        assert_eq!(a.toast_text(), Some("1 update · u updates"));
+        a.filter = Filter::Outdated;
+        let rows: Vec<&str> = a.rows().iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(rows, vec!["rust-toolchain"]);
+        a.on_key(key(KeyCode::Char('u')));
+        assert_eq!(a.screen, Screen::Plan);
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert_eq!(title, "update · 1 outdated");
+        assert_eq!(plan.units[0].action, crate::plan::Action::Update);
+        assert_eq!(plan.units[0].steps[0].cmd.as_deref(), Some("rustup update"));
+        assert_eq!(plan.units[0].reason, "1.0.0 → 2.0.0");
+        let cmds = a.on_key(key(KeyCode::Enter));
+        assert!(matches!(&cmds[..], [Cmd::StartRun { command, .. }] if command == "update"));
+    }
+
+    #[test]
+    fn u_on_a_selection_explains_skips() {
+        let mut a = app();
+        a.selected.insert("codex".into());
+        a.on_key(key(KeyCode::Char('u')));
+        assert_eq!(a.screen, Screen::Dashboard);
+        assert_eq!(
+            a.toast_text(),
+            Some("codex: not installed (use `envira install`)")
+        );
+    }
+
+    #[test]
     fn run_events_and_retry() {
         let mut a = app();
         let plan = a.make_plan(&["codex".into()]);
@@ -968,7 +1088,7 @@ pub mod tests {
         a.on_key(key(KeyCode::Char('2')));
         let first = a.bundle_ids()[0].clone();
         let cmds = a.on_key(key(KeyCode::Char(' ')));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh]));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
         assert!(a.subscribed(&first));
     }
 
@@ -984,7 +1104,7 @@ pub mod tests {
         a.picker.insert("ai-agents".into());
         assert_eq!(a.picker_targets(), vec!["codex", "codex-sandbox-network"]);
         let cmds = a.on_key(key(KeyCode::Enter));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh]));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
         assert_eq!(a.state.as_ref().unwrap().bundles, vec!["ai-agents"]);
         assert_eq!(a.screen, Screen::Plan);
     }

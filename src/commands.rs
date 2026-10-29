@@ -12,8 +12,8 @@ use crate::cli::{CatalogCmd, FsCmd, Global, RunOpts};
 use crate::exec::{self, Control, Event, ExecCtx, Outcome};
 use crate::fs;
 use crate::latest::Fetch;
+use crate::plan::Route;
 use crate::plan::{Plan, as_script};
-use crate::plan::{Route, UpdateTarget};
 use crate::shellenv;
 use crate::state::ToolRecord;
 use crate::state::{self, Paths, RunRecord, State};
@@ -86,7 +86,7 @@ fn print_items(snap: &Snapshot) {
             "  {} {:<24} {:<12} {:<10} {:<15} {}",
             i.label.glyph(),
             i.id,
-            match (i.kind, &i.version) {
+            match (i.kind, i.method_version.as_ref().or(i.version.as_ref())) {
                 (crate::plan::Kind::Config, _) => "",
                 (_, Some(v)) => v.as_str(),
                 (_, None) if i.present => "?",
@@ -357,43 +357,6 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
     run_plan(sess, plan, state.unwrap_or_default(), "install", opts).await
 }
 
-/// Why a present item is not updated, or the update target for it.
-fn update_target(i: &ItemStatus, explicit: bool) -> Result<UpdateTarget, String> {
-    if i.kind != crate::plan::Kind::Tool {
-        return Err("configs are applied, not updated".into());
-    }
-    if !i.present {
-        return Err("not installed (use `envira install`)".into());
-    }
-    let Some(route) = i.route.clone() else {
-        return Err(format!(
-            "installed outside envira's reach{}",
-            i.path
-                .as_deref()
-                .map(|p| format!(" ({p})"))
-                .unwrap_or_default()
-        ));
-    };
-    let current = i
-        .method_version
-        .as_deref()
-        .or(i.version.as_deref())
-        .unwrap_or("?");
-    let reason = match (&i.latest, i.label) {
-        (Some(l), Label::Outdated) => format!("{current} → {l}"),
-        (Some(l), _) if explicit => return Err(format!("up to date ({current}, latest {l})")),
-        (Some(_), _) => return Err("up to date".into()),
-        (None, _) if explicit => format!("{current} → latest (unknown)"),
-        (None, _) => return Err("latest version unknown".into()),
-    };
-    Ok(UpdateTarget {
-        id: i.id.clone(),
-        route,
-        reason,
-        expect: i.latest.clone(),
-    })
-}
-
 pub async fn update(
     sess: &Session,
     items: &[String],
@@ -422,7 +385,7 @@ pub async fn update(
     let mut skipped = Vec::new();
     for id in &ids {
         let Some(i) = snap.get(id) else { continue };
-        match update_target(i, explicit) {
+        match i.update_target(explicit) {
             Ok(t) => targets.push(t),
             Err(why) if explicit => skipped.push((id.clone(), why)),
             Err(_) => {}

@@ -210,6 +210,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         &[
             ("Sync", "s"),
+            ("Update", "u"),
             ("Install", "i"),
             ("Select", "space"),
             ("Filter", "/ f"),
@@ -237,7 +238,8 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .filter(|i| matches!(i.label, Label::Failed | Label::Drifted))
         .map(|i| i.id.as_str())
         .collect();
-    let na = snap.count(|i| i.label == Label::NotApplicable);
+    let outdated = snap.count(|i| i.label == Label::Outdated);
+    let updatable = snap.count(|i| i.route.is_some());
     let cols = columns(inner, 4);
     let cells: [(Line, Line); 4] = [
         (
@@ -275,8 +277,19 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ),
         ),
         (
-            stat(t, na, t.dim, "not for this machine".into()),
-            bar(t, cols[3].width, &[(na, t.dim)], snap.items.len()),
+            stat(
+                t,
+                outdated,
+                t.blue,
+                if app.checking_latest {
+                    format!("outdated · checking{}", ".".repeat(app.tick as usize % 4))
+                } else if outdated > 0 {
+                    "outdated · u updates".into()
+                } else {
+                    "outdated".into()
+                },
+            ),
+            bar(t, cols[3].width, &[(outdated, t.blue)], updatable.max(1)),
         ),
     ];
     for (c, (a, b)) in cols.iter().zip(cells) {
@@ -449,8 +462,17 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         0
     };
-    let head =
-        Row::new(["", "", "name", "version", "status", "via", "owner / note"]).style(t.s(t.dim));
+    let head = Row::new([
+        "",
+        "",
+        "name",
+        "version",
+        "latest",
+        "status",
+        "via",
+        "owner / note",
+    ])
+    .style(t.s(t.dim));
     let body: Vec<Row> = rows
         .iter()
         .enumerate()
@@ -472,10 +494,21 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 (_, Some(crate::status::Ownership::Adoptable)) => t.yellow,
                 _ => t.dim,
             };
-            let version = match (it.kind, &it.version) {
+            let version = match (it.kind, it.method_version.as_ref().or(it.version.as_ref())) {
                 (Kind::Config, _) => String::new(),
                 (_, Some(v)) => v.clone(),
                 _ => "—".into(),
+            };
+            let latest = match (&it.latest, it.present) {
+                (Some(l), true) => Span::styled(
+                    l.clone(),
+                    t.s(if it.label == Label::Outdated {
+                        t.blue
+                    } else {
+                        t.dim
+                    }),
+                ),
+                _ => Span::raw(""),
             };
             let row = Row::new(vec![
                 Cell::from(Span::styled(
@@ -495,6 +528,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                     }),
                 )),
                 Cell::from(version),
+                Cell::from(latest),
                 Cell::from(Span::styled(it.label.text(), t.s(label_color(t, it.label)))),
                 Cell::from(Span::styled(
                     it.via.clone().unwrap_or_else(|| "—".into()),
@@ -513,6 +547,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(22),
+        Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(9),
         Constraint::Length(14),
@@ -639,6 +674,33 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
             ),
         ]));
     }
+    if it.present && it.kind == Kind::Tool {
+        let mut spans = vec![Span::styled("latest ", t.s(t.dim))];
+        match (&it.latest, &it.latest_error, &it.route) {
+            (Some(l), _, _) => spans.push(Span::styled(
+                l.clone(),
+                t.s(if it.label == Label::Outdated {
+                    t.blue
+                } else {
+                    t.fg
+                }),
+            )),
+            (None, Some(e), _) => spans.push(Span::styled(format!("unknown ({e})"), t.s(t.yellow))),
+            (None, None, Some(_)) => spans.push(Span::styled("not checked", t.s(t.dim))),
+            (None, None, None) => {}
+        }
+        match &it.route {
+            Some(r) => spans.push(Span::styled(
+                format!("  · updates via {} ({})", r.via, r.scope),
+                t.s(t.dim),
+            )),
+            None => spans.push(Span::styled(
+                "  · not updated by envira (installed elsewhere)",
+                t.s(t.dim),
+            )),
+        }
+        lines.push(Line::from(spans));
+    }
     if let Some(r) = &it.reason {
         lines.push(Line::styled(
             format!("not for this machine: {r}"),
@@ -735,7 +797,7 @@ fn log_line<'a>(t: &Theme, l: &str) -> Line<'a> {
     }
 }
 
-fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 
@@ -1457,12 +1519,13 @@ fn help(f: &mut Frame, area: Rect, _app: &App, t: &Theme) {
         ("space", "select item · subscribe bundle in [2]"),
         ("a", "select everything missing in view"),
         ("s", "sync: install what your bundles miss"),
+        ("u", "update the selection, else all outdated"),
         ("i", "install / apply the selection"),
         ("x", "revert selected configs"),
         ("/  f", "search · cycle status filter"),
         ("← →", "detail tabs in [5]"),
         ("l", "log of the item"),
-        ("R  r", "re-detect · reload catalog"),
+        ("R  r", "re-detect + check updates · reload catalog"),
         ("esc", "clear search / selection"),
         ("q", "quit"),
     ];
@@ -1540,6 +1603,26 @@ mod tests {
         // Small terminals must not panic.
         render(&a, 80, 24);
         render(&a, 40, 10);
+    }
+
+    #[test]
+    fn outdated_tools_show_latest_and_glyph() {
+        let mut a = app();
+        a.on_latest(std::collections::BTreeMap::from([(
+            "rust-toolchain".to_string(),
+            crate::latest::Latest::Version("2.0.0".into()),
+        )]));
+        let s = render(&a, 140, 40);
+        let row = s
+            .lines()
+            .find(|l| l.contains("rust-toolchain"))
+            .unwrap_or_default();
+        assert!(
+            row.contains('↑') && row.contains("2.0.0") && row.contains("outdated"),
+            "{row}"
+        );
+        assert!(s.contains("latest") && s.contains("Update: u"), "{s}");
+        assert!(s.contains("outdated · u updates"), "{s}");
     }
 
     #[test]

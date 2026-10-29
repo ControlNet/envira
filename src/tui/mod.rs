@@ -5,6 +5,7 @@ pub mod app;
 pub mod theme;
 pub mod ui;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use tokio::task::JoinHandle;
 
 use crate::app::Session;
 use crate::exec::{self, Control, ExecCtx};
+use crate::latest::{self, Fetch, Latest};
 use crate::plan::Plan;
 use crate::state::{self, State};
 use crate::status::{self, Snapshot};
@@ -27,6 +29,7 @@ enum AppEvent {
     Term(TermEvent),
     Tick,
     Snapshot(Box<Snapshot>, Option<State>),
+    Latest(BTreeMap<String, Latest>),
     Exec(exec::Event),
     Error(String),
 }
@@ -50,7 +53,9 @@ fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
     })
 }
 
-fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>) {
+/// Detects everything and sends the snapshot (with cached latest versions), then checks latest
+/// versions per `fetch` and sends those answers.
+fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>, fetch: Fetch) {
     let (cat, facts, runner, paths) = (
         sess.catalog.clone(),
         sess.facts.clone(),
@@ -65,8 +70,28 @@ fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>) {
                 None
             }
         };
-        let snap = status::snapshot(&cat, &facts, state.as_ref(), runner.as_ref()).await;
-        let _ = tx.send(AppEvent::Snapshot(Box::new(snap), state));
+        let mut snap = status::snapshot(&cat, &facts, state.as_ref(), runner.as_ref()).await;
+        let mut cache = latest::Cache::load(&paths);
+        let cached = latest::check(
+            &cat,
+            &facts,
+            &snap,
+            runner.as_ref(),
+            &mut cache,
+            Fetch::CacheOnly,
+        )
+        .await;
+        snap.apply_latest(&cached);
+        let fresh = (fetch != Fetch::CacheOnly).then(|| snap.clone());
+        if tx.send(AppEvent::Snapshot(Box::new(snap), state)).is_err() {
+            return;
+        }
+        if let Some(snap) = fresh {
+            let answers =
+                latest::check(&cat, &facts, &snap, runner.as_ref(), &mut cache, fetch).await;
+            let _ = cache.save(&paths, &facts);
+            let _ = tx.send(AppEvent::Latest(answers));
+        }
     });
 }
 
@@ -85,7 +110,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
             }
         });
     }
-    spawn_detect(&sess, tx.clone());
+    spawn_detect(&sess, tx.clone(), Fetch::IfStale);
     let mut app = App::new(
         &sess.loaded,
         sess.catalog.clone(),
@@ -93,6 +118,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
         sess.paths.clone(),
         sess.prefer_system(),
     );
+    app.checking_latest = true;
     let mut keepalive: Option<JoinHandle<()>> = None;
 
     loop {
@@ -114,6 +140,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 AppEvent::Term(_) => {}
                 AppEvent::Tick => app.tick += 1,
                 AppEvent::Snapshot(s, st) => app.on_snapshot(*s, st),
+                AppEvent::Latest(a) => app.on_latest(a),
                 AppEvent::Exec(e) => {
                     if matches!(e, exec::Event::Finished(_))
                         && let Some(k) = keepalive.take()
@@ -131,16 +158,17 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
         for cmd in cmds {
             match cmd {
                 Cmd::Quit => return Ok(0),
-                Cmd::Refresh => {
+                Cmd::Refresh(fetch) => {
                     app.detecting = true;
-                    spawn_detect(&sess, tx.clone());
+                    app.checking_latest |= fetch != Fetch::CacheOnly;
+                    spawn_detect(&sess, tx.clone(), fetch);
                 }
                 Cmd::Reload => match sess.reload() {
                     Ok(()) => {
                         app.catalog = sess.catalog.clone();
                         app.loaded_layers = sess.loaded.layers.clone();
                         app.notify("Catalog reloaded");
-                        spawn_detect(&sess, tx.clone());
+                        spawn_detect(&sess, tx.clone(), Fetch::CacheOnly);
                     }
                     Err(e) => {
                         app.detecting = false;
