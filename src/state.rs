@@ -267,6 +267,9 @@ pub struct UnitRecord {
     pub via: String,
     pub outcome: String,
     pub detail: Option<String>,
+    /// What the failure output suggests, e.g. `(network): ...`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     pub seconds: f64,
 }
 
@@ -320,6 +323,7 @@ impl RunRecord {
                     via: u.via.clone(),
                     outcome: "pending".into(),
                     detail: None,
+                    hint: None,
                     seconds: 0.0,
                 })
                 .collect(),
@@ -507,6 +511,7 @@ mod tests {
                 via: "github-release".into(),
                 outcome: "failed".into(),
                 detail: None,
+                hint: None,
                 seconds: 1.0,
             });
             r.save(&paths, &facts).unwrap();

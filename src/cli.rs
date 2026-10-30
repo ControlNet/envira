@@ -30,6 +30,9 @@ pub struct Global {
         value_name = "SECONDS"
     )]
     pub step_timeout: Option<u64>,
+    /// Retries of a step that failed for a transient reason (network error, busy apt); default 2.
+    #[arg(long, global = true, env = "ENVIRA_RETRIES", value_name = "N")]
+    pub retries: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

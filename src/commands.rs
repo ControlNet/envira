@@ -328,6 +328,9 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32>
             u.seconds,
             u.detail.as_deref().unwrap_or("")
         );
+        if let Some(h) = &u.hint {
+            println!("            hint {h}");
+        }
     }
     println!("logs: {}", dir.display());
     Ok(0)

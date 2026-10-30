@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
 use crate::catalog::Catalog;
+use crate::diagnose::diagnose;
 use crate::facts::Facts;
 use crate::plan::{Action, Kind, Plan, Unit};
 use crate::runner::{Runner, StreamEnd};
@@ -22,6 +23,8 @@ use crate::status::{probe_config, probe_tool};
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default wall-clock limit of one step (source builds such as ripgrep or yazi take minutes).
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub const RETRIES: u32 = 2;
+pub const RETRY_DELAY: Duration = Duration::from_secs(5);
 const KEEP_RUNS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +95,10 @@ pub struct ExecCtx {
     pub shell_env: bool,
     /// A step still running after this long is stopped and fails.
     pub step_timeout: Duration,
+    /// Extra attempts for a step that failed for a transient reason (network, busy apt).
+    pub retries: u32,
+    /// Wait before the first retry; later ones wait longer.
+    pub retry_delay: Duration,
 }
 
 pub async fn execute(
@@ -118,10 +125,10 @@ pub async fn execute(
 
     for (idx, unit) in plan.units.iter().enumerate() {
         let started = Instant::now();
-        let outcome = if ctl.borrow().stop {
-            Outcome::Skipped
+        let (outcome, hint) = if ctl.borrow().stop {
+            (Outcome::Skipped, None)
         } else if let Some(d) = unit.deps.iter().find(|d| bad.contains(*d)) {
-            Outcome::Blocked(d.clone())
+            (Outcome::Blocked(d.clone()), None)
         } else {
             let _ = tx.send(Event::UnitStarted(idx));
             run_unit(idx, unit, &ctx, &tx, &mut ctl, &run_dir).await
@@ -137,6 +144,7 @@ pub async fn execute(
             via: unit.via.clone(),
             outcome: outcome.as_str().into(),
             detail: outcome.detail(),
+            hint: hint.filter(|_| !outcome.succeeded()),
             seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
         };
         if let Err(e) = state
@@ -172,18 +180,24 @@ async fn run_unit(
     tx: &mpsc::UnboundedSender<Event>,
     ctl: &mut watch::Receiver<Control>,
     run_dir: &std::path::Path,
-) -> Outcome {
+) -> (Outcome, Option<String>) {
     let log_path = run_dir.join(format!("{}.log", unit.id));
     let log = std::fs::File::create(&log_path).ok();
     if log.is_some() {
         state::chown_to_target(&log_path, &ctx.facts);
     }
     let log = Arc::new(std::sync::Mutex::new(log));
+    // The last diagnosis hint, kept for the run record.
+    let hint: Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let emit = {
         let log = log.clone();
+        let hint = hint.clone();
         let tx = tx.clone();
         move |line: String| {
             let line = redact(&line, secrets());
+            if let Some(h) = line.strip_prefix("[envira] hint ") {
+                *hint.lock().unwrap() = Some(h.to_string());
+            }
             if let Some(f) = log.lock().unwrap().as_mut() {
                 let _ = writeln!(f, "{} {line}", chrono::Local::now().format("%H:%M:%S"));
             }
@@ -215,7 +229,8 @@ async fn run_unit(
             crate::commands::fmt_duration(started.elapsed())
         );
     }
-    outcome
+    let hint = hint.lock().unwrap().clone();
+    (outcome, hint)
 }
 
 async fn run_steps<F>(
@@ -264,57 +279,59 @@ where
             continue;
         };
         emit(format!("$ {cmd}"));
-        let (ltx, mut lrx) = mpsc::unbounded_channel::<String>();
-        let (ctx_cancel, crx) = watch::channel(false);
-        let forward = {
-            let emit = emit.clone();
-            tokio::spawn(async move {
-                while let Some(l) = lrx.recv().await {
-                    emit(l);
-                }
-            })
-        };
-        let fut = ctx.runner.stream(cmd, tmp.path(), ltx, crx);
-        tokio::pin!(fut);
-        let deadline = tokio::time::sleep(ctx.step_timeout);
-        tokio::pin!(deadline);
-        let mut watching = true;
-        let mut timed_out = false;
-        let end = loop {
-            tokio::select! {
-                end = &mut fut => break end,
-                _ = &mut deadline, if !timed_out => {
-                    timed_out = true;
-                    let _ = ctx_cancel.send(true);
-                }
-                changed = ctl.changed(), if watching => {
-                    if changed.is_err() {
-                        watching = false;
-                    } else if ctl.borrow().cancel_seq != base_seq {
-                        let _ = ctx_cancel.send(true);
+        let mut attempt = 1;
+        loop {
+            let (end, timed_out, lines) =
+                attempt_step(cmd, tmp.path(), ctx, emit, ctl, base_seq).await;
+            match end {
+                StreamEnd::Exit(0) => break,
+                StreamEnd::Exit(code) => {
+                    emit(format!("[envira] {label} exited with code {code}"));
+                    let diag = diagnose(&lines);
+                    if let Some(d) = &diag {
+                        emit(format!("[envira] hint ({}): {}", d.kind, d.hint));
                     }
+                    let kind = diag.as_ref().map(|d| format!(" ({})", d.kind));
+                    if let Some(d) = diag.filter(|d| d.transient)
+                        && attempt <= ctx.retries
+                        && !ctl.borrow().stop
+                    {
+                        let wait = retry_wait(ctx.retry_delay, attempt, d.kind);
+                        emit(format!(
+                            "[envira] {label} failed ({}); retrying in {} (attempt {}/{})",
+                            d.kind,
+                            crate::commands::fmt_duration(wait),
+                            attempt + 1,
+                            ctx.retries + 1
+                        ));
+                        if !pause(wait, ctl, base_seq).await {
+                            emit("[envira] cancelled".into());
+                            return Outcome::Cancelled;
+                        }
+                        attempt += 1;
+                        continue;
+                    }
+                    return Outcome::Failed(format!(
+                        "{} exited with code {code}{}",
+                        step.label,
+                        kind.unwrap_or_default()
+                    ));
+                }
+                StreamEnd::Cancelled if timed_out => {
+                    let limit = crate::commands::fmt_duration(ctx.step_timeout);
+                    emit(format!(
+                        "[envira] {label} timed out after {limit}; stopped it"
+                    ));
+                    return Outcome::Failed(format!("{} timed out after {limit}", step.label));
+                }
+                StreamEnd::Cancelled => {
+                    emit("[envira] cancelled".into());
+                    return Outcome::Cancelled;
+                }
+                StreamEnd::SpawnError(e) => {
+                    return Outcome::Failed(format!("could not start: {e}"));
                 }
             }
-        };
-        let _ = forward.await;
-        match end {
-            StreamEnd::Exit(0) => {}
-            StreamEnd::Exit(code) => {
-                emit(format!("[envira] {label} exited with code {code}"));
-                return Outcome::Failed(format!("{} exited with code {code}", step.label));
-            }
-            StreamEnd::Cancelled if timed_out => {
-                let limit = crate::commands::fmt_duration(ctx.step_timeout);
-                emit(format!(
-                    "[envira] {label} timed out after {limit}; stopped it"
-                ));
-                return Outcome::Failed(format!("{} timed out after {limit}", step.label));
-            }
-            StreamEnd::Cancelled => {
-                emit("[envira] cancelled".into());
-                return Outcome::Cancelled;
-            }
-            StreamEnd::SpawnError(e) => return Outcome::Failed(format!("could not start: {e}")),
         }
     }
 
@@ -354,6 +371,94 @@ where
                 Outcome::Ok { version: None }
             } else {
                 Outcome::Failed("applied, but its check still fails".into())
+            }
+        }
+    }
+}
+
+/// Runs one attempt of a step: streams its output through `emit`, enforces the step timeout and
+/// cancels it on a new cancel request. Returns how it ended, whether it timed out, and its last
+/// output lines (for diagnosis).
+async fn attempt_step<F>(
+    cmd: &str,
+    dir: &std::path::Path,
+    ctx: &ExecCtx,
+    emit: &F,
+    ctl: &mut watch::Receiver<Control>,
+    base_seq: u32,
+) -> (StreamEnd, bool, Vec<String>)
+where
+    F: Fn(String) + Clone + Send + 'static,
+{
+    let (ltx, mut lrx) = mpsc::unbounded_channel::<String>();
+    let (ctx_cancel, crx) = watch::channel(false);
+    let forward = {
+        let emit = emit.clone();
+        tokio::spawn(async move {
+            let mut tail: std::collections::VecDeque<String> = Default::default();
+            while let Some(l) = lrx.recv().await {
+                if tail.len() == 200 {
+                    tail.pop_front();
+                }
+                tail.push_back(l.clone());
+                emit(l);
+            }
+            Vec::from(tail)
+        })
+    };
+    let fut = ctx.runner.stream(cmd, dir, ltx, crx);
+    tokio::pin!(fut);
+    let deadline = tokio::time::sleep(ctx.step_timeout);
+    tokio::pin!(deadline);
+    let mut watching = true;
+    let mut timed_out = false;
+    let end = loop {
+        tokio::select! {
+            end = &mut fut => break end,
+            _ = &mut deadline, if !timed_out => {
+                timed_out = true;
+                let _ = ctx_cancel.send(true);
+            }
+            changed = ctl.changed(), if watching => {
+                if changed.is_err() {
+                    watching = false;
+                } else if ctl.borrow().cancel_seq != base_seq {
+                    let _ = ctx_cancel.send(true);
+                }
+            }
+        }
+    };
+    let lines = forward.await.unwrap_or_default();
+    (end, timed_out, lines)
+}
+
+/// Wait before retry `attempt + 1`: `base`, then 3x longer each time; a busy package manager
+/// (unattended-upgrades) gets six times as long.
+fn retry_wait(base: Duration, attempt: u32, kind: &str) -> Duration {
+    let w = base * 3u32.pow(attempt - 1);
+    if kind == "package manager busy" {
+        w * 6
+    } else {
+        w
+    }
+}
+
+/// Sleeps unless the step is cancelled or the run stopped meanwhile; false when interrupted.
+async fn pause(d: Duration, ctl: &mut watch::Receiver<Control>, base_seq: u32) -> bool {
+    let sleep = tokio::time::sleep(d);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            _ = &mut sleep => return true,
+            changed = ctl.changed() => {
+                if changed.is_err() {
+                    (&mut sleep).await;
+                    return true;
+                }
+                let c = *ctl.borrow();
+                if c.stop || c.cancel_seq != base_seq {
+                    return false;
+                }
             }
         }
     }
@@ -511,6 +616,8 @@ mod tests {
             command: "test".into(),
             shell_env: false,
             step_timeout: STEP_TIMEOUT,
+            retries: RETRIES,
+            retry_delay: Duration::from_millis(5),
         };
         Setup {
             _dir: dir,
@@ -538,6 +645,8 @@ mod tests {
             command: "test".into(),
             shell_env: false,
             step_timeout: s.ctx.step_timeout,
+            retries: s.ctx.retries,
+            retry_delay: s.ctx.retry_delay,
         }
     }
 
@@ -672,6 +781,104 @@ mod tests {
                 .unwrap()
                 .starts_with("# finished ok: 0.3.1 in "),
             "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_failures_are_retried() {
+        let s = setup();
+        s.runner
+            .fail_then("herdr.dev", 1, "curl: (56) Connection reset by peer")
+            .rule("herdr.dev", 0, "installed")
+            .on_install("herdr.dev", "herdr --version", "herdr 0.3.1");
+        let (rec, _, events) = run(&s, plan(&s.ctx, &["herdr"])).await;
+        assert_eq!(outcomes(&rec), vec![("herdr", "ok")]);
+        let ran = s.runner.ran();
+        assert_eq!(ran.iter().filter(|c| c.contains("herdr.dev")).count(), 2);
+        let lines: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Line(_, l) => Some(l.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("[envira] hint (network)")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("retrying in") && l.contains("attempt 2/3")),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retries_are_bounded_and_only_for_transient_causes() {
+        let s = setup();
+        s.runner
+            .fail_then(
+                "herdr.dev",
+                9,
+                "curl: (7) Failed to connect: Connection refused",
+            )
+            .fail_then(
+                "bun.sh",
+                9,
+                "curl: (22) The requested URL returned error: 404",
+            );
+        let (rec, _, _) = run(&s, plan(&s.ctx, &["herdr", "bun"])).await;
+        assert_eq!(outcomes(&rec), vec![("herdr", "failed"), ("bun", "failed")]);
+        let ran = s.runner.ran();
+        assert_eq!(ran.iter().filter(|c| c.contains("herdr.dev")).count(), 3);
+        assert_eq!(ran.iter().filter(|c| c.contains("bun.sh")).count(), 1);
+        assert!(
+            rec.units[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .ends_with("(network)")
+        );
+        assert!(
+            rec.units[1]
+                .detail
+                .as_deref()
+                .unwrap()
+                .ends_with("(not found)")
+        );
+        assert!(
+            rec.units[1]
+                .hint
+                .as_deref()
+                .unwrap()
+                .starts_with("(not found): ")
+        );
+        assert!(
+            rec.units[0]
+                .hint
+                .as_deref()
+                .unwrap()
+                .starts_with("(network): ")
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_waits_end_on_stop() {
+        let (tx, mut rx) = watch::channel(Control::default());
+        let h = tokio::spawn(async move { pause(Duration::from_secs(30), &mut rx, 0).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tx.send_modify(|c| c.stop = true);
+        assert!(!h.await.unwrap());
+        assert_eq!(
+            retry_wait(Duration::from_secs(5), 2, "network"),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            retry_wait(Duration::from_secs(5), 1, "package manager busy"),
+            Duration::from_secs(30)
         );
     }
 

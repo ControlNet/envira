@@ -2,6 +2,7 @@ mod app;
 mod catalog;
 mod cli;
 mod commands;
+mod diagnose;
 mod exec;
 mod facts;
 mod fetch;

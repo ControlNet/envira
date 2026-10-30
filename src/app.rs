@@ -73,6 +73,8 @@ impl Session {
                 .step_timeout
                 .map(Duration::from_secs)
                 .unwrap_or(exec::STEP_TIMEOUT),
+            retries: self.global.retries.unwrap_or(exec::RETRIES),
+            retry_delay: exec::RETRY_DELAY,
         }
     }
 

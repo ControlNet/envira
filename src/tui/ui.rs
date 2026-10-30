@@ -1451,6 +1451,13 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Span::raw(u.deps.join(", ")),
             ]));
         }
+        if let Some(h) = run.logs.get(run.sel).and_then(|log| {
+            log.iter()
+                .rev()
+                .find_map(|l| l.strip_prefix("[envira] hint "))
+        }) {
+            lines.push(Line::styled(format!("hint {h}"), t.s(t.yellow)));
+        }
         lines.push(Line::styled(
             format!(
                 "log {}",
@@ -1686,6 +1693,10 @@ mod tests {
             s.contains("[4] Log") && s.contains("fnm.vercel.app") && s.contains("running"),
             "{s}"
         );
+        a.on_exec(crate::exec::Event::Line(
+            0,
+            "[envira] hint (network): a download failed on the network".into(),
+        ));
         a.on_exec(crate::exec::Event::UnitFinished(
             0,
             Outcome::Failed("exit 22".into()),
@@ -1694,7 +1705,9 @@ mod tests {
         a.on_exec(crate::exec::Event::Finished(Default::default()));
         let s = render(&a, 140, 40);
         assert!(
-            s.contains("run finished") && s.contains("Retry unfinished"),
+            s.contains("run finished")
+                && s.contains("Retry unfinished")
+                && s.contains("hint (network): a download failed"),
             "{s}"
         );
         render(&a, 60, 16);

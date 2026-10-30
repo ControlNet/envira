@@ -315,6 +315,9 @@ pub mod fake {
         pub installs: Mutex<BTreeMap<String, String>>,
         /// Substrings of streamed commands that never exit on their own (until cancelled).
         pub hangs: Mutex<Vec<String>>,
+        /// `(needle, failures left, output)`: matching streamed commands fail with `output`
+        /// that many times before the normal rules apply.
+        pub flaky: Mutex<Vec<(String, u32, String)>>,
         pub log: Mutex<Vec<String>>,
     }
 
@@ -345,6 +348,14 @@ pub mod fake {
                 .find(|(n, _, _)| cmd.contains(n.as_str()))
                 .map(|(_, c, o)| (*c, o.clone()))
                 .unwrap_or((1, String::new()))
+        }
+
+        pub fn fail_then(&self, needle: &str, times: u32, output: &str) -> &Self {
+            self.flaky
+                .lock()
+                .unwrap()
+                .push((needle.into(), times, output.into()));
+            self
         }
 
         pub fn hang(&self, needle: &str) -> &Self {
@@ -388,6 +399,22 @@ pub mod fake {
             mut cancel: watch::Receiver<bool>,
         ) -> BoxFuture<'a, StreamEnd> {
             self.log.lock().unwrap().push(cmd.to_string());
+            let flaky = self
+                .flaky
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|(n, left, _)| *left > 0 && cmd.contains(n.as_str()))
+                .map(|(_, left, out)| {
+                    *left -= 1;
+                    out.clone()
+                });
+            if let Some(out) = flaky {
+                for l in out.lines() {
+                    let _ = lines.send(l.to_string());
+                }
+                return Box::pin(async { StreamEnd::Exit(1) });
+            }
             if self.hangs.lock().unwrap().iter().any(|h| cmd.contains(h)) {
                 return Box::pin(async move {
                     while !*cancel.borrow() {
