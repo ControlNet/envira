@@ -797,6 +797,16 @@ fn log_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme, height: usize) -> 
     }
 }
 
+/// `n/m` from the latest "retrying ... (attempt n/m)" line of a running step.
+fn retry_attempt(log: &[String]) -> Option<&str> {
+    log.iter()
+        .rev()
+        .find(|l| l.starts_with("[envira] ") && l.contains("; retrying in "))?
+        .rsplit_once("(attempt ")?
+        .1
+        .strip_suffix(')')
+}
+
 /// A log line from the live run or a log file; files add `# ` header/trailer lines and an
 /// `HH:MM:SS ` time before every line.
 fn log_line<'a>(t: &Theme, l: &str) -> Line<'a> {
@@ -1390,7 +1400,9 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                     SPINNER[(app.tick % 10) as usize],
                     t.blue,
                     fmt_duration(st.elapsed()),
-                    "running".to_string(),
+                    retry_attempt(run.logs.get(i).map(Vec::as_slice).unwrap_or(&[]))
+                        .map(|a| format!("running · attempt {a}"))
+                        .unwrap_or_else(|| "running".into()),
                     t.blue,
                 ),
                 UnitState::Done(o, d) => match o {
@@ -1523,6 +1535,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Step", "↑↓"),
             ("Scroll", "PgUp/PgDn"),
             ("Zoom log", "z"),
+            ("Help", "?"),
             ("Dashboard", "enter"),
             ("Quit", "q"),
         ]
@@ -1532,6 +1545,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Follow", "f"),
             ("Scroll", "PgUp/PgDn"),
             ("Zoom log", "z"),
+            ("Help", "?"),
             ("Cancel step", "c"),
             ("Stop after step", "ctrl-c"),
         ]
@@ -1551,24 +1565,58 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 // Help
 // ------------------------------------------------------------------------------------------------
 
-fn help(f: &mut Frame, area: Rect, _app: &App, t: &Theme) {
-    let rows = [
-        ("1-5 tab", "focus panel"),
-        ("↑↓ j k", "move"),
-        ("space", "select item · subscribe bundle in [2]"),
-        ("a", "select everything missing in view"),
-        ("s", "sync: install what your bundles miss"),
-        ("u", "update the selection, else all outdated"),
-        ("i", "install / apply the selection"),
-        ("x", "revert selected configs"),
-        ("/  f", "search · cycle status filter"),
-        ("← →", "detail tabs in [5]"),
-        ("l", "log of the item"),
-        ("t", "retry what the last run left unfinished"),
-        ("R  r", "re-detect + check updates · reload catalog"),
-        ("esc", "clear search / selection"),
-        ("q", "quit"),
-    ];
+const DASHBOARD_KEYS: &[(&str, &str)] = &[
+    ("1-5 tab", "focus panel"),
+    ("↑↓ j k", "move"),
+    ("space", "select item · subscribe bundle in [2]"),
+    ("a", "select everything missing in view"),
+    ("s", "sync: install what your bundles miss"),
+    ("u", "update the selection, else all outdated"),
+    ("i", "install / apply the selection"),
+    ("x", "revert selected configs"),
+    ("/  f", "search · cycle status filter"),
+    ("← →", "detail tabs in [5]"),
+    ("l", "log of the item"),
+    ("t", "retry what the last run left unfinished"),
+    ("R  r", "re-detect + check updates · reload catalog"),
+    ("esc", "clear search / selection"),
+    ("q", "quit"),
+];
+
+/// Keys of the current screen.
+fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
+    match screen {
+        Screen::Picker | Screen::Loading => &[
+            ("↑↓ j k", "move"),
+            ("space", "pick or drop a bundle"),
+            ("a  n", "pick all · pick none"),
+            ("enter", "save and plan the first sync"),
+            ("esc", "save the picks without installing"),
+            ("q", "quit"),
+        ],
+        Screen::Plan => &[
+            ("↑↓ j k", "move"),
+            ("enter", "run the plan"),
+            ("c", "save the plan as a shell script"),
+            ("esc  q", "back without running"),
+        ],
+        Screen::Run => &[
+            ("↑↓ j k", "choose a step (stops following)"),
+            ("f", "follow the running step"),
+            ("PgUp PgDn", "scroll the log"),
+            ("z", "full-width log"),
+            ("c", "cancel the running step"),
+            ("ctrl-c", "stop after the running step"),
+            ("r", "when finished: retry what did not finish"),
+            ("enter  esc", "when finished: back to the dashboard"),
+            ("q", "when finished: quit"),
+        ],
+        Screen::Dashboard => DASHBOARD_KEYS,
+    }
+}
+
+fn help(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    let rows = help_rows(app.screen);
     let w = 58.min(area.width);
     let h = (rows.len() as u16 + 4).min(area.height);
     let r = Rect {
@@ -1718,6 +1766,15 @@ mod tests {
             "{s}"
         );
         render(&a, 60, 16);
+        a.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        let s = render(&a, 140, 40);
+        assert!(
+            s.contains("full-width log") && !s.contains("focus panel"),
+            "{s}"
+        );
+        a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!a.help);
+        assert!(a.run.is_some(), "closing help keeps the run screen");
         // Zoomed: the log takes the whole width, the steps panel is gone.
         a.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         let s = render(&a, 140, 40);
@@ -1740,6 +1797,17 @@ mod tests {
             first.contains("…") && first.ends_with("(1 files)"),
             "{first}"
         );
+    }
+
+    #[test]
+    fn running_steps_show_their_retry_attempt() {
+        let log = vec![
+            "$ curl x".to_string(),
+            "[envira] step 1/1 failed (network); retrying in 5.0s (attempt 2/3)".to_string(),
+            "curl: (56) reset".to_string(),
+        ];
+        assert_eq!(retry_attempt(&log), Some("2/3"));
+        assert_eq!(retry_attempt(&log[..1]), None);
     }
 
     #[test]

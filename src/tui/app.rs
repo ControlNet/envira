@@ -798,6 +798,10 @@ impl App {
     }
 
     fn run_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if k.code == KeyCode::Char('?') {
+            self.help = true;
+            return vec![];
+        }
         let Some(run) = &mut self.run else {
             self.screen = Screen::Dashboard;
             return vec![];
