@@ -189,15 +189,62 @@ fn target_user(euid: u32) -> (String, PathBuf, u32, u32, Option<String>) {
     {
         return (sudo_user.clone(), home, uid, gid, Some(sudo_user));
     }
-    let (name, pw_home, gid) =
-        passwd_by_uid(euid).unwrap_or_else(|| ("user".into(), PathBuf::from("/"), euid));
+    let (name, pw_home, gid) = passwd_by_uid(euid).unwrap_or_else(|| {
+        let name = ["USER", "LOGNAME"]
+            .into_iter()
+            .find_map(|v| std::env::var(v).ok().filter(|n| !n.is_empty()))
+            .unwrap_or_else(|| "user".into());
+        (name, PathBuf::from("/"), euid)
+    });
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or(pw_home);
     (name, home, euid, gid, None)
 }
 
+/// One `/etc/passwd`-format line: name, uid, gid, home.
+fn parse_passwd(line: &str) -> Option<(String, u32, u32, PathBuf)> {
+    let f: Vec<&str> = line.trim_end().split(':').collect();
+    if f.len() < 7 {
+        return None;
+    }
+    Some((
+        f[0].into(),
+        f[2].parse().ok()?,
+        f[3].parse().ok()?,
+        f[5].into(),
+    ))
+}
+
+/// The static (musl) build has no NSS, so libc only sees `/etc/passwd`; users from LDAP or SSSD
+/// are found through the system's `getent`, which uses the system's libc.
+fn getent_passwd(key: &str) -> Option<(String, u32, u32, PathBuf)> {
+    let out = Command::new("getent")
+        .args(["passwd", key])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| parse_passwd(String::from_utf8_lossy(&out.stdout).lines().next()?))?
+}
+
 fn passwd_by_name(name: &str) -> Option<(PathBuf, u32, u32)> {
+    libc_passwd_by_name(name).or_else(|| {
+        let (_, uid, gid, home) = getent_passwd(name)?;
+        Some((home, uid, gid))
+    })
+}
+
+fn passwd_by_uid(uid: u32) -> Option<(String, PathBuf, u32)> {
+    libc_passwd_by_uid(uid).or_else(|| {
+        let (name, _, gid, home) = getent_passwd(&uid.to_string())?;
+        Some((name, home, gid))
+    })
+}
+
+fn libc_passwd_by_name(name: &str) -> Option<(PathBuf, u32, u32)> {
     let c = CString::new(name).ok()?;
     // SAFETY: getpwnam returns a pointer to static storage or null; fields are read immediately.
     unsafe {
@@ -210,7 +257,7 @@ fn passwd_by_name(name: &str) -> Option<(PathBuf, u32, u32)> {
     }
 }
 
-fn passwd_by_uid(uid: u32) -> Option<(String, PathBuf, u32)> {
+fn libc_passwd_by_uid(uid: u32) -> Option<(String, PathBuf, u32)> {
     // SAFETY: as above.
     unsafe {
         let pw = libc::getpwuid(uid);
@@ -270,6 +317,19 @@ pub fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passwd_lines() {
+        assert_eq!(
+            parse_passwd("alice:*:12345:100:Alice:/home/alice:/bin/zsh\n"),
+            Some(("alice".into(), 12345, 100, "/home/alice".into()))
+        );
+        assert_eq!(parse_passwd("broken:x:1"), None);
+        assert_eq!(parse_passwd("x:x:uid:1:g:/h:/bin/sh"), None);
+        // The current user resolves either way (libc here, getent in the static build).
+        let uid = unsafe { libc::geteuid() };
+        assert_eq!(getent_passwd(&uid.to_string()).map(|p| p.1), Some(uid));
+    }
 
     #[test]
     fn os_release_families() {
