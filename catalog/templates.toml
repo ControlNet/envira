@@ -68,7 +68,9 @@ installed = { cmd = "rpm -q --qf '%{{VERSION}}\\n' {package}", regex = '^(\S+)' 
 desc = "Arch package"
 when = ["family:arch"]
 scope = "system"
-install = "{sudo} pacman -S --needed --noconfirm {package}"
+# Fresh images have no sync database: retry with a full sync and upgrade like run.sh (a bare
+# `-Sy` would be a partial upgrade).
+install = "{sudo} pacman -S --needed --noconfirm {package} || {sudo} pacman -Syu --needed --noconfirm {package}"
 installed = { cmd = "pacman -Q {package}", regex = '^\S+ (?:\d+:)?([^-\s]+)' }
 # Version in the local sync database.
 latest = { cmd = "pacman -Si {package}", regex = 'Version\s*: (?:\d+:)?([^-\s]+)' }

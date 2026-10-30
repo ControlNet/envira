@@ -117,8 +117,10 @@ bin = "7z"
 detect = { cmd = "7z i 2>&1 | grep '7-Zip'" }
 install = [
   { method = "apt", package = "p7zip-full" },
-  { method = "pacman", package = "p7zip" },
-  { method = "zypper", package = "p7zip" },
+  # Fedora, Arch and openSUSE replaced p7zip with 7zip, which also ships `7z`.
+  { method = "dnf", package = "7zip" },
+  { method = "pacman", package = "7zip" },
+  { method = "zypper", package = "7zip" },
 ]
 
 [tools.xsel]
@@ -161,41 +163,73 @@ install = [
 desc = "ping"
 bin = "ping"
 detect = { cmd = "ping -V" }
-install = [{ method = "apt", package = "iputils-ping" }]
+install = [
+  { method = "apt", package = "iputils-ping" },
+  { method = "dnf", package = "iputils" },
+  { method = "pacman", package = "iputils" },
+  { method = "zypper", package = "iputils" },
+]
 
 [tools.net-tools]
 desc = "ifconfig, netstat, route"
 bin = "ifconfig"
 bins = ["ifconfig", "netstat"]
 detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" netstat --version 2>&1 | grep net-tools" }
-install = [{ method = "apt", package = "net-tools" }]
+install = [
+  { method = "apt", package = "net-tools" },
+  { method = "dnf", package = "net-tools" },
+  { method = "pacman", package = "net-tools" },
+  # openSUSE's net-tools has no netstat/ifconfig any more.
+  { method = "zypper", package = "net-tools-deprecated" },
+]
 
 [tools.pciutils]
 desc = "lspci (PCI device listing)"
 bin = "lspci"
 detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" lspci --version" }
-install = [{ method = "apt", package = "pciutils" }]
+install = [
+  { method = "apt", package = "pciutils" },
+  { method = "dnf", package = "pciutils" },
+  { method = "pacman", package = "pciutils" },
+  { method = "zypper", package = "pciutils" },
+]
 
 [tools.openssh-server]
 desc = "SSH server"
 bin = "sshd"
-detect = { cmd = "test -x /usr/sbin/sshd" }
-install = [{ method = "apt", package = "openssh-server" }]
+detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" command -v sshd" }
+install = [
+  { method = "apt", package = "openssh-server" },
+  { method = "dnf", package = "openssh-server" },
+  { method = "pacman", package = "openssh" },
+  { method = "zypper", package = "openssh-server" },
+]
 
 [tools.libfuse2]
 desc = "FUSE 2 library (AppImages)"
 bins = []
 detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" ldconfig -p | grep -F libfuse.so.2 >/dev/null" }
-install = [{ method = "apt", package = "libfuse2" }]
+install = [
+  { method = "apt", package = "libfuse2" },
+  { method = "dnf", package = "fuse-libs" },
+  { method = "pacman", package = "fuse2" },
+  { method = "zypper", package = "libfuse2" },
+]
 
 [tools.fontconfig]
 desc = "Font configuration and fc-cache"
 bin = "fc-cache"
 detect = { cmd = "fc-cache --version 2>&1" }
-install = [{ method = "apt", package = "fontconfig" }]
+install = [
+  { method = "apt", package = "fontconfig" },
+  { method = "dnf", package = "fontconfig" },
+  { method = "pacman", package = "fontconfig" },
+  { method = "zypper", package = "fontconfig" },
+]
 
 [tools.apt-tools]
 desc = "apt-utils and add-apt-repository"
+when = ["family:debian"]
 bin = "add-apt-repository"
 detect = { cmd = "command -v add-apt-repository" }
 install = [{ method = "apt", package = ["apt-utils", "software-properties-common"] }]
