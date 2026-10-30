@@ -22,12 +22,13 @@ install = [
 [tools.tigervnc]
 desc = "VNC server"
 bin = "vncserver"
-detect = { cmd = "command -v vncserver" }
+# openSUSE ships TigerVNC without the vncserver script (vncsession and Xvnc instead).
+detect = { cmd = "command -v vncserver || command -v Xvnc" }
 install = [
   { method = "apt", package = ["tigervnc-standalone-server", "tigervnc-common", "tigervnc-xorg-extension"] },
   { method = "dnf", package = "tigervnc-server" },
   { method = "pacman", package = "tigervnc" },
-  { method = "zypper", package = "tigervnc" },
+  { method = "zypper", package = ["tigervnc", "xorg-x11-Xvnc"] },
 ]
 
 [tools.meslo-font]
@@ -49,11 +50,10 @@ install = [
 
 [tools.neofetch]
 desc = "System information with ASCII art"
-# `neofetch --version` exits 1.
+# `neofetch --version` exits 1. Fedora dropped the package in 44.
 detect = { cmd = "(neofetch --version || true) 2>&1 | grep 'Neofetch [0-9]'" }
 install = [
   { method = "apt", package = "neofetch" },
-  { method = "dnf", package = "neofetch" },
   { method = "zypper", package = "neofetch" },
   # The project is archived; 7.1.0 is its last release.
   { run = 'git clone --depth 1 --branch 7.1.0 https://github.com/dylanaraps/neofetch && make -C neofetch PREFIX="$HOME/.local" install', depends = ["git", "build-tools"] },
@@ -71,7 +71,8 @@ install = [
 [tools.archey4]
 desc = "System information"
 bin = "archey"
-install = [{ method = "pipx", package = "archey4", depends = ["pipx"] }]
+# netifaces has no wheel and is compiled against Python.h.
+install = [{ method = "pipx", package = "archey4", depends = ["pipx", "python3", "build-tools"] }]
 
 [tools.genact]
 desc = "Nonsense activity generator"

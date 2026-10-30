@@ -96,9 +96,11 @@ detect = { cmd = "python3 --version && python3 -m pip --version >/dev/null", ver
 install = [
   # `python3` first: its version is the one reported.
   { method = "apt", package = ["python3", "python3-venv", "python3-pip"] },
-  { method = "dnf", package = "python3" },
+  # Headers too, for pipx tools that build a C extension (archey4's netifaces); Ubuntu's python3-pip
+  # recommends python3-dev, Arch's python ships them. openSUSE splits curses out (nvitop).
+  { method = "dnf", package = ["python3", "python3-pip", "python3-devel"] },
   { method = "pacman", package = "python-pip" },
-  { method = "zypper", package = ["python3", "python3-pip"] },
+  { method = "zypper", package = ["python3", "python3-pip", "python3-devel", "python3-curses"] },
 ]
 
 [tools.unzip]

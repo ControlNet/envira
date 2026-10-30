@@ -131,6 +131,14 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
     output printed earlier contains the word.
   - zsh does not word-split an unquoted `$e`, so `docker run $e …` passes `-e A=B` as one argument;
     run such loops under bash.
+  - Python: `dnf install python3` has no pip; Fedora and openSUSE need `python3-devel` for pipx tools
+    that compile (archey4's netifaces also needs gcc, hence `build-tools`), and openSUSE splits
+    `python3-curses` out (nvitop fails at import). Ubuntu gets python3-dev via python3-pip's
+    recommends, Arch's python ships headers.
+  - Arch's btop has file capabilities (`cap_perfmon`), and exec fails with EPERM in a Docker container;
+    the pacman route is `!container`, so containers get the static release.
+  - openSUSE's TigerVNC has no `vncserver` script (vncsession + Xvnc from `xorg-x11-Xvnc`).
+  - Fedora 44 has no neofetch; the git + make route covers it.
 - Run ids are second-resolution timestamps; back-to-back runs (revert then apply) collided and shared
   one log dir until `new_run_id` added `-02`, `-03` suffixes.
 - Safe manual TUI runs on a real machine: `ENVIRA_STATE_DIR=<tmp>/state ENVIRA_CONFIG_DIR=<tmp>/config envira`

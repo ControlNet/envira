@@ -24,9 +24,10 @@ if [ "${ENVIRA_MODE:-sudo}" = user ]; then
   case " $ID ${ID_LIKE:-} " in
     *" debian "*|*" ubuntu "*)
       admin_install git wget build-essential unzip libatomic1 python3-pip python3-venv ;;
-    *" fedora "*) admin_install git wget gcc make perl unzip libatomic python3-pip ;;
+    *" fedora "*) admin_install git wget gcc make perl unzip libatomic python3-pip python3-devel ;;
     *" arch "*) admin_install git wget base-devel unzip python-pip ;;
-    *" suse "*|*" opensuse "*) admin_install git wget gcc make perl unzip libatomic1 python3-pip ;;
+    *" suse "*|*" opensuse "*)
+      admin_install git wget gcc make perl unzip libatomic1 python3-pip python3-devel python3-curses ;;
   esac
   export ENVIRA_PRIVILEGE=none
   bundles=(-b user -b extras)

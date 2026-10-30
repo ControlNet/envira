@@ -5,7 +5,8 @@
 desc = "Resource monitor (top replacement)"
 install = [
   { method = "dnf", package = "btop" },
-  { method = "pacman", package = "btop" },
+  # Arch's btop carries file capabilities, which exec refuses in a container without them.
+  { method = "pacman", package = "btop", when = ["!container"] },
   { method = "zypper", package = "btop" },
   # Ubuntu and machines without sudo: the static release build.
   { method = "github-release", repo = "aristocratos/btop", asset = { x86_64 = "btop-x86_64-unknown-linux-musl.tar.gz", aarch64 = "btop-aarch64-unknown-linux-musl.tar.gz" } },
@@ -19,7 +20,8 @@ install = [{ method = "cargo", package = "bottom", depends = ["cargo-binstall"],
 [tools.nvitop]
 desc = "Interactive NVIDIA GPU process viewer"
 detect = { cmd = "nvitop --version", version = 'nvitop (\S+)' }
-install = [{ method = "pipx", package = "nvitop", depends = ["pipx"] }]
+# Needs Python's curses module, which openSUSE packages separately.
+install = [{ method = "pipx", package = "nvitop", depends = ["pipx", "python3"] }]
 
 [tools.nviwatch]
 desc = "NVIDIA GPU monitor"
