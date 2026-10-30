@@ -34,7 +34,10 @@ install = [{ method = "script", url = "https://raw.githubusercontent.com/jessedu
 
 [tools.dive]
 desc = "Explore docker image layers"
-install = [{ method = "go", package = "github.com/wagoodman/dive", depends = ["go"], portable = true }]
+install = [
+  { method = "github-release", repo = "wagoodman/dive", asset = { x86_64 = "dive_*_linux_amd64.tar.gz", aarch64 = "dive_*_linux_arm64.tar.gz" } },
+  { method = "go", package = "github.com/wagoodman/dive", depends = ["go"], portable = true },
+]
 
 [tools.ctop]
 desc = "top for containers"

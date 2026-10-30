@@ -46,9 +46,23 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  # One release build for every integration job; they do not wait for the lints.
+  build:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: envira
+          path: target/release/envira
+          retention-days: 1
+
   integration:
     name: ${{ matrix.distro }} ${{ matrix.suite }} ${{ matrix.mode }}
-    needs: check
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -59,11 +73,16 @@ jobs:
         mode: [sudo, user]
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: envira
+          path: bin
+      - run: chmod +x bin/envira
       - name: Run the ${{ matrix.suite }} suite in a ${{ matrix.distro }} container
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISTRO: ${{ matrix.distro }}
           SUITE: ${{ matrix.suite }}
           MODES: ${{ matrix.mode }}
+          ENVIRA_BIN: bin/envira
         run: tests/integration/run.sh

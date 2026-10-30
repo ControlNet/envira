@@ -90,8 +90,11 @@ install = [{ method = "cargo", package = "fd-find", depends = ["cargo-binstall"]
 desc = "Fast grep (with PCRE2)"
 bin = "rg"
 detect = { cmd = "rg --version", version = 'ripgrep (\S+)' }
-# Built from source: the PCRE2 feature is not in the prebuilt binaries.
-install = [{ run = "cargo install --locked --force --features pcre2 ripgrep", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/ripgrep", json = "crate.max_stable_version" } }]
+# The release binaries are built with PCRE2 (`rg --version` lists +pcre2); the source build is the fallback.
+install = [
+  { method = "github-release", repo = "BurntSushi/ripgrep", asset = { x86_64 = "ripgrep-*-x86_64-unknown-linux-musl.tar.gz", aarch64 = "ripgrep-*-aarch64-unknown-linux-musl.tar.gz" } },
+  { run = "cargo install --locked --force --features pcre2 ripgrep", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/ripgrep", json = "crate.max_stable_version" } },
+]
 
 [tools.gping]
 desc = "ping with a graph"

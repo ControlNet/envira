@@ -525,7 +525,8 @@ docker, ctop, bandwhich, chsh or inotify).
 | pixi installer | `PIXI_NO_PATH_UPDATE=1` + `shell` | same |
 | bun/fnm rc lines | `SHELL=/bin/sh`, `--skip-shell` + `shell` | same |
 | `webi.sh/gh` | GitHub release `cli/cli` | webi edits rc files through envman |
-| `cargo install genact`, binstall for the rest | cargo method (binstall when present) for all crates | except ripgrep (pcre2) and yazi-build, built from source |
+| `cargo install genact`, binstall for the rest | cargo method (binstall when present) for all crates | except yazi-build, built from source |
+| `cargo install --features pcre2 ripgrep`, `go install` dive | GitHub releases first, the source builds as fallback | user decision 2026-10-30: ripgrep's release binaries include PCRE2; the builds took ~65 s of a CI sync |
 | copies of rustup, cargo, go, gofmt to `/usr/local/bin` | not copied | proxies only work for the user whose `~/.rustup` / `~/.go` they read |
 | symlinks of pipx/npm tools (uv, gdown, tldr, hf, pm2, …) | none | user decision: static binaries only |
 | neovim symlinked from `/usr/local/bin` into `~/.nvim` | linked in `~/.local/bin` | a system path pointing into one user's home |
