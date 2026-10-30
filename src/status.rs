@@ -579,7 +579,12 @@ mod tests {
     #[test]
     fn yazi_versions_in_both_formats() {
         let cat = load(&[embedded_layer()]).unwrap().catalog;
-        let re = cat.tools["yazi"].detect.as_ref().unwrap().version.as_deref();
+        let re = cat.tools["yazi"]
+            .detect
+            .as_ref()
+            .unwrap()
+            .version
+            .as_deref();
         let new = "Yazi\n    Version: 26.9.1 (8dd895c 2026-09-01)\n    Debug  : false\n";
         assert_eq!(extract_version(new, re).as_deref(), Some("26.9.1"));
         let old = "Yazi 25.5.31 (VERGEN_IDEMPOTENT_OUTPUT 2025-05-31)";
