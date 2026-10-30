@@ -54,7 +54,7 @@ steps = [
 desc = "zsh as the login shell"
 scope = "system"
 depends = ["zsh"]
-check = 'getent passwd {user} | cut -d: -f7 | grep -q "/zsh$"'
+check = 'case "$(getent passwd {user} | cut -d: -f7)" in */zsh) true ;; *) false ;; esac'
 # usermod (shadow) is on every distro; chsh is a separate package on Fedora (util-linux-user).
 # Unlike chsh it does not check /etc/shells, so take the path listed there: on Fedora PATH finds
 # /usr/sbin/zsh first, which is not.
