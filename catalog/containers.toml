@@ -7,13 +7,15 @@ depends = ["curl"]
 detect = { cmd = "docker --version", version = 'Docker version ([^,\s]+)' }
 install = [
   { method = "pacman", package = "docker" },
-  { method = "script", url = "https://get.docker.com", scope = "system", when = ["!family:arch"] },
+  { method = "zypper", package = "docker" },
+  # get.docker.com supports Debian/Ubuntu, Fedora, RHEL and CentOS, but not Arch or openSUSE.
+  { method = "script", url = "https://get.docker.com", scope = "system", when = ["!family:arch", "!family:suse"] },
 ]
 
 [configs.docker-service]
-desc = "Start the docker daemon at boot (Arch; get.docker.com enables it elsewhere)"
+desc = "Start the docker daemon at boot (Arch, openSUSE; get.docker.com enables it elsewhere)"
 scope = "system"
-when = ["family:arch", "!container"]
+when = ["!family:debian", "!family:fedora", "!container"]
 depends = ["docker"]
 check = "systemctl is-enabled --quiet docker"
 apply = "{sudo} systemctl enable --now docker"
