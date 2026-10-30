@@ -4,9 +4,28 @@
 # The last part (update) installs an older codex with npm and checks adoption and update.
 set -euo pipefail
 
+# Installs packages as the administrator would, with the distro's package manager.
+admin_install() {
+  if command -v apt-get >/dev/null; then
+    sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
+  elif command -v dnf >/dev/null; then
+    sudo dnf install -y -q "$@" >/dev/null
+  elif command -v pacman >/dev/null; then
+    sudo pacman -Syu --noconfirm --needed "$@" >/dev/null
+  elif command -v zypper >/dev/null; then
+    sudo zypper --non-interactive --quiet install "$@" >/dev/null
+  fi
+}
+
 items=(bat fnm nodejs bun codex-sandbox-network)
 if [ "${ENVIRA_MODE:-sudo}" = user ]; then
-  sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip libatomic1 >/dev/null
+  # unzip, and the library Node.js 25+ links against (the catalog's `libatomic` per distro).
+  . /etc/os-release
+  case " $ID $ID_LIKE " in
+    *" debian "*|*" ubuntu "*|*" suse "*|*" opensuse "*) admin_install unzip libatomic1 ;;
+    *" fedora "*) admin_install unzip libatomic ;;
+    *" arch "*) admin_install unzip gcc-libs ;;
+  esac
   export ENVIRA_PRIVILEGE=none
 fi
 
@@ -23,8 +42,9 @@ bad = [i for i in items + ["codex"] if not status[i]["present"]]
 assert not bad, f"not present: {bad}"
 for i in items + ["codex"]:
     assert status[i]["ownership"] in (None, "managed"), (i, status[i]["ownership"])
-want_bat = "apt" if mode == "sudo" else "github-release"
-assert status["bat"]["via"] == want_bat, status["bat"]
+# With sudo the distro package, without it the release download.
+via = status["bat"]["via"]
+assert (via != "github-release") if mode == "sudo" else (via == "github-release"), status["bat"]
 print("ok: all present and managed; bat via", status["bat"]["via"])
 PY
 
@@ -107,7 +127,8 @@ TOML
 r=(envira --no-overlay --catalog /tmp/recovery.toml)
 "${r[@]}" install -y slow quick > /tmp/first.txt 2>&1 &
 pid=$!
-for _ in $(seq 50); do grep -q begin /tmp/first.txt && break; sleep 0.2; done
+# The step's own output line, not the plan, which prints the command (and its "begin") first.
+for _ in $(seq 50); do grep -q '│ begin$' /tmp/first.txt && break; sleep 0.2; done
 if "${r[@]}" install -y quick > /tmp/second.txt 2>&1; then echo 'a second run got past the lock'; exit 1; fi
 grep -q "another envira run is in progress" /tmp/second.txt
 kill -TERM "$pid"

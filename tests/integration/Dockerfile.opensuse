@@ -1,0 +1,13 @@
+# Throwaway openSUSE Tumbleweed machine for envira integration runs: a normal user with
+# passwordless sudo and no unzip (envira installs it as a dependency).
+FROM opensuse/tumbleweed:latest
+
+RUN zypper --non-interactive install --no-recommends sudo zsh python3 curl ca-certificates shadow gzip tar \
+ && zypper clean --all
+
+RUN useradd -m -s /bin/zsh user \
+ && echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/user \
+ && touch /home/user/.zshrc && chown user:user /home/user/.zshrc
+
+USER user
+WORKDIR /home/user

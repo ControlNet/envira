@@ -4,12 +4,30 @@
 # result with the legacy verify.sh, then checks that a second sync has nothing to do.
 set -uo pipefail
 
+# Installs packages as the administrator would, with the distro's package manager.
+admin_install() {
+  if command -v apt-get >/dev/null; then
+    sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
+  elif command -v dnf >/dev/null; then
+    sudo dnf install -y -q "$@" >/dev/null
+  elif command -v pacman >/dev/null; then
+    sudo pacman -Syu --noconfirm --needed "$@" >/dev/null
+  elif command -v zypper >/dev/null; then
+    sudo zypper --non-interactive --quiet install "$@" >/dev/null
+  fi
+}
+
 status=0
 if [ "${ENVIRA_MODE:-sudo}" = user ]; then
   # What an administrator provides on a machine without sudo.
-  sudo apt-get update -qq
-  sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    git wget build-essential unzip libatomic1 python3-pip python3-venv >/dev/null
+  . /etc/os-release
+  case " $ID $ID_LIKE " in
+    *" debian "*|*" ubuntu "*)
+      admin_install git wget build-essential unzip libatomic1 python3-pip python3-venv ;;
+    *" fedora "*) admin_install git wget gcc make perl unzip libatomic python3-pip ;;
+    *" arch "*) admin_install git wget base-devel unzip python-pip ;;
+    *" suse "*|*" opensuse "*) admin_install git wget gcc make perl unzip libatomic1 python3-pip ;;
+  esac
   export ENVIRA_PRIVILEGE=none
   bundles=(-b user -b extras)
 else

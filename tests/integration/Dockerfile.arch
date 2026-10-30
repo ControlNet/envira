@@ -1,0 +1,13 @@
+# Throwaway Arch machine for envira integration runs: a normal user with passwordless sudo, no
+# unzip, and no package sync database (exercises the pacman retry).
+FROM archlinux:latest
+
+RUN pacman -Syu --noconfirm --needed sudo zsh python curl ca-certificates \
+ && rm -rf /var/lib/pacman/sync/* /var/cache/pacman/pkg/*
+
+RUN useradd -m -s /bin/zsh user \
+ && echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/user \
+ && touch /home/user/.zshrc && chown user:user /home/user/.zshrc
+
+USER user
+WORKDIR /home/user
