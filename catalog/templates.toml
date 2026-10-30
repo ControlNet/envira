@@ -123,7 +123,8 @@ desc = "Prebuilt binary from a GitHub release"
 scope = "any"
 # `asset` is a glob (or a list of globs) for the release asset; a table keyed by arch picks one per arch.
 defaults = { bins = ["{bin}"] }
-install = "{sudo} {envira} fetch-release --repo {repo} --asset {asset} --bin {bins} --to {bin_dir}"
+# Downloads as the user (who keeps GITHUB_TOKEN; sudo would drop it) and copies with sudo.
+install = "{envira} fetch-release --repo {repo} --asset {asset} --bin {bins} --to {bin_dir} --install-with '{sudo}'"
 # Tags such as `v0.25.0` or `bun-v1.3.1`: the generic version pattern takes the number.
 latest = { http = "https://api.github.com/repos/{repo}/releases/latest", json = "tag_name" }
 

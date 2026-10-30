@@ -137,7 +137,7 @@ pub fn fmt_bytes(n: u64) -> String {
 }
 
 fn uses_sudo(cmd: &str) -> bool {
-    cmd.split(|c: char| c.is_whitespace() || c == '(' || c == ';' || c == '&' || c == '|')
+    cmd.split(|c: char| c.is_whitespace() || "(;&|'\"".contains(c))
         .any(|w| w == "sudo")
 }
 
@@ -906,6 +906,31 @@ mod tests {
     }
 
     #[test]
+    fn system_release_downloads_as_the_user_and_copies_with_sudo() {
+        let c = cat();
+        let f = Facts::sample(Path::new("/home/user"));
+        let plan = Planner::new(&c, &f, &set(&[])).plan(&["lazygit".into()], false);
+        assert_eq!(plan.units[0].via, "github-release");
+        assert_eq!(plan.units[0].scope, Scope::System);
+        let cmd = plan.units[0].steps[0].cmd.clone().unwrap();
+        // fetch-release itself is not run with sudo: sudo would drop GITHUB_TOKEN.
+        assert!(!cmd.starts_with("sudo"), "{cmd}");
+        assert!(
+            cmd.ends_with(" --to /usr/local/bin --install-with 'sudo -n'"),
+            "{cmd}"
+        );
+        assert!(plan.needs_sudo(&f));
+    }
+
+    #[test]
+    fn sudo_is_found_inside_quotes() {
+        assert!(uses_sudo("envira fetch-release --install-with 'sudo -n'"));
+        assert!(uses_sudo("x --install-with \"sudo -n\""));
+        assert!(!uses_sudo("envira fetch-release --install-with ''"));
+        assert!(!uses_sudo("echo pseudo"));
+    }
+
+    #[test]
     fn method_choice_follows_privilege() {
         let c = cat();
         let mut f = Facts::sample(Path::new("/home/user"));
@@ -923,7 +948,7 @@ mod tests {
         assert_eq!(plan.units[0].via, "github-release");
         assert_eq!(plan.units[0].scope, Scope::User);
         let cmd = plan.units[0].steps[0].cmd.clone().unwrap();
-        assert!(cmd.contains("--asset 'bat-v*-x86_64-unknown-linux-musl.tar.gz' --bin bat --to /home/user/.local/bin"), "{cmd}");
+        assert!(cmd.contains("--asset 'bat-v*-x86_64-unknown-linux-musl.tar.gz' --bin bat --to /home/user/.local/bin --install-with ''"), "{cmd}");
         assert!(!plan.needs_sudo(&f));
     }
 

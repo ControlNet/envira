@@ -159,7 +159,10 @@ Generic Rust primitives the templates call:
   any file backs it up to `~/.local/state/envira/backups/` and records prior values for revert.
 - `envira fetch-release --repo R --asset PATTERN --bin B... --to DIR`: picks the asset for the current
   arch, downloads with reqwest, extracts `.tar.gz` / `.zip` in-process (`flate2`, `tar`, `zip`), atomic
-  move; bare machines need neither curl nor tar/unzip.
+  move; bare machines need neither curl nor tar/unzip. For system scope the template adds
+  `--install-with 'sudo -n'`. The download, checksum and extraction then run as the user, and only
+  `sudo -n install -D -m 755` copies the result in. Running the whole command under sudo dropped
+  `GITHUB_TOKEN` (env_reset), and the CI sudo jobs hit the anonymous rate limit.
 - HTTP fetch + JSON path / regex extraction for `installed` / `latest`.
 
 ### Scope and system-wide installs

@@ -167,6 +167,10 @@ pub enum Command {
         to: PathBuf,
         #[arg(long)]
         tag: Option<String>,
+        /// Command that copies the binaries into --to (`sudo -n` for system scope); the
+        /// download runs as the caller.
+        #[arg(long, default_value = "")]
+        install_with: String,
     },
 }
 

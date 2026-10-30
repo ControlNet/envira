@@ -45,6 +45,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             bins,
             to,
             tag,
+            install_with,
         }) => {
             fetch::run(&fetch::FetchArgs {
                 repo: repo.clone(),
@@ -52,6 +53,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 bins: bins.clone(),
                 to: fs::expand(&to.display().to_string()),
                 tag: tag.clone(),
+                install_with: install_with.split_whitespace().map(String::from).collect(),
             })?;
             return Ok(0);
         }

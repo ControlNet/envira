@@ -17,6 +17,9 @@ pub struct FetchArgs {
     pub to: PathBuf,
     /// Release tag; latest when `None`.
     pub tag: Option<String>,
+    /// Command that copies the binaries into `to` (`sudo -n`), so the download, checks and
+    /// extraction run as the user, who keeps `GITHUB_TOKEN`. Empty: write `to` directly.
+    pub install_with: Vec<String>,
 }
 
 /// `*` and `?` wildcard match.
@@ -171,13 +174,43 @@ pub fn run(args: &FetchArgs) -> Result<()> {
         None => verify_checksum(&c, name, &bytes, &assets)?,
     }
     let files = extract(name, &bytes, &args.bins)?;
-    std::fs::create_dir_all(&args.to).with_context(|| format!("creating {}", args.to.display()))?;
-    for (bin, data) in files {
-        let dest = args.to.join(&bin);
-        install_bytes(&dest, &data)?;
-        println!("installed {bin} {tag} -> {}", dest.display());
+    for dest in place(&files, &args.to, &args.install_with)? {
+        println!("installed {tag} -> {}", dest.display());
     }
     Ok(())
+}
+
+/// Installs `files` into `to`: atomically when `via` is empty, else staged in a temp dir and
+/// copied with `<via> install -D -m 755`.
+fn place(files: &[(String, Vec<u8>)], to: &Path, via: &[String]) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let Some((prog, pre)) = via.split_first() else {
+        std::fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
+        for (bin, data) in files {
+            let dest = to.join(bin);
+            install_bytes(&dest, data)?;
+            out.push(dest);
+        }
+        return Ok(out);
+    };
+    let stage = tempfile::tempdir().context("creating a staging directory")?;
+    for (bin, data) in files {
+        let src = stage.path().join(bin);
+        std::fs::write(&src, data).with_context(|| format!("writing {}", src.display()))?;
+        let dest = to.join(bin);
+        let st = std::process::Command::new(prog)
+            .args(pre)
+            .args(["install", "-D", "-m", "755"])
+            .arg(&src)
+            .arg(&dest)
+            .status()
+            .with_context(|| format!("running {prog}"))?;
+        if !st.success() {
+            bail!("{} install {} failed ({st})", via.join(" "), dest.display());
+        }
+        out.push(dest);
+    }
+    Ok(out)
 }
 
 /// Checksum files a release may publish for `asset`, most specific first: `<asset>.sha256`
@@ -359,6 +392,25 @@ pub fn extract(name: &str, bytes: &[u8], bins: &[String]) -> Result<Vec<(String,
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn place_directly_or_through_a_command() {
+        let d = tempfile::tempdir().unwrap();
+        let files = vec![("a".to_string(), b"#!/bin/sh\n".to_vec())];
+        let direct = place(&files, &d.path().join("direct"), &[]).unwrap();
+        assert_eq!(direct, vec![d.path().join("direct/a")]);
+        // `env` stands in for `sudo -n`: the copy runs through the given command.
+        let to = d.path().join("via/bin");
+        let via = place(&files, &to, &["env".to_string()]).unwrap();
+        assert_eq!(via, vec![to.join("a")]);
+        for f in [d.path().join("direct/a"), to.join("a")] {
+            assert_eq!(std::fs::read(&f).unwrap(), b"#!/bin/sh\n");
+            let mode = std::fs::metadata(&f).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "{}", f.display());
+        }
+        let err = place(&files, &d.path().join("x"), &["false".to_string()]).unwrap_err();
+        assert!(format!("{err:#}").contains("false install"), "{err:#}");
+    }
 
     #[test]
     fn globs() {

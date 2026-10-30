@@ -146,6 +146,15 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - PyPI trusted publishing is bound to the workflow file name (`release.yaml`) and the environment
   names (`pypi`, `testpypi`). Renaming either breaks publishing silently until the next tag.
 
+- `sudo` resets the environment, so `sudo envira fetch-release` ran without `GITHUB_TOKEN`. Only
+  the sudo-mode CI jobs hit GitHub's anonymous limit (60/h per runner IP). Fix: run the network part
+  as the user and elevate only the copy (`--install-with 'sudo -n'`). `Plan::needs_sudo` finds
+  `sudo` by splitting the command on whitespace and shell punctuation. Quotes must be separators
+  too, or `'sudo -n'` is missed and the sudo prompt is skipped.
+- Template changes reach old binaries through the published catalog. A template that uses a new
+  subcommand flag (such as `--install-with`) needs `min_envira` raised once a release exists, or
+  older envira versions fail with a clap error.
+
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
 - reqwest 0.13: TLS feature is `rustls` (not `rustls-tls`); `default-features = false, features = ["blocking", "json", "rustls"]`.
