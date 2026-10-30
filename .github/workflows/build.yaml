@@ -1,0 +1,53 @@
+name: Build
+
+# Static (musl) release binaries and the PyPI wheels that carry them, for x86_64 and aarch64.
+# Called by rust.yaml on every push and by release.yaml for a release.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  dist:
+    name: dist ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-latest }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cache/cargo-registry
+            .cache/target
+          key: dist-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: dist-${{ matrix.arch }}-
+      # Alpine is musl-native: the binary is static-pie and runs on any glibc or musl Linux. One
+      # compile gives both the wheel (tagged for glibc and musl, as uv's are) and the binary.
+      - name: Build in Alpine
+        run: |
+          mkdir -p .cache/cargo-registry .cache/target dist
+          docker run --rm -v "$PWD:/src" -v "$PWD/.cache/cargo-registry:/usr/local/cargo/registry" \
+            -e CARGO_TARGET_DIR=/src/.cache/target -w /src rust:1.93-alpine sh -euc '
+              apk add -q musl-dev cmake make perl gcc g++ python3
+              python3 -m venv /tmp/v && /tmp/v/bin/pip install -q "maturin>=1.9,<2"
+              /tmp/v/bin/maturin build --release --locked --compatibility manylinux_2_17 musllinux_1_1 -o dist
+              cp .cache/target/release/envira dist/envira-${{ matrix.arch }}-linux'
+          sudo chown -R "$(id -u):$(id -g)" dist .cache
+      - name: Check and checksum
+        working-directory: dist
+        run: |
+          file envira-${{ matrix.arch }}-linux | tee /dev/stderr | grep -q 'static-pie linked'
+          ./envira-${{ matrix.arch }}-linux --version
+          ./envira-${{ matrix.arch }}-linux catalog check
+          sha256sum envira-${{ matrix.arch }}-linux > envira-${{ matrix.arch }}-linux.sha256
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/
+          retention-days: 7

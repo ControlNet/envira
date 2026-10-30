@@ -12,7 +12,9 @@ on:
       - 'rust-toolchain.toml'
       - 'tests/integration/**'
       - 'verify.sh'
+      - 'pyproject.toml'
       - '.github/workflows/rust.yaml'
+      - '.github/workflows/build.yaml'
   pull_request:
     paths:
       - 'src/**'
@@ -22,8 +24,12 @@ on:
       - 'rust-toolchain.toml'
       - 'tests/integration/**'
       - 'verify.sh'
+      - 'pyproject.toml'
       - '.github/workflows/rust.yaml'
+      - '.github/workflows/build.yaml'
   workflow_dispatch:
+  # release.yaml runs the same checks and uses the dist artifacts.
+  workflow_call:
 
 # A newer push to the same branch or PR cancels the run still going for the older one.
 concurrency:
@@ -45,6 +51,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  # The static release binaries and wheels (x86_64, aarch64).
+  dist:
+    uses: ./.github/workflows/build.yaml
 
   # One release build for every integration job; they do not wait for the lints.
   build:
