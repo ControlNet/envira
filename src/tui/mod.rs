@@ -262,13 +262,7 @@ fn authorize_sudo(
     input: &mut JoinHandle<()>,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> Result<bool> {
-    let quiet = std::process::Command::new("sudo")
-        .args(["-n", "-v"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if quiet {
+    if crate::app::sudo_without_password() {
         return Ok(true);
     }
     // Stop reading keys so the password prompt gets them, then hand the terminal back.

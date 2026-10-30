@@ -167,11 +167,27 @@ fn load_valid(global: &Global, paths: &Paths) -> Result<Loaded> {
 
 /// Asks for the sudo password once (when needed) and keeps the credential cache warm.
 /// Must run while the terminal is in normal mode.
+/// Whether steps can run `sudo -n` now: a NOPASSWD rule or a fresh timestamp. Checked with
+/// `sudo -n true` rather than `sudo -n -v`: validating needs *every* matching rule to be NOPASSWD
+/// (openSUSE ships `ALL ALL=(ALL) ALL` next to a user's NOPASSWD rule), running one command does not.
+pub fn sudo_without_password() -> bool {
+    std::process::Command::new("sudo")
+        .args(["-n", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 pub fn ensure_sudo(facts: &Facts) -> Result<Option<tokio::task::JoinHandle<()>>> {
     match facts.privilege {
         Privilege::Root => return Ok(None),
         Privilege::None => bail!("this plan needs sudo, which is not available"),
         Privilege::Sudo { .. } => {}
+    }
+    if sudo_without_password() {
+        return Ok(None);
     }
     let ok = std::process::Command::new("sudo")
         .arg("-v")
