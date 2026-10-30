@@ -121,7 +121,10 @@ pub fn disk_free(path: &std::path::Path) -> Option<(u64, u64)> {
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return None;
     }
-    Some((dev, st.f_bavail as u64 * st.f_frsize as u64))
+    // The field types differ between targets (u32 on some 32-bit ones).
+    #[allow(clippy::unnecessary_cast)]
+    let free = st.f_bavail as u64 * st.f_frsize as u64;
+    Some((dev, free))
 }
 
 pub fn fmt_bytes(n: u64) -> String {
