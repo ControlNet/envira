@@ -84,6 +84,15 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   `shell_env` regeneration then writes rc blocks into the scratch home, not the real one.
 - ratatui: `Line::styled` puts the style on the line (`line.style`), not on its spans.
 
+- Diagnose before retrying: only network errors and a busy dpkg lock are worth repeating; a 404,
+  PEP 668 or a full disk fails the same way every time. Skip `[envira]` and `$ cmd` lines when
+  matching, or the echoed command (`$ curl ...`) looks like a curl failure.
+- Latest-version queries run 6 at a time (`buffer_unordered(6)`); the 1 s query retry costs about
+  10 s in total when completely offline.
+- Free space changes between two `statvfs` calls on a busy disk; tests compare the device only.
+- Tests that fork children race with `flock` tests: until exec, a child holds a copy of every
+  descriptor (O_CLOEXEC closes it only at exec), so a released lock can look held for a moment.
+
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
 - reqwest 0.13: TLS feature is `rustls` (not `rustls-tls`); `default-features = false, features = ["blocking", "json", "rustls"]`.

@@ -92,6 +92,12 @@ category = "test"
 detect = { cmd = "test -f \"$HOME/slow-done\"" }
 install = [{ run = "echo begin; sleep ${SLOW:-600}; touch \"$HOME/slow-done\"" }]
 
+[tools.flaky]
+desc = "test only"
+category = "test"
+detect = { cmd = "test -f \"$HOME/flaky-done\"" }
+install = [{ run = "if [ ! -f \"$HOME/flaky-once\" ]; then touch \"$HOME/flaky-once\"; echo 'curl: (56) Recv failure: Connection reset by peer'; exit 56; fi; touch \"$HOME/flaky-done\"" }]
+
 [tools.quick]
 desc = "test only"
 category = "test"
@@ -124,6 +130,14 @@ grep -q "2/2 succeeded" /tmp/retry.txt
 rm "$HOME/slow-done"
 out=$(ENVIRA_STEP_TIMEOUT=1 "${r[@]}" install -y -q slow) && { echo 'a hung step succeeded'; exit 1; }
 grep -q "timed out after" <<<"$out"
+# A network error is retried automatically and the run succeeds.
+"${r[@]}" install -y flaky > /tmp/flaky.txt
+grep -q "hint (network)" /tmp/flaky.txt
+grep -q "retrying in 5.0s (attempt 2/3)" /tmp/flaky.txt
+grep -q "1/1 succeeded" /tmp/flaky.txt
+"${r[@]}" log --list > /tmp/runs.txt
+cat /tmp/runs.txt
+[ "$(grep -c ' finished ' /tmp/runs.txt)" -ge 4 ]
 unset ENVIRA_STATE_DIR ENVIRA_CONFIG_DIR
 
 echo "=== PASS (${ENVIRA_MODE:-sudo})"

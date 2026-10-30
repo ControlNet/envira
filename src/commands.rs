@@ -313,7 +313,7 @@ pub fn log_list(sess: &Session) -> Result<i32> {
         let ok = rec.units.iter().filter(|u| u.outcome == "ok").count();
         let left = rec.unfinished().len();
         println!(
-            "{id}  {:<14} {:<11} {ok:>3} ok  {left:>3} unfinished  of {}",
+            "{id:<18}  {:<14} {:<11} {ok:>3} ok  {left:>3} unfinished  of {}",
             rec.command,
             how,
             rec.units.len()

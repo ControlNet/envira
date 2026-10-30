@@ -205,6 +205,8 @@ Ownership:
   (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, ...; 8+ chars) are replaced by `***` in logs and
   the TUI. `run.toml` lists every planned unit as `pending` before the first step and records the
   envira version and machine summary.
+- Run saves take the selection (bundles, include, exclude) from disk before writing, so a bundle
+  subscribed elsewhere during a run survives it.
 - `lock`: `flock` held for the length of a run (sync, install, update, retry, config, adopt, TUI
   runs). A second run fails at once with "another envira run is in progress". `envira fs` and
   `fetch-release`, which steps invoke, never take it.
@@ -236,6 +238,13 @@ Ownership:
    `fetch-release` checks the download's SHA-256 against GitHub's asset `digest` (recorded for
    uploads since 2025), else against a published `<asset>.sha256` or `checksums.txt` /
    `SHA256SUMS`; a mismatch fails the step, a release without either is noted in the log.
+   A failed step's last 40 output lines are diagnosed (`src/diagnose.rs`): network, busy
+   dpkg/apt lock, GitHub rate limit, not found, disk full, permission, sudo, PEP 668, missing
+   command. The log gets `[envira] hint (<kind>): <what to do>`, the run record a `hint`, the
+   failure detail the kind. Transient kinds (network, busy package manager) retry the step
+   (`--retries` / `ENVIRA_RETRIES`, default 2; 5 s then 15 s, 6x for a busy apt; the wait ends on
+   stop/cancel; the step timeout is per attempt).
+   Plans warn when the home, temp dir or (system units) `/usr/local` / `/var` has < 500 MB free.
 9. Regenerate the managed shell environment from the resulting state.
 10. Crash, Ctrl-C, SIGTERM or SIGHUP mid-run: state is per-unit and `state.last_run` points at the
     run from its start. Ctrl-C stops after the current step (twice cancels it); SIGTERM/SIGHUP
@@ -278,7 +287,7 @@ envira retry  [-y]          # every unit the last run did not finish
 envira config apply|revert <config>... [-y]
 envira plan   [<item|bundle>...] [--script]
 envira env                  # regenerate shell files and rc blocks only
-envira log    [<item>] [--run <id>]
+envira log    [<item>] [--run <id>] | --list   # --list: kept runs, finished/running/interrupted
 envira explain <item>       # detect/check commands with exit codes and output, ownership,
                             # last result, and what (re)installing would run
 envira doctor               # facts, PATH, rc integration and duplicates, catalog layers
@@ -286,7 +295,7 @@ envira catalog check|schema|show
 envira update [<item|bundle>...] [--check] [--refresh | --offline] [-y] [--dry-run] [-q]
                             # no items: every outdated managed/adoptable tool
 envira adopt  [<item|bundle>...] [--dry-run]   # record adoptable tools as managed, no reinstall
-Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <seconds>
+Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <seconds>, --retries <n>
 Hidden, used by templates: envira fs ..., envira fetch-release ...
 ```
 Headless commands are the same engine as the TUI; `sync -y --bundle full` is the Docker / CI path.
