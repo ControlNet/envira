@@ -21,7 +21,7 @@ items=(bat fnm nodejs bun codex-sandbox-network)
 if [ "${ENVIRA_MODE:-sudo}" = user ]; then
   # unzip, and the library Node.js 25+ links against (the catalog's `libatomic` per distro).
   . /etc/os-release
-  case " $ID $ID_LIKE " in
+  case " $ID ${ID_LIKE:-} " in
     *" debian "*|*" ubuntu "*|*" suse "*|*" opensuse "*) admin_install unzip libatomic1 ;;
     *" fedora "*) admin_install unzip libatomic ;;
     *" arch "*) admin_install unzip gcc-libs ;;

@@ -139,7 +139,12 @@ install = [{ run = "curl -fsSL https://getmic.ro | bash && install -D -m 755 mic
 desc = "Terminal file manager"
 depends = ["curl"]
 bin = "spf"
-install = [{ method = "script", url = "https://superfile.dev/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/yorukot/superfile/releases/latest", json = "tag_name" } }]
+# The release first: install.sh asks the GitHub API for the version without a token, and on shared
+# runners an exhausted rate limit leaves it downloading `superfile v`.
+install = [
+  { method = "github-release", repo = "yorukot/superfile", asset = { x86_64 = "superfile-linux-v*-amd64.tar.gz", aarch64 = "superfile-linux-v*-arm64.tar.gz" } },
+  { method = "script", url = "https://superfile.dev/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/yorukot/superfile/releases/latest", json = "tag_name" } },
+]
 
 [configs.superfile-config]
 desc = "superfile default config without update checks"

@@ -21,7 +21,7 @@ status=0
 if [ "${ENVIRA_MODE:-sudo}" = user ]; then
   # What an administrator provides on a machine without sudo.
   . /etc/os-release
-  case " $ID $ID_LIKE " in
+  case " $ID ${ID_LIKE:-} " in
     *" debian "*|*" ubuntu "*)
       admin_install git wget build-essential unzip libatomic1 python3-pip python3-venv ;;
     *" fedora "*) admin_install git wget gcc make perl unzip libatomic python3-pip ;;
