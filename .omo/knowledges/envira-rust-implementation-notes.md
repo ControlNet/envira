@@ -31,6 +31,11 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - fnm: `--skip-shell`; rustup: `-y --no-modify-path`. envira renders PATH/init itself.
 - The fnm and bun installers need `unzip`. It is a catalog item that both depend on.
 - Fresh Docker images have no apt lists: the apt template retries after `apt-get update`.
+- apt list age (2026-10-30, `envira apt-refresh`): the mtimes of `/var/lib/apt/lists/*` are not the
+  refresh time (apt keeps the server's Last-Modified, a 304 touches nothing); use stamps. An
+  unresolvable source makes `apt-get update` warn (`W: Failed to fetch`) and exit 0; a source
+  without a Release file or a bad signature exits 100, which must not fail every apt install.
+  `add-apt-repository` refreshes the lists itself (no `apt-get update` after it).
 - fnm's Node.js 25+ needs `libatomic.so.1` (apt `libatomic1`); without it `node` fails to load on
   minimal images. It is the `libatomic` catalog item, a dependency of `nodejs`.
 

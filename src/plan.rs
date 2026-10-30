@@ -913,13 +913,9 @@ mod tests {
         let plan = Planner::new(&c, &f, &present).plan(&["bat".into()], false);
         assert_eq!(plan.units[0].via, "apt");
         assert_eq!(plan.units[0].scope, Scope::System);
-        assert!(
-            plan.units[0].steps[0]
-                .cmd
-                .as_deref()
-                .unwrap()
-                .starts_with("sudo -n env DEBIAN_FRONTEND")
-        );
+        assert!(plan.units[0].steps[0].cmd.as_deref().unwrap().contains(
+            " apt-refresh && { sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y bat "
+        ));
         assert!(plan.needs_sudo(&f));
 
         f.privilege = Privilege::None;

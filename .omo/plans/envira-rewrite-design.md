@@ -456,7 +456,15 @@ through dependencies of dependencies), and about duplicate ids.
    without new builtins; bat also differs in libc (musl vs gnu on aarch64).
 4. Distro-renamed binaries (`batcat`) need both `bins` and a detect fallback
    (`bat --version || batcat --version`). An alias renders only when the target exists.
-5. Fresh images have no apt lists, so the apt template retries after `apt-get update`.
+5. Fresh images have no apt lists, so the apt template retries after `apt-get update`. Since
+   2026-10-30 its install and update first run `envira apt-refresh` (`src/apt.rs`): `apt-get update`
+   when the lists are missing, the sources are newer than the last refresh, or the newest of apt's
+   `update-success-stamp` and envira's `/var/lib/envira/apt-refreshed` is older than a day (a stamp
+   in the future does not count). The apt units share the `packages` lane, so one run refreshes at
+   most once. A busy lock exits 100 without a stamp (the step is retried); any other failure (a
+   dead third-party source) only warns and stamps, so installs go on and later packages do not
+   try again. Without it a machine with weeks-old lists installed old versions and `latest`
+   (`apt-cache policy`, local lists) never showed its apt tools as outdated.
 6. Stateful vendor commands such as `ya pkg add` need a raw step with its own `check`, which the step
    form supports. Without it, re-applying a config would fail.
 7. Effective-value checks and file checks differ. The inotify config first used its own

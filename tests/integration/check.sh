@@ -53,6 +53,25 @@ out=$(envira install -y -q "${items[@]}")
 echo "$out"
 grep -q "Nothing to do." <<<"$out"
 
+if [ "${ENVIRA_MODE:-sudo}" = sudo ] && command -v apt-get >/dev/null; then
+  echo "=== apt lists: refreshed at most once a day"
+  # bat's install above refreshed the image's empty lists.
+  sudo test -f /var/lib/envira/apt-refreshed
+  sudo envira apt-refresh | tee /tmp/apt.txt
+  grep -q "not refreshing them" /tmp/apt.txt
+  # Two days old: the first apt package refreshes them, the second does not.
+  sudo touch -d '2 days ago' /var/lib/envira/apt-refreshed
+  envira install -y -q screen tmux
+  { envira log screen; envira log tmux; } > /tmp/apt.txt
+  [ "$(grep -c 'refreshed 2 days ago: apt-get update$' /tmp/apt.txt)" = 1 ]
+  [ "$(grep -c 'not refreshing them$' /tmp/apt.txt)" = 1 ]
+  # A source that does not resolve: the refresh warns, nothing fails.
+  echo 'deb http://bogus.invalid/ubuntu noble main' | sudo tee /etc/apt/sources.list.d/bogus.list >/dev/null
+  sudo envira apt-refresh | tee /tmp/apt.txt
+  grep -q "sources changed since the last refresh: apt-get update" /tmp/apt.txt
+  sudo rm /etc/apt/sources.list.d/bogus.list
+fi
+
 echo "=== shell integration"
 envira env >/dev/null
 envira env | grep -q "up to date"

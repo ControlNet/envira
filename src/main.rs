@@ -1,4 +1,5 @@
 mod app;
+mod apt;
 mod catalog;
 mod cli;
 mod commands;
@@ -54,6 +55,10 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             })?;
             return Ok(0);
         }
+        Some(Command::AptRefresh { max_age }) => {
+            let max_age = max_age.map_or(apt::MAX_AGE, std::time::Duration::from_secs);
+            return apt::run(&apt::Paths::default(), max_age);
+        }
         Some(Command::Catalog { cmd }) => return commands::catalog_cmd(&cli.global, cmd),
         _ => {}
     }
@@ -99,7 +104,12 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             }
             Some(Command::Doctor) => commands::doctor(&sess).await,
             Some(Command::Explain { item }) => commands::explain(&sess, &item).await,
-            Some(Command::Fs { .. } | Command::FetchRelease { .. } | Command::Catalog { .. }) => {
+            Some(
+                Command::Fs { .. }
+                | Command::FetchRelease { .. }
+                | Command::AptRefresh { .. }
+                | Command::Catalog { .. },
+            ) => {
                 unreachable!()
             }
         }

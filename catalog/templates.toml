@@ -49,10 +49,12 @@ bin_dir = { user = "~/.local/bin", system = "/usr/local/bin" }
 desc = "Debian/Ubuntu package"
 when = ["family:debian"]
 scope = "system"
-# Retries after `apt-get update` when the package lists are missing or stale (fresh images).
-install = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package} || { {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package}; }"
+# `envira apt-refresh` runs `apt-get update` when the lists are missing, older than a day or older
+# than the sources, at most once a day however many packages follow. The install still retries
+# after `apt-get update` when it fails (lists cleaned since, a source added by hand).
+install = "{sudo} {envira} apt-refresh && { {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package} || { {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package}; }; }"
 installed = { cmd = "dpkg-query -W -f='${Version}\\n' {package}", regex = '^(?:\d+:)?([^-\s]+)' }
-update = "{sudo} env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {package}"
+update = "{sudo} {envira} apt-refresh && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {package}"
 # Candidate from the local package lists (what an upgrade would install), no network.
 latest = { cmd = "apt-cache policy {package}", regex = 'Candidate: (?:\d+:)?([^-\s]+)' }
 

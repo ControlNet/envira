@@ -143,6 +143,13 @@ pub enum Command {
         #[command(subcommand)]
         cmd: FsCmd,
     },
+    /// Refresh apt's package lists unless they were refreshed within the last day.
+    #[command(hide = true)]
+    AptRefresh {
+        /// Refresh when the last refresh is older than this.
+        #[arg(long, value_name = "SECONDS")]
+        max_age: Option<u64>,
+    },
     /// Download a GitHub release asset and install binaries from it.
     #[command(hide = true)]
     FetchRelease {

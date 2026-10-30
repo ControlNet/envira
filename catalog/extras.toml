@@ -63,7 +63,8 @@ install = [
 [tools.fastfetch]
 desc = "System information (neofetch successor)"
 install = [
-  { run = "{sudo} add-apt-repository -y ppa:zhangsongcui3371/fastfetch && {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y fastfetch", scope = "system", when = ["family:ubuntu"], depends = ["apt-tools"] },
+  # add-apt-repository refreshes the package lists itself.
+  { run = "{sudo} add-apt-repository -y ppa:zhangsongcui3371/fastfetch && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y fastfetch", scope = "system", when = ["family:ubuntu"], depends = ["apt-tools"] },
   { method = "dnf", package = "fastfetch" },
   { method = "pacman", package = "fastfetch" },
   { method = "zypper", package = "fastfetch" },

@@ -1,5 +1,5 @@
 # Throwaway Ubuntu machine for envira integration runs: a normal user with passwordless sudo,
-# no unzip (envira installs it as a dependency) and no apt package lists (exercises the apt fallback).
+# no unzip (envira installs it as a dependency) and no apt package lists (envira refreshes them).
 FROM ubuntu:24.04
 
 RUN apt-get update \
