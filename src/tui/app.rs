@@ -814,7 +814,7 @@ impl App {
                 ctl.send_modify(|c| c.stop = true);
             }
             run.stopping = true;
-            self.notify("Stopping after the current step");
+            self.notify("Stopping after the running steps");
             return vec![];
         }
         match k.code {
@@ -839,7 +839,7 @@ impl App {
                 if let Some(ctl) = &run.ctl {
                     ctl.send_modify(|c| c.cancel_seq += 1);
                 }
-                self.notify("Cancelling the current step");
+                self.notify("Cancelling the running steps");
             }
             KeyCode::Char('r') if finished => {
                 let failed = run.failed_ids();
@@ -911,7 +911,7 @@ impl App {
                 }
                 run.stopping = true;
                 self.quitting = true;
-                self.notify("Terminating: cancelling the current step");
+                self.notify("Terminating: cancelling the running steps");
                 false
             }
             _ => true,

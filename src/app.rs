@@ -75,6 +75,7 @@ impl Session {
                 .unwrap_or(exec::STEP_TIMEOUT),
             retries: self.global.retries.unwrap_or(exec::RETRIES),
             retry_delay: exec::RETRY_DELAY,
+            jobs: self.global.jobs.map_or(exec::JOBS, usize::from),
         }
     }
 

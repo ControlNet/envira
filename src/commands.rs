@@ -905,6 +905,8 @@ async fn run_plan(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
     let ctx = sess.exec_ctx(command.into(), true);
+    // Output of units running side by side is told apart by the unit's id.
+    let tagged = ctx.jobs > 1;
     let run_id = ctx.run_id.clone();
     let paths = sess.paths.clone();
     let handle = tokio::spawn(exec::execute(plan, ctx, state, tx, ctl_rx));
@@ -923,7 +925,13 @@ async fn run_plan(
                 let Some(ev) = ev else { break };
                 match ev {
                     Event::UnitStarted(i) => println!("==> [{}/{n}] {}", i + 1, actions[i]),
-                    Event::Line(_, l) if !quiet || l.starts_with("[envira]") => println!("    │ {l}"),
+                    Event::Line(i, l) if !quiet || l.starts_with("[envira]") => {
+                        if tagged {
+                            println!("    │ {} │ {l}", ids[i]);
+                        } else {
+                            println!("    │ {l}");
+                        }
+                    }
                     Event::Line(..) => {}
                     Event::UnitFinished(i, o, d) => {
                         let id = &ids[i];
@@ -954,7 +962,7 @@ async fn run_plan(
                 }
             }
             _ = async { tokio::select! { _ = term.recv() => {}, _ = hup.recv() => {} } } => {
-                println!("\n==> terminated: cancelling the current step and stopping");
+                println!("\n==> terminated: cancelling the running steps and stopping");
                 ctl_tx.send_modify(|c| {
                     c.stop = true;
                     c.cancel_seq += 1;
@@ -965,7 +973,7 @@ async fn run_plan(
                 let mut c = *ctl_tx.borrow();
                 if interrupts == 1 {
                     c.stop = true;
-                    println!("\n==> stopping after the current step (Ctrl-C again cancels it)");
+                    println!("\n==> stopping after the running steps (Ctrl-C again cancels them)");
                 } else {
                     c.cancel_seq += 1;
                 }

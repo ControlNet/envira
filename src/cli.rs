@@ -33,6 +33,10 @@ pub struct Global {
     /// Retries of a step that failed for a transient reason (network error, busy apt); default 2.
     #[arg(long, global = true, env = "ENVIRA_RETRIES", value_name = "N")]
     pub retries: Option<u32>,
+    /// Items installed at the same time (default 4); 1 installs them one by one. Package
+    /// managers, pipx, npm, builds and configs still take turns.
+    #[arg(short, long, global = true, env = "ENVIRA_JOBS", value_name = "N", value_parser = clap::value_parser!(u16).range(1..))]
+    pub jobs: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -1,5 +1,6 @@
-//! Executes a plan unit by unit. A failure blocks only the units that depend on it; state and
-//! the run record are written after every unit.
+//! Executes a plan, several units at a time. A unit starts once its dependencies succeeded and
+//! the shared resources it uses (see [`lanes`]) are free; a failure blocks only the units that
+//! depend on it. State and the run record are written after every unit.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{mpsc, watch};
 
 use crate::catalog::Catalog;
@@ -16,7 +18,7 @@ use crate::plan::{Action, Kind, Plan, Unit};
 use crate::runner::{Runner, StreamEnd};
 use crate::shellenv;
 use crate::state::{
-    self, ConfigRecord, LastResult, Paths, RunRecord, State, ToolRecord, UnitRecord,
+    self, ConfigRecord, LastResult, Paths, RunRecord, Scope, State, ToolRecord, UnitRecord,
 };
 use crate::status::{probe_config, probe_tool};
 
@@ -25,6 +27,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const RETRIES: u32 = 2;
 pub const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// Default number of units that run at the same time.
+pub const JOBS: usize = 4;
 const KEEP_RUNS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +82,7 @@ pub enum Event {
 /// Control messages from the UI.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Control {
-    /// Incremented to cancel the unit that is running now.
+    /// Incremented to cancel the units that are running now.
     pub cancel_seq: u32,
     /// Do not start further units.
     pub stop: bool,
@@ -99,6 +103,43 @@ pub struct ExecCtx {
     pub retries: u32,
     /// Wait before the first retry; later ones wait longer.
     pub retry_delay: Duration,
+    /// Units that may run at the same time; 1 runs them one by one in plan order.
+    pub jobs: usize,
+}
+
+/// Shared resources a unit uses that do not tolerate two users at once; units with a lane in
+/// common run one after the other.
+/// - `packages`: the system package manager's lock (apt, dnf, pacman, zypper), also taken by
+///   system-scope scripts such as get.docker.com that call it themselves.
+/// - `pipx`: concurrent pipx installs race to create its shared venv; pip shares the lane.
+/// - `npm`: `npm install -g` does not lock the global prefix.
+/// - `build`: cargo, go and make builds would fight over the CPUs.
+/// - `config`: config actions edit shared files (rc files, settings).
+pub fn lanes(unit: &Unit) -> BTreeSet<&'static str> {
+    let mut lanes = BTreeSet::new();
+    if unit.kind == Kind::Config {
+        lanes.insert("config");
+    }
+    if unit.scope == Scope::System && matches!(unit.via.as_str(), "script" | "run") {
+        lanes.insert("packages");
+    }
+    let words = unit
+        .steps
+        .iter()
+        .filter_map(|s| s.cmd.as_deref())
+        .flat_map(|c| c.split(|c: char| c.is_whitespace() || "();&|".contains(c)));
+    for w in words {
+        let lane = match w.rsplit('/').next().unwrap_or(w) {
+            "apt" | "apt-get" | "dpkg" | "add-apt-repository" | "dnf" | "yum" | "rpm"
+            | "pacman" | "zypper" | "snap" => "packages",
+            "pipx" | "pip" | "pip3" => "pipx",
+            "npm" => "npm",
+            "cargo" | "go" | "make" => "build",
+            _ => continue,
+        };
+        lanes.insert(lane);
+    }
+    lanes
 }
 
 pub async fn execute(
@@ -106,7 +147,7 @@ pub async fn execute(
     ctx: ExecCtx,
     mut state: State,
     tx: mpsc::UnboundedSender<Event>,
-    mut ctl: watch::Receiver<Control>,
+    ctl: watch::Receiver<Control>,
 ) -> (RunRecord, State) {
     let run_dir = ctx.paths.run_dir(&ctx.run_id);
     let _ = state::create_dir_all_owned(&run_dir, &ctx.facts);
@@ -121,43 +162,104 @@ pub async fn execute(
     // Point state at this run now: if envira dies midway, `retry` resumes this run.
     state.last_run = Some(ctx.run_id.clone());
     let _ = state.save_run(&ctx.paths, &ctx.facts);
+    let mut ok: BTreeSet<String> = BTreeSet::new();
     let mut bad: BTreeSet<String> = BTreeSet::new();
+    let unit_lanes: Vec<_> = plan.units.iter().map(lanes).collect();
+    let mut busy: BTreeSet<&str> = BTreeSet::new();
+    let mut waiting: Vec<usize> = (0..plan.units.len()).collect();
+    let mut running = FuturesUnordered::new();
+    let (ctx_ref, tx_ref, run_dir_ref) = (&ctx, &tx, &run_dir);
 
-    for (idx, unit) in plan.units.iter().enumerate() {
-        let started = Instant::now();
-        let (outcome, hint) = if ctl.borrow().stop {
-            (Outcome::Skipped, None)
-        } else if let Some(d) = unit.deps.iter().find(|d| bad.contains(*d)) {
-            (Outcome::Blocked(d.clone()), None)
-        } else {
+    loop {
+        // Settle what can no longer run, then start, in plan order, what may run now.
+        let mut i = 0;
+        while i < waiting.len() {
+            let idx = waiting[i];
+            let unit = &plan.units[idx];
+            let settled = if ctl.borrow().stop {
+                Some(Outcome::Skipped)
+            } else {
+                unit.deps
+                    .iter()
+                    .find(|d| bad.contains(*d))
+                    .map(|d| Outcome::Blocked(d.clone()))
+            };
+            if let Some(outcome) = settled {
+                waiting.remove(i);
+                bad.insert(unit.id.clone());
+                finish_unit(
+                    &ctx,
+                    &tx,
+                    &mut state,
+                    &mut record,
+                    idx,
+                    unit,
+                    outcome,
+                    None,
+                    Duration::ZERO,
+                );
+                continue;
+            }
+            let ready = running.len() < ctx.jobs.max(1)
+                && unit.deps.iter().all(|d| ok.contains(d))
+                && unit_lanes[idx].is_disjoint(&busy);
+            if !ready {
+                i += 1;
+                continue;
+            }
+            waiting.remove(i);
+            busy.extend(unit_lanes[idx].iter().copied());
             let _ = tx.send(Event::UnitStarted(idx));
-            run_unit(idx, unit, &ctx, &tx, &mut ctl, &run_dir).await
+            let mut uctl = ctl.clone();
+            running.push(async move {
+                let started = Instant::now();
+                let (outcome, hint) =
+                    run_unit(idx, unit, ctx_ref, tx_ref, &mut uctl, run_dir_ref).await;
+                (idx, outcome, hint, started.elapsed())
+            });
+        }
+        let Some((idx, outcome, hint, elapsed)) = running.next().await else {
+            // Nothing runs, so nothing waiting can become ready: a dependency outside the plan.
+            for idx in waiting.drain(..) {
+                let unit = &plan.units[idx];
+                let dep = unit.deps.iter().find(|d| !ok.contains(*d)).cloned();
+                let outcome = Outcome::Blocked(dep.unwrap_or_default());
+                finish_unit(
+                    &ctx,
+                    &tx,
+                    &mut state,
+                    &mut record,
+                    idx,
+                    unit,
+                    outcome,
+                    None,
+                    Duration::ZERO,
+                );
+            }
+            break;
         };
-        if !outcome.succeeded() {
+        for l in &unit_lanes[idx] {
+            busy.remove(l);
+        }
+        let unit = &plan.units[idx];
+        if outcome.succeeded() {
+            ok.insert(unit.id.clone());
+        } else {
             bad.insert(unit.id.clone());
         }
-        let elapsed = started.elapsed();
-        update_state(&mut state, unit, &outcome, &ctx.run_id);
-        record.units[idx] = UnitRecord {
-            id: unit.id.clone(),
-            action: unit.action.as_str().into(),
-            via: unit.via.clone(),
-            outcome: outcome.as_str().into(),
-            detail: outcome.detail(),
-            hint: hint.filter(|_| !outcome.succeeded()),
-            seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
-        };
-        if let Err(e) = state
-            .save_run(&ctx.paths, &ctx.facts)
-            .and_then(|_| record.save(&ctx.paths, &ctx.facts))
-        {
-            let _ = tx.send(Event::Line(
-                idx,
-                format!("[envira] could not save state: {e:#}"),
-            ));
-        }
-        let _ = tx.send(Event::UnitFinished(idx, outcome, elapsed));
+        finish_unit(
+            &ctx,
+            &tx,
+            &mut state,
+            &mut record,
+            idx,
+            unit,
+            outcome,
+            hint,
+            elapsed,
+        );
     }
+    drop(running);
 
     if ctx.shell_env {
         let r = regenerate_shell_env(&ctx).await;
@@ -171,6 +273,41 @@ pub async fn execute(
     state::prune_runs(&ctx.paths, KEEP_RUNS);
     let _ = tx.send(Event::Finished(record.clone()));
     (record, state)
+}
+
+/// Records how a unit ended in the state and the run record, saves both, and reports it.
+#[allow(clippy::too_many_arguments)]
+fn finish_unit(
+    ctx: &ExecCtx,
+    tx: &mpsc::UnboundedSender<Event>,
+    state: &mut State,
+    record: &mut RunRecord,
+    idx: usize,
+    unit: &Unit,
+    outcome: Outcome,
+    hint: Option<String>,
+    elapsed: Duration,
+) {
+    update_state(state, unit, &outcome, &ctx.run_id);
+    record.units[idx] = UnitRecord {
+        id: unit.id.clone(),
+        action: unit.action.as_str().into(),
+        via: unit.via.clone(),
+        outcome: outcome.as_str().into(),
+        detail: outcome.detail(),
+        hint: hint.filter(|_| !outcome.succeeded()),
+        seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
+    };
+    if let Err(e) = state
+        .save_run(&ctx.paths, &ctx.facts)
+        .and_then(|_| record.save(&ctx.paths, &ctx.facts))
+    {
+        let _ = tx.send(Event::Line(
+            idx,
+            format!("[envira] could not save state: {e:#}"),
+        ));
+    }
+    let _ = tx.send(Event::UnitFinished(idx, outcome, elapsed));
 }
 
 async fn run_unit(
@@ -589,7 +726,7 @@ pub async fn regenerate_shell_env(ctx: &ExecCtx) -> Result<Vec<String>, String> 
 mod tests {
     use super::*;
     use crate::catalog::load::{embedded_layer, load};
-    use crate::plan::Planner;
+    use crate::plan::{Planner, UnitStep};
     use crate::runner::fake::FakeRunner;
     use std::collections::BTreeSet;
 
@@ -618,6 +755,7 @@ mod tests {
             step_timeout: STEP_TIMEOUT,
             retries: RETRIES,
             retry_delay: Duration::from_millis(5),
+            jobs: 1,
         };
         Setup {
             _dir: dir,
@@ -647,6 +785,7 @@ mod tests {
             step_timeout: s.ctx.step_timeout,
             retries: s.ctx.retries,
             retry_delay: s.ctx.retry_delay,
+            jobs: s.ctx.jobs,
         }
     }
 
@@ -983,5 +1122,191 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, Event::Line(0, l) if l.contains("still 0.48.0; the latest is 0.50.0"))
         ));
+    }
+
+    /// A unit outside the catalog; reverts skip the detection afterwards.
+    fn unit(id: &str, cmd: &str, deps: &[&str]) -> Unit {
+        Unit {
+            id: id.into(),
+            kind: Kind::Tool,
+            action: Action::Revert,
+            via: "run".into(),
+            scope: Scope::User,
+            steps: vec![UnitStep {
+                label: "run".into(),
+                check: None,
+                cmd: Some(cmd.into()),
+            }],
+            verify: vec![],
+            deps: deps.iter().map(|d| d.to_string()).collect(),
+            reason: "requested".into(),
+            expect: None,
+        }
+    }
+
+    fn started(events: &[Event]) -> Vec<usize> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::UnitStarted(i) => Some(*i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Runs `units` with `jobs`, waits until `n` of them started, then cancels and stops.
+    async fn run_until_started(
+        s: &Setup,
+        units: Vec<Unit>,
+        jobs: usize,
+        n: usize,
+    ) -> (RunRecord, Vec<Event>) {
+        let mut ctx = ctx_of(s);
+        ctx.jobs = jobs;
+        let plan = Plan {
+            units,
+            skipped: vec![],
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let handle = tokio::spawn(execute(plan, ctx, State::default(), tx, ctl_rx));
+        let mut events = Vec::new();
+        while started(&events).len() < n {
+            events.push(rx.recv().await.unwrap());
+        }
+        // Give anything else that could start the chance to.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ctl_tx.send_modify(|c| {
+            c.stop = true;
+            c.cancel_seq += 1;
+        });
+        let (rec, _) = handle.await.unwrap();
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+        (rec, events)
+    }
+
+    #[test]
+    fn lanes_follow_the_shared_resources() {
+        let l = |u: &Unit| lanes(u).into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            l(&unit("a", "sudo -n apt-get install -y bat", &[])),
+            ["packages"]
+        );
+        assert_eq!(
+            l(&unit("a", "/usr/bin/zypper install x", &[])),
+            ["packages"]
+        );
+        assert_eq!(l(&unit("a", "pipx install --force tldr", &[])), ["pipx"]);
+        assert_eq!(
+            l(&unit("a", "python3 -m pip install --user pipx", &[])),
+            ["pipx"]
+        );
+        assert_eq!(l(&unit("a", "npm install -g pm2", &[])), ["npm"]);
+        assert_eq!(
+            l(&unit(
+                "a",
+                "cargo install --locked x && install -m 755 x /usr/local/bin",
+                &[]
+            )),
+            ["build"]
+        );
+        assert!(
+            l(&unit(
+                "a",
+                "envira fetch-release --repo a/b --to /usr/local/bin",
+                &[]
+            ))
+            .is_empty()
+        );
+        assert!(l(&unit("a", "curl -fsSL https://bun.sh/install | bash", &[])).is_empty());
+        let mut docker = unit("docker", "curl -fsSL https://get.docker.com | sh", &[]);
+        docker.via = "script".into();
+        docker.scope = Scope::System;
+        assert_eq!(l(&docker), ["packages"]);
+        let mut cfg = unit("c", "envira fs block ~/.zshrc", &[]);
+        cfg.kind = Kind::Config;
+        assert_eq!(l(&cfg), ["config"]);
+    }
+
+    #[tokio::test]
+    async fn independent_units_run_side_by_side() {
+        let s = setup();
+        s.runner.hang("hang");
+        let units = vec![
+            unit("a", "hang a", &[]),
+            unit("b", "hang b", &[]),
+            unit("c", "hang c", &[]),
+        ];
+        let (rec, events) = run_until_started(&s, units, 2, 2).await;
+        // Two at a time: c waits for a slot and is skipped when the run stops.
+        assert_eq!(started(&events), vec![0, 1]);
+        assert_eq!(
+            outcomes(&rec),
+            vec![("a", "cancelled"), ("b", "cancelled"), ("c", "skipped")]
+        );
+    }
+
+    #[tokio::test]
+    async fn units_sharing_a_lane_take_turns() {
+        let s = setup();
+        s.runner.hang("hang");
+        let units = vec![
+            unit("a", "pipx install hang-a", &[]),
+            unit("b", "pipx install hang-b", &[]),
+            unit("c", "hang c", &[]),
+        ];
+        let (rec, events) = run_until_started(&s, units, 4, 2).await;
+        assert_eq!(started(&events), vec![0, 2]);
+        assert_eq!(
+            outcomes(&rec),
+            vec![("a", "cancelled"), ("b", "skipped"), ("c", "cancelled")]
+        );
+    }
+
+    #[tokio::test]
+    async fn units_wait_for_their_dependencies() {
+        let s = setup();
+        s.runner.rule("ok", 0, "").rule("boom", 1, "error: boom");
+        let units = vec![
+            unit("a", "ok a", &[]),
+            unit("b", "ok b", &["a"]),
+            unit("c", "boom c", &[]),
+            unit("d", "ok d", &["c"]),
+            unit("e", "ok e", &["b", "a"]),
+        ];
+        let mut ctx = ctx_of(&s);
+        ctx.jobs = 4;
+        let plan = Plan {
+            units,
+            skipped: vec![],
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let (rec, _) = execute(plan, ctx, State::default(), tx, ctl_rx).await;
+        let mut events = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+        assert_eq!(
+            outcomes(&rec),
+            vec![
+                ("a", "ok"),
+                ("b", "ok"),
+                ("c", "failed"),
+                ("d", "blocked"),
+                ("e", "ok")
+            ]
+        );
+        let pos = |want: &dyn Fn(&Event) -> bool| events.iter().position(want).unwrap();
+        let finished =
+            |i: usize| move |e: &Event| matches!(e, Event::UnitFinished(j, ..) if *j == i);
+        let start = |i: usize| move |e: &Event| matches!(e, Event::UnitStarted(j) if *j == i);
+        assert!(pos(&finished(0)) < pos(&start(1)));
+        assert!(pos(&finished(1)) < pos(&start(4)));
+        // a and c had no dependencies and started before either finished.
+        assert!(pos(&start(2)) < pos(&finished(0)));
+        assert!(!started(&events).contains(&3));
     }
 }

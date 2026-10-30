@@ -1546,8 +1546,8 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Scroll", "PgUp/PgDn"),
             ("Zoom log", "z"),
             ("Help", "?"),
-            ("Cancel step", "c"),
-            ("Stop after step", "ctrl-c"),
+            ("Cancel running", "c"),
+            ("Stop after running", "ctrl-c"),
         ]
     };
     let right_span = toast_span(app, t).or_else(|| {
@@ -1605,8 +1605,8 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
             ("f", "follow the running step"),
             ("PgUp PgDn", "scroll the log"),
             ("z", "full-width log"),
-            ("c", "cancel the running step"),
-            ("ctrl-c", "stop after the running step"),
+            ("c", "cancel the running steps"),
+            ("ctrl-c", "start nothing new; finish the running steps"),
             ("r", "when finished: retry what did not finish"),
             ("enter  esc", "when finished: back to the dashboard"),
             ("q", "when finished: quit"),

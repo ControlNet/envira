@@ -12,6 +12,14 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   and kept alive every 60 s.
 - Under Claude Code's Bash tool there is no controlling TTY, so `envira status` looked fine there while
   the TUI in tmux did not. Check TTY-sensitive behaviour in tmux (`tmux new-session -d ...; tmux capture-pane -p`).
+- Parallel units (2026-10-30, `exec::execute`): a `FuturesUnordered` of unit futures polled by the
+  coordinator, so they borrow the plan and `ExecCtx` without `tokio::spawn`; each gets a clone of
+  the control `watch::Receiver` and keeps its own `base_seq`. Lanes (`exec::lanes`) are scanned from
+  the step commands by word, not taken from the method name: raw `run` entries hide apt calls
+  (fastfetch's PPA), and in root mode `{sudo}` expands to nothing, so sudo is no signal. Concurrent
+  `pipx install`s race to create pipx's shared venv and `npm -g` has no lock, hence their lanes.
+  A dependency must have *succeeded*, not just started (the plan order alone no longer ensures it).
+  Integration tests that need a unit to still be queued at a signal use `-j 1`.
 
 ## Vendor install scripts
 - bun: `curl -fsSL https://bun.sh/install | SHELL=/bin/sh bash` stops it from appending to rc files.

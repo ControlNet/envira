@@ -226,7 +226,14 @@ Ownership:
 5. Privilege: if any unit is system-scope and not root, run `sudo -v` once **before** entering raw
    mode, then refresh with `sudo -n -v` every 60 s. No sudo -> system units become `NotApplicable`
    and the planner picks a user-scope method when one exists.
-6. Execute units sequentially (v1). Each step runs via `bash -euo pipefail -c` in its own process
+6. Execute up to `--jobs` / `ENVIRA_JOBS` units at a time (default 4; `-j 1` is the old one-by-one
+   order). A unit starts, in plan order, once every dependency in the plan succeeded and none of its
+   lanes is busy: `packages` (apt/dnf/pacman/zypper words in its commands, or a system-scope
+   script/run such as get.docker.com), `pipx` (also pip), `npm`, `build` (cargo, go, make) and
+   `config` (config actions edit shared files). Lane-free units (release downloads, user-scope
+   scripts) run side by side; state and the run record are still written by one coordinator
+   after each unit. With more than one job the CLI prefixes step output with the unit id
+   (`│ <id> │ line`). Each step runs via `bash -euo pipefail -c` in its own process
    group with: effective PATH (includes managed dirs), `DEBIAN_FRONTEND=noninteractive`,
    `ENVIRA_TMP` = per-unit temp dir (deleted afterwards). Downloads go to temp, then atomic move.
 7. Post-condition: re-run detect; a unit succeeds only if the tool is now detected.
@@ -247,8 +254,8 @@ Ownership:
    Plans warn when the home, temp dir or (system units) `/usr/local` / `/var` has < 500 MB free.
 9. Regenerate the managed shell environment from the resulting state.
 10. Crash, Ctrl-C, SIGTERM or SIGHUP mid-run: state is per-unit and `state.last_run` points at the
-    run from its start. Ctrl-C stops after the current step (twice cancels it); SIGTERM/SIGHUP
-    cancel the current step and stop, in the CLI and the TUI, so no installer outlives envira.
+    run from its start. Ctrl-C starts nothing new and lets the running steps finish (twice cancels
+    them); SIGTERM/SIGHUP cancel the running steps and stop, in the CLI and the TUI, so no installer outlives envira.
     `envira retry` (TUI: `r` on the summary, `t` on the dashboard) replans everything the last run
     did not finish: failed, blocked, cancelled, skipped after a stop, and `pending` units of a run
     that died.
@@ -295,7 +302,8 @@ envira catalog check|schema|show
 envira update [<item|bundle>...] [--check] [--refresh | --offline] [-y] [--dry-run] [-q]
                             # no items: every outdated managed/adoptable tool
 envira adopt  [<item|bundle>...] [--dry-run]   # record adoptable tools as managed, no reinstall
-Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <seconds>, --retries <n>
+Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <seconds>, --retries <n>,
+        -j/--jobs <n>
 Hidden, used by templates: envira fs ..., envira fetch-release ...
 ```
 Headless commands are the same engine as the TUI; `sync -y --bundle full` is the Docker / CI path.

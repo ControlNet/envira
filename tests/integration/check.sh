@@ -125,7 +125,8 @@ detect = { cmd = "test -f \"$HOME/quick-done\"" }
 install = [{ run = "touch \"$HOME/quick-done\"" }]
 TOML
 r=(envira --no-overlay --catalog /tmp/recovery.toml)
-"${r[@]}" install -y slow quick > /tmp/first.txt 2>&1 &
+# One at a time, so quick is still waiting when the run is terminated.
+"${r[@]}" install -y -j 1 slow quick > /tmp/first.txt 2>&1 &
 pid=$!
 # The step's own output line, not the plan, which prints the command (and its "begin") first.
 for _ in $(seq 50); do grep -q '│ begin$' /tmp/first.txt && break; sleep 0.2; done
@@ -156,6 +157,12 @@ grep -q "timed out after" <<<"$out"
 grep -q "hint (network)" /tmp/flaky.txt
 grep -q "retrying in 5.0s (attempt 2/3)" /tmp/flaky.txt
 grep -q "1/1 succeeded" /tmp/flaky.txt
+# Units run side by side: quick finishes while slow is still running.
+rm "$HOME/quick-done"
+SLOW=3 "${r[@]}" install -y slow quick > /tmp/parallel.txt
+cat /tmp/parallel.txt
+grep -q "│ slow │ begin$" /tmp/parallel.txt
+[ "$(grep -n '✓ quick' /tmp/parallel.txt | cut -d: -f1)" -lt "$(grep -n '✓ slow' /tmp/parallel.txt | cut -d: -f1)" ]
 "${r[@]}" log --list > /tmp/runs.txt
 cat /tmp/runs.txt
 [ "$(grep -c ' finished ' /tmp/runs.txt)" -ge 4 ]
