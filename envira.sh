@@ -1,80 +1,72 @@
 #!/usr/bin/env bash
+# Installs envira for this machine into ~/.local/bin:
+#   curl -fsSL https://boot.controlnet.space/envira | bash
+# The binary is static (musl): any x86_64 or aarch64 Linux, no dependencies. Its SHA-256 is
+# checked against the release's checksum file before it is installed.
+#   ENVIRA_VERSION=v0.2.0    a release tag instead of the latest release
+#   ENVIRA_BASE_URL=URL      where envira-<arch>-linux and its .sha256 are (a mirror, CI)
+#   ENVIRA_INSTALL_DIR=DIR   instead of ~/.local/bin
 set -euo pipefail
 
-###─── COLORS & STYLES ─────────────────────────────────────────────────────────
-RESET="\e[0m"
-BOLD="\e[1m"
-UNDERLINE="\e[4m"
+BOLD="" RED="" GREEN="" CYAN="" RESET=""
+if [ -t 2 ]; then
+  BOLD="\033[1m" RED="\033[31m" GREEN="\033[32m" CYAN="\033[36m" RESET="\033[0m"
+fi
+info() { printf "${CYAN}${BOLD}[envira]${RESET} %s\n" "$*"; }
+fail() { printf "${RED}${BOLD}[envira]${RESET} %s\n" "$*" >&2; exit 1; }
 
-RED="\e[31m"
-GREEN="\e[32m"
-YELLOW="\e[33m"
-BLUE="\e[34m"
-MAGENTA="\e[35m"
-CYAN="\e[36m"
+[ "$(uname -s)" = Linux ] || fail "envira runs on Linux only (this is $(uname -s))."
+case "$(uname -m)" in
+  x86_64 | amd64) arch=x86_64 ;;
+  aarch64 | arm64) arch=aarch64 ;;
+  *) fail "no envira build for $(uname -m); x86_64 and aarch64 are available." ;;
+esac
 
-info()    { echo -e "${CYAN}${BOLD}[INFO]${RESET}    $*"; }
-success() { echo -e "${GREEN}${BOLD}[SUCCESS]${RESET} $*"; }
-warn()    { echo -e "${YELLOW}${BOLD}[WARN]${RESET}    $*"; }
-error()   { echo -e "${RED}${BOLD}[ERROR]${RESET}   $*"; exit 1; }
-
-###─── SPINNER ─────────────────────────────────────────────────────────────────
-spinner() {
-  local pid=$1
-  local delay=0.1
-  local spinstr='|/-\'
-  while kill -0 "$pid" 2>/dev/null; do
-    for c in $spinstr; do
-      printf "\r${MAGENTA}%s${RESET} Downloading... %c" "${BOLD}" "$c"
-      sleep $delay
-    done
-  done
-  printf "\r"
-}
-
-###─── COLORFUL ENVIRA HEADER ───────────────────────────────────────────────────
-cat << EOF
-
-███████╗███╗   ██╗██╗   ██╗██╗██████╗  █████╗ 
-██╔════╝████╗  ██║██║   ██║██║██╔══██╗██╔══██╗
-█████╗  ██╔██╗ ██║██║   ██║██║██████╔╝███████║
-██╔══╝  ██║╚██╗██║╚██╗ ██╔╝██║██╔══██╗██╔══██║
-███████╗██║ ╚████║ ╚████╔╝ ██║██║  ██║██║  ██║
-╚══════╝╚═╝  ╚═══╝  ╚═══╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-
-EOF
-info "Welcome to the envira Auto-Installer!"
-
-###─── SETTINGS ────────────────────────────────────────────────────────────────
-URL="https://boot.controlnet.space/files/envira"
-BIN_DIR="$HOME/.local/bin"
-OUTPUT="$BIN_DIR/envira"
-
-###─── PREPARE ─────────────────────────────────────────────────────────────────
-info "Ensuring target directory exists: ${UNDERLINE}$BIN_DIR${RESET}"
-mkdir -p "$BIN_DIR"
-
-###─── FIND DOWNLOADER ─────────────────────────────────────────────────────────
-if command -v curl &>/dev/null; then
-  DOWNLOADER="curl -fsSL"
-  PROGRESS_ARGS="-#"
-elif command -v wget &>/dev/null; then
-  DOWNLOADER="wget -qO-"
-  PROGRESS_ARGS="--show-progress --progress=bar:force:noscroll"
+repo="https://github.com/ControlNet/envira/releases"
+if [ -n "${ENVIRA_BASE_URL:-}" ]; then
+  base="${ENVIRA_BASE_URL%/}"
+elif [ -n "${ENVIRA_VERSION:-}" ]; then
+  base="$repo/download/$ENVIRA_VERSION"
 else
-  error "Neither curl nor wget found. Please install one and retry."
+  base="$repo/latest/download"
+fi
+dir="${ENVIRA_INSTALL_DIR:-$HOME/.local/bin}"
+asset="envira-$arch-linux"
+
+if command -v curl >/dev/null 2>&1; then
+  fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
+elif command -v wget >/dev/null 2>&1; then
+  fetch() { wget -q -O "$2" "$1"; }
+else
+  fail "neither curl nor wget is installed."
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  fail "neither sha256sum nor shasum is installed, so the download cannot be checked."
 fi
 
-###─── DOWNLOAD ────────────────────────────────────────────────────────────────
-info "Fetching Envira from $URL"
-(
-  if [[ $DOWNLOADER == curl* ]]; then
-    curl $PROGRESS_ARGS -L "$URL" -o "$OUTPUT"
-  else
-    wget $PROGRESS_ARGS -O "$OUTPUT" "$URL"
-  fi
-) & spinner $!
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+info "Downloading $asset from $base"
+fetch "$base/$asset" "$tmp/$asset" || fail "could not download $base/$asset"
+fetch "$base/$asset.sha256" "$tmp/$asset.sha256" || fail "could not download $base/$asset.sha256"
+want=$(cut -d' ' -f1 < "$tmp/$asset.sha256")
+got=$(sha256 "$tmp/$asset")
+[ -n "$want" ] && [ "$want" = "$got" ] ||
+  fail "checksum mismatch for $asset (expected ${want:-nothing}, got $got); nothing was installed."
 
-chmod +x "$OUTPUT"
-success "Downloaded and installed to ${UNDERLINE}$OUTPUT${RESET}"
-info "Run ${BOLD}envira --help${RESET} to get started."
+chmod 755 "$tmp/$asset"
+version=$("$tmp/$asset" --version) || fail "the downloaded envira does not run on this machine."
+mkdir -p "$dir"
+# Replace atomically: a running envira keeps its old file.
+mv -f "$tmp/$asset" "$dir/.envira.new"
+mv -f "$dir/.envira.new" "$dir/envira"
+printf "${GREEN}${BOLD}[envira]${RESET} %s installed to %s\n" "$version" "$dir/envira"
+
+case ":$PATH:" in
+  *":$dir:"*) info "Run: envira" ;;
+  *) info "Run: $dir/envira (once it has run, new shells have $dir on PATH)" ;;
+esac

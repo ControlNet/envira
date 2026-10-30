@@ -21,19 +21,27 @@ jobs:
         mkdir -p ~/dist/envira
         mv files ~/dist/files
 
-    - name: Download executable artifact
+    - name: Download the dist build
       uses: actions/download-artifact@v4
       with:
-        name: executable
-        path: ~/dist/files
+        pattern: dist-*
+        merge-multiple: true
+        path: ~/artifacts
 
+    # files/envira-<arch>-linux(.sha256): mirrors of the release binaries; files/envira: the
+    # x86_64 binary under the name the first envira.sh downloaded; envira/catalog.toml: the
+    # catalog every envira fetches.
     - name: Clean files
       run: |
         mv run.sh ~/dist/index.html
         mv run_user.sh ~/dist/user/index.html
         mv verify.sh ~/dist/verify.html
         mv envira.sh ~/dist/envira/index.html
+        mv ~/artifacts/envira-*-linux ~/artifacts/envira-*-linux.sha256 ~/dist/files/
+        cp ~/dist/files/envira-x86_64-linux ~/dist/files/envira
+        mv ~/artifacts/catalog.toml ~/dist/envira/catalog.toml
         echo "boot.controlnet.space" > ~/dist/CNAME
+        ls -lR ~/dist/files ~/dist/envira
 
     - name: Init git and commit
       env:

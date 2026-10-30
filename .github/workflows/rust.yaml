@@ -13,6 +13,7 @@ on:
       - 'tests/integration/**'
       - 'verify.sh'
       - 'pyproject.toml'
+      - 'envira.sh'
       - '.github/workflows/rust.yaml'
       - '.github/workflows/build.yaml'
   pull_request:
@@ -25,6 +26,7 @@ on:
       - 'tests/integration/**'
       - 'verify.sh'
       - 'pyproject.toml'
+      - 'envira.sh'
       - '.github/workflows/rust.yaml'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
@@ -55,6 +57,29 @@ jobs:
   # The static release binaries and wheels (x86_64, aarch64).
   dist:
     uses: ./.github/workflows/build.yaml
+
+  # envira.sh against the fresh build: installs and runs it, and refuses a tampered binary.
+  bootstrap:
+    needs: dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-x86_64
+          path: site
+      - name: Install with envira.sh
+        run: |
+          python3 -m http.server -d site -b 127.0.0.1 8000 >/dev/null 2>&1 &
+          for _ in $(seq 50); do curl -fsI http://127.0.0.1:8000/envira-x86_64-linux >/dev/null && break; sleep 0.2; done
+          HOME=$(mktemp -d)
+          export HOME ENVIRA_BASE_URL=http://127.0.0.1:8000
+          bash envira.sh
+          "$HOME/.local/bin/envira" --version
+          "$HOME/.local/bin/envira" --no-remote status | tail -n 1
+          echo tampered >> site/envira-x86_64-linux
+          if ENVIRA_INSTALL_DIR="$HOME/tampered" bash envira.sh; then echo "a tampered binary was installed"; exit 1; fi
+          test ! -e "$HOME/tampered/envira"
 
   # One release build for every integration job; they do not wait for the lints.
   build:
