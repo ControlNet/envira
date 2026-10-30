@@ -162,6 +162,10 @@ pub struct InstallEntry {
     /// Self-contained binary that may be copied into the system bin dir.
     #[serde(default)]
     pub portable: bool,
+    /// Shared resources the command uses without naming them (an installer that runs `npm -g` or
+    /// apt itself): `packages`, `pipx`, `npm`, `build`. Units with a lane in common take turns.
+    #[serde(default)]
+    pub lanes: Vec<String>,
     /// Update command for this entry (raw, or overriding the method's `update`).
     pub update: Option<String>,
     /// Latest-version query for this entry (overrides the method's `latest`).

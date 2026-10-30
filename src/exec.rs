@@ -107,16 +107,30 @@ pub struct ExecCtx {
     pub jobs: usize,
 }
 
+/// Lanes a catalog entry may declare.
+pub const LANES: &[&str] = &["packages", "pipx", "npm", "build", "config"];
+
 /// Shared resources a unit uses that do not tolerate two users at once; units with a lane in
-/// common run one after the other.
+/// common run one after the other. They come from the words of its commands and from the `lanes`
+/// its catalog entry declares (installers that call npm or apt themselves).
 /// - `packages`: the system package manager's lock (apt, dnf, pacman, zypper), also taken by
 ///   system-scope scripts such as get.docker.com that call it themselves.
 /// - `pipx`: concurrent pipx installs race to create its shared venv; pip shares the lane.
 /// - `npm`: `npm install -g` does not lock the global prefix.
 /// - `build`: cargo, go and make builds would fight over the CPUs.
 /// - `config`: config actions edit shared files (rc files, settings).
-pub fn lanes(unit: &Unit) -> BTreeSet<&'static str> {
+pub fn lanes(cat: &Catalog, unit: &Unit) -> BTreeSet<&'static str> {
     let mut lanes = BTreeSet::new();
+    let declared = cat
+        .tools
+        .get(&unit.id)
+        .into_iter()
+        .flat_map(|t| &t.install)
+        .filter(|e| e.method.as_deref().unwrap_or("run") == unit.via)
+        .flat_map(|e| &e.lanes);
+    for l in declared {
+        lanes.extend(LANES.iter().find(|k| **k == l.as_str()));
+    }
     if unit.kind == Kind::Config {
         lanes.insert("config");
     }
@@ -131,7 +145,7 @@ pub fn lanes(unit: &Unit) -> BTreeSet<&'static str> {
     for w in words {
         let lane = match w.rsplit('/').next().unwrap_or(w) {
             "apt" | "apt-get" | "dpkg" | "add-apt-repository" | "dnf" | "yum" | "rpm"
-            | "pacman" | "zypper" | "snap" => "packages",
+            | "pacman" | "makepkg" | "zypper" | "snap" => "packages",
             "pipx" | "pip" | "pip3" => "pipx",
             "npm" => "npm",
             "cargo" | "go" | "make" => "build",
@@ -164,7 +178,7 @@ pub async fn execute(
     let _ = state.save_run(&ctx.paths, &ctx.facts);
     let mut ok: BTreeSet<String> = BTreeSet::new();
     let mut bad: BTreeSet<String> = BTreeSet::new();
-    let unit_lanes: Vec<_> = plan.units.iter().map(lanes).collect();
+    let unit_lanes: Vec<_> = plan.units.iter().map(|u| lanes(&ctx.catalog, u)).collect();
     let mut busy: BTreeSet<&str> = BTreeSet::new();
     let mut waiting: Vec<usize> = (0..plan.units.len()).collect();
     let mut running = FuturesUnordered::new();
@@ -1073,7 +1087,7 @@ mod tests {
             .rule("test -d", 0, "")
             .rule("fs toml-set /", 0, "")
             .on_install("fs toml-set /", "fs toml-set --check", "");
-        let present: BTreeSet<String> = ["yazi".to_string()].into();
+        let present: BTreeSet<String> = ["yazi".to_string(), "git".to_string()].into();
         let p = Planner::new(&s.ctx.catalog, &s.ctx.facts, &present)
             .plan(&["yazi-theme".into()], false);
         let (rec, st, _) = run(&s, p).await;
@@ -1189,7 +1203,8 @@ mod tests {
 
     #[test]
     fn lanes_follow_the_shared_resources() {
-        let l = |u: &Unit| lanes(u).into_iter().collect::<Vec<_>>();
+        let s = setup();
+        let l = |u: &Unit| lanes(&s.ctx.catalog, u).into_iter().collect::<Vec<_>>();
         assert_eq!(
             l(&unit("a", "sudo -n apt-get install -y bat", &[])),
             ["packages"]
@@ -1228,6 +1243,21 @@ mod tests {
         let mut cfg = unit("c", "envira fs block ~/.zshrc", &[]);
         cfg.kind = Kind::Config;
         assert_eq!(l(&cfg), ["config"]);
+        let mut yay = unit(
+            "yay",
+            "git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si",
+            &[],
+        );
+        yay.via = "run".into();
+        assert_eq!(l(&yay), ["packages"]);
+        // Declared in the catalog: the LunarVim installer runs `npm install -g` itself.
+        let mut lvim = unit(
+            "lunarvim",
+            "bash <(curl -s https://example.org/install.sh)",
+            &[],
+        );
+        lvim.via = "run".into();
+        assert_eq!(l(&lvim), ["npm"]);
     }
 
     #[tokio::test]

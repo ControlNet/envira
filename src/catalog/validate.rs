@@ -323,6 +323,18 @@ fn check_tools(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                     );
                 }
             }
+            for l in &e.lanes {
+                if !crate::exec::LANES.contains(&l.as_str()) {
+                    c.err(
+                        "tools",
+                        id,
+                        format!(
+                            "{what}: unknown lane {l:?} (one of {:?})",
+                            crate::exec::LANES
+                        ),
+                    );
+                }
+            }
             match (&e.method, &e.run) {
                 (Some(_), Some(_)) => {
                     c.err("tools", id, format!("{what}: has both `method` and `run`"))
@@ -585,6 +597,13 @@ mod tests {
         let r = check("[tools.a]\ndepends = [\"nope\"]\ninstall = [{ method = \"carg\" }]\n");
         assert!(has(&r.errors, "unknown item \"nope\""), "{:?}", r.errors);
         assert!(has(&r.errors, "unknown method \"carg\""), "{:?}", r.errors);
+    }
+
+    #[test]
+    fn unknown_lane() {
+        let r = check("[tools.a]\ninstall = [{ run = \"x\", lanes = [\"npm\", \"gpu\"] }]\n");
+        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+        assert!(has(&r.errors, "unknown lane \"gpu\""), "{:?}", r.errors);
     }
 
     #[test]

@@ -54,9 +54,12 @@ steps = [
 desc = "zsh as the login shell"
 scope = "system"
 depends = ["zsh"]
-check = '[ "$(getent passwd {user} | cut -d: -f7)" = "$(command -v zsh)" ]'
-apply = '{sudo} chsh --shell "$(command -v zsh)" {user}'
-revert = "{sudo} chsh --shell /bin/bash {user}"
+check = 'getent passwd {user} | cut -d: -f7 | grep -q "/zsh$"'
+# usermod (shadow) is on every distro; chsh is a separate package on Fedora (util-linux-user).
+# Unlike chsh it does not check /etc/shells, so take the path listed there: on Fedora PATH finds
+# /usr/sbin/zsh first, which is not.
+apply = '{sudo} usermod --shell "$(z=$(command -v zsh); grep -qx "$z" /etc/shells || z=$(grep -m1 "/zsh$" /etc/shells || echo "$z"); echo "$z")" {user}'
+revert = "{sudo} usermod --shell /bin/bash {user}"
 
 [configs.tmux-colors]
 desc = "tmux 256-colour terminal"

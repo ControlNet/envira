@@ -419,7 +419,9 @@ there is none); the previous line is recorded under the key `RE` for `restore --
 `command -v` and portable copies), `detect = { cmd, version }` (default `{bin} --version` and a
 generic version regex), `depends`, `when`, `shell = { path, env, alias, init = { zsh, bash } }`, and
 `install = [ … ]` in order of preference. An entry is either `{ method = "…", <params> }` or
-`{ run = "…" }`, plus optional `depends` (needed only for this entry), `when`, `scope`, `portable`.
+`{ run = "…" }`, plus optional `depends` (needed only for this entry), `when`, `scope`, `portable`,
+`lanes` (shared resources an installer uses without naming them in the command, e.g. LunarVim's
+`npm install -g`: `packages`, `pipx`, `npm`, `build`).
 
 **`[configs.<id>]`.** `desc`, `category`, `depends`, `when`, `scope` (default user), and either
 `steps = [ { use = "<action>", <params> } | { run = "…", check = "…", revert = "…" } ]` or raw
@@ -543,6 +545,7 @@ docker, ctop, bandwhich, chsh or inotify).
 | aliases `top=btop`, `du=dust`, `ping=gping`, `ps=procs`, `nano=micro` | not set | user decision 2026-10-29: only `zel`, `ls`, `df` for now; the rest is to be revisited |
 | `cargo install --force yazi-build` | prebuilt `sxyazi/yazi` release first, `yazi-build` as fallback | user decision 2026-10-30: compiling took 6 of the 14 minutes of a CI full sync and minutes on real machines; the release has both `yazi` and `ya` |
 | pinned bat 0.26.1, btop 1.4.7, nvim 0.12.5, ctop 0.7.7 | latest | updates are handled by `envira update` |
+| `chsh -s zsh` | `usermod --shell` | chsh is a separate package on Fedora (util-linux-user); usermod comes with shadow everywhere |
 
 ## Legacy script parity (long-term parallel maintenance)
 The unit test `catalog::load::tests::catalog_covers_verify_sh` parses `verify.sh` (`check_cmd`,

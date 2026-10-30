@@ -281,6 +281,14 @@
             "type": "string"
           }
         },
+        "lanes": {
+          "description": "Shared resources the command uses without naming them (an installer that runs `npm -g` or\napt itself): `packages`, `pipx`, `npm`, `build`. Units with a lane in common take turns.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "latest": {
           "description": "Latest-version query for this entry (overrides the method's `latest`).",
           "anyOf": [

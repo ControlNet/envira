@@ -20,6 +20,11 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   `pipx install`s race to create pipx's shared venv and `npm -g` has no lock, hence their lanes.
   A dependency must have *succeeded*, not just started (the plan order alone no longer ensures it).
   Integration tests that need a unit to still be queued at a signal use `-j 1`.
+  The first parallel CI run found what the sequential order had hidden: undeclared dependencies
+  (yazi-theme's `ya pkg` needs git, the LunarVim installer needs pip from python3, Fedora's chsh
+  came with another package), and lanes no word scan can see: yay's `makepkg -si` calls pacman
+  (`makepkg` is now a packages word), the LunarVim script runs `npm install -g` (declared with
+  `lanes = ["npm"]` on its entry).
 
 ## Vendor install scripts
 - bun: `curl -fsSL https://bun.sh/install | SHELL=/bin/sh bash` stops it from appending to rc files.

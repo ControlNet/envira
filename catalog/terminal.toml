@@ -171,7 +171,8 @@ install = [
 
 [configs.yazi-theme]
 desc = "yazi onedark flavor"
-depends = ["yazi"]
+# `ya pkg` clones the flavor with git.
+depends = ["yazi", "git"]
 steps = [
   { check = 'test -d "$HOME/.config/yazi/flavors/onedark.yazi"', run = "ya pkg add damjee/onedark" },
   { use = "toml-set", file = "~/.config/yazi/theme.toml", key = "flavor.dark", value = "onedark" },
