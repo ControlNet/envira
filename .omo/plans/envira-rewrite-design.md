@@ -1,6 +1,6 @@
 # envira Rewrite Design (Rust + ratatui)
 
-Status: M1–M4 implemented on `feature/rust-cli` (2026-10-29); M5 open. Supersedes the architecture on
+Status: M1–M5 implemented on `feature/rust-cli` (M1–M4 2026-10-29, M5 2026-10-30); not yet merged to main. Supersedes the architecture on
 `origin/feature/cli-app`.
 
 ## Intent
@@ -20,16 +20,16 @@ Problems it must solve that the legacy scripts (`run.sh`, `run_user.sh`, `verify
 | Topic | Decision |
 |---|---|
 | Stack | Rust, ratatui + crossterm, tokio, clap, serde/toml, reqwest (rustls), semver |
-| Distribution | musl static binaries for `x86_64` and `aarch64` (cargo-zigbuild) |
+| Distribution | musl static binaries for `x86_64` and `aarch64`, built natively in Alpine (one runner per arch) |
 | Catalog delivery | Fetched from the published site at runtime, cached; embedded copy as offline fallback |
 | Legacy scripts | Kept and hand-maintained in parallel long term; a CI parity check flags drift |
 | v1 scope | Tools (install / update / sync / retry), configs (apply / revert) + managed shell environment (PATH, env, alias, init) |
-| Out of v1 | dotfiles (zsh theme, oh-my-zsh plugins, tmux, git config), tool uninstall, parallel installs |
+| Out of v1 | dotfiles (zsh theme, oh-my-zsh plugins, tmux, git config), tool uninstall |
 | Item kinds | `tools` (versioned, updatable; toolchains included) and `configs` (check / apply / revert) |
 | Dependencies | Explicit: item-level and method-level `depends`; method `expects` is a lint, never injected |
 | Methods / actions | Data templates in `catalog/templates.toml`; Rust only provides generic primitives |
 | Install scope | `prefer_scope` system when sudo else user; no symlinking user installs by default |
-| PyPI | Keep `envira` on PyPI as maturin `bindings = "bin"` wheels carrying the Rust binary; also crates.io and the curl bootstrap |
+| PyPI | Keep `envira` on PyPI as maturin `bindings = "bin"` wheels carrying the Rust binary, plus the curl bootstrap (`envira.sh`); crates.io not yet (see Open questions) |
 
 Lessons from the old branch, applied here:
 - No version gate / auto-handoff, evidence artifacts, or verifier "profiles". Keep the model small.
@@ -342,13 +342,14 @@ anywhere in code.
 Format: TOML (comments, multi-line strings for scripts, mature serde support). One section per tool;
 repo source split by category: `catalog/<category>.toml`.
 
-Load order, later layers override earlier ones (merge by tool id, field-level override):
-1. Embedded snapshot: the same TOML packed at release time; used only when offline with no cache.
-2. Remote: published `catalog.toml` from `boot.controlnet.space`, fetched with ETag into
-   `~/.cache/envira/catalog.toml`; failure falls back to cache, then embedded.
-3. Local overlay: `~/.config/envira/catalog.d/*.toml` for machine-specific tools or field overrides,
+Layers, later ones override earlier ones (merge by tool id, field-level override):
+1. Base, one of:
+   - explicit `--catalog <file|dir>` (the dev loop points at the repo's `catalog/` dir);
+   - else the published `catalog.toml` (`src/catalog/remote.rs`), which is complete on its own;
+   - else the embedded snapshot (`include_dir!` of `catalog/`), used when there is neither a usable
+     download nor a cache, or with `--no-remote`.
+2. Local overlay: `~/.config/envira/catalog.d/*.toml` for machine-specific tools or field overrides,
    effective immediately, never published.
-4. Explicit: `--catalog <path|url>` (dev loop points at the repo's `catalog/` dir).
 `doctor` and the TUI header show which layers are active.
 
 Editing ergonomics:
@@ -357,8 +358,21 @@ Editing ergonomics:
 - `envira catalog check [path]`: schema, unknown deps, cycles, tools with no feasible method per
   distro/arch, reported with file:line; runs in CI.
 - TUI `r` reloads all catalog layers without restarting.
-- Release: `release_web.yaml` publishes the merged `catalog.toml` next to the binaries; `build.rs`
-  embeds the same merged file as the snapshot.
+- Release: `build.yaml` writes `catalog.toml` with `envira catalog show` (the merged catalog, which reads
+  back byte-identically), and `release_web.yaml` publishes it at `boot.controlnet.space/envira/`.
+
+Published catalog (M5, `src/catalog/remote.rs`):
+- `https://boot.controlnet.space/envira/catalog.toml` (`ENVIRA_CATALOG_URL` overrides it), cached in
+  `~/.cache/envira/catalog.toml` with its ETag (`ENVIRA_CACHE_DIR`, else `$XDG_CACHE_HOME/envira`).
+- A cache younger than 1 h is used without a request. Otherwise there is one conditional GET with a 3 s
+  timeout. A failed check touches the cache, so a dead network costs 3 s per hour, not per command.
+- A download is used only if the whole catalog loads and validates: schema, references, and
+  `min_envira` against this binary. Anything else keeps the cache, or the embedded snapshot, and
+  prints a warning. A catalog for a newer envira is therefore ignored until envira itself is updated.
+- When running as root for `SUDO_USER`, the cache files belong to that user.
+- Trust: the catalog holds the commands envira runs, some with sudo. It is trusted exactly like the
+  legacy `curl … | bash` scripts from the same site (HTTPS, same deploy key). `--no-remote` /
+  `ENVIRA_NO_REMOTE=1` turn it off.
 
 ## Catalog format spec (v1, as implemented)
 The source of truth is the Rust types in `src/catalog/schema.rs`; `envira catalog schema` prints the
@@ -367,7 +381,8 @@ JSON Schema (committed as `catalog/schema.json`, referenced by `#:schema ./schem
 **Files and layers.** `catalog/*.toml` are merged in name order into one document; every table is
 merged per field (arrays are replaced, not appended). Items without `category` get the file name.
 Base layer: `--catalog <file|dir>` (or `ENVIRA_CATALOG`, `:`-separated) if given, else the embedded
-snapshot; then `~/.config/envira/catalog.d/*.toml` (skip with `--no-overlay`). The remote layer is M5.
+snapshot, or the published catalog in its place (see "Data-driven catalog"); then
+`~/.config/envira/catalog.d/*.toml` (skip with `--no-overlay`).
 The same id defined twice inside one layer is a warning.
 
 **Top level.** `schema = 1`, `min_envira = "0.1.0"`, `[env]`, `[methods.*]`, `[actions.*]`,
@@ -562,19 +577,44 @@ It also fails when an item is in neither `full` nor `extras`, or `user` has an i
 This is a drift alarm, not a translator; both sides stay hand-written. It found the missing `pm2`.
 
 ## Repo transition and release pipeline
-The old branch broke releases by deleting `release.yaml` without a replacement. Here:
-- Python package (`envira/`, `cli.py`, `pyproject.toml`, `pixi.lock`, `test/test_impl_dispatcher.py`,
-  `test/test_modular_cli.py`) is removed when the Rust crate replaces it. The PyPI `envira` name is kept:
-  maturin `bindings = "bin"` builds per-platform wheels carrying the Rust binary (as ruff / uv do), so
-  `pipx install envira` / `uv tool install envira` get it; `cargo install envira` too (crates.io name
-  availability unverified). `test/test_legacy_scripts.py` and `test/test_ci_workflows.py` keep running
-  until ported to Rust tests, so the Python test job needs a minimal environment until then.
-- `release.yaml` is rewritten: `cargo test` job, then a `cargo-zigbuild` matrix
-  (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) producing `envira-<arch>` +
-  `envira-<arch>.sha256` and the merged `catalog.toml`, uploaded as the artifact `release_web.yaml`
-  consumes; a maturin job publishes the wheels to PyPI from the same build. The legacy test matrix keeps gating releases.
-- `envira.sh` downloads the binary for `uname -m`, verifies the checksum, installs to `~/.local/bin`.
-- All of this lands in M5 together; until then, main's existing release flow stays untouched.
+The old branch broke releases by deleting `release.yaml` without a replacement. Here (M5):
+- The Python package (`envira/`, `cli.py`, `pixi.lock`, `test/test_impl_dispatcher.py`,
+  `test/test_modular_cli.py`) is removed. `pyproject.toml` is now maturin's config with
+  `bindings = "bin"`: the wheel carries the Rust binary (as ruff / uv do), so `pipx install envira` and
+  `uv tool install envira` get it. `test/test_legacy_scripts.py` and `test/test_ci_workflows.py` use
+  only the standard library (`test.yaml`: `python -m unittest`).
+- `build.yaml` (reusable) builds on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64), each
+  in `rust:1.93-alpine`. musl is native there, so there's no cross toolchain, and aws-lc-sys builds
+  with cmake.
+  - One maturin build gives the wheel, tagged `manylinux_2_17` + `musllinux_1_1` because the binary
+    is static.
+  - It also gives `envira-<arch>-linux`, which is checked with `file` (`static-pie linked` on
+    x86_64, `statically linked` on aarch64), `--version` and `catalog check`.
+  - Outputs: `.sha256` files, and on x86_64 `catalog.toml`.
+  - `rust.yaml` calls it on every push.
+- Static musl has no NSS: users from LDAP/SSSD are not visible to `getpwnam`. `facts.rs` falls back
+  to the system's `getent passwd`, then `$USER`.
+- `release.yaml` runs `test`, the legacy test and `rust` (lints, unit, integration on 4 distros,
+  dist).
+  - On a `v*` tag:
+    1. `version` checks that the tag equals the `Cargo.toml` version;
+    2. `publish` uploads the wheels to PyPI by trusted publishing (`pypi` / `testpypi`
+       environments, bound to the file name `release.yaml`);
+    3. `release` creates the GitHub release with the binaries, checksums and `catalog.toml`;
+    4. `verify` installs `envira==<version>` from PyPI and runs it.
+  - On a push to main, `release-web` deploys the site.
+  - As on main before, the legacy test matrix runs but does not gate publishing.
+- `release_web.yaml` puts the binaries and checksums in `files/`, plus `files/envira`, the x86_64
+  binary under its old name. `catalog.toml` goes in `envira/`. The legacy scripts' paths are unchanged.
+- `envira.sh` (`boot.controlnet.space/envira`):
+  - maps `uname -m` to the asset;
+  - downloads it from the GitHub release (`latest`, or `ENVIRA_VERSION`; `ENVIRA_BASE_URL` for a
+    mirror or CI);
+  - checks the SHA-256 and that the binary runs;
+  - renames it into `~/.local/bin` (`ENVIRA_INSTALL_DIR`).
+
+  The `bootstrap` CI job serves the fresh build locally, installs with the script, and checks that
+  a tampered binary is refused.
 
 ## Crate layout
 ```
@@ -584,7 +624,8 @@ src/
   facts.rs, template.rs (expansion, quoting, `when`), plan.rs (method choice, deps, order)
   runner.rs  (Runner trait; real runner: bash -eo pipefail in its own session; fake for tests)
   status.rs  (detection, ownership, labels), exec.rs (units, blocking, state per unit, shell env)
-  state.rs, fs.rs (`envira fs`), fetch.rs (`envira fetch-release`), shellenv.rs
+  state.rs, fs.rs (`envira fs`), fetch.rs (`envira fetch-release`), shellenv.rs,
+  apt.rs (`envira apt-refresh`), catalog/remote.rs (published catalog + cache)
   tui/       (mod.rs event loop, app.rs state + keys, ui.rs BC1 rendering, theme.rs)
 catalog/*.toml, catalog/templates.toml, catalog/schema.json
 tests/integration/ (Docker: run.sh, check.sh, full.sh, Dockerfile.{ubuntu,fedora,arch,opensuse})
@@ -610,8 +651,8 @@ tests/integration/ (Docker: run.sh, check.sh, full.sh, Dockerfile.{ubuntu,fedora
    deferred; `envira log` covers it.
 4. **M4 updates** (done): `latest` queries per method and entry with a cache, `update` in place along
    routes, `adopt`, outdated label / filter / `u` key in the TUI, background check on start.
-5. **M5 delivery**: remote catalog + cache + overlays, musl release CI + maturin wheels (see Repo
-   transition), Python package removal, `envira.sh` bootstrap. (The full catalog port and the
+5. **M5 delivery** (done): published catalog + cache, static musl binaries + maturin wheels,
+   release / site workflows (see Repo transition), Python package removal, `envira.sh` bootstrap. (The full catalog port and the
    legacy parity test were done early, see "Full catalog port".)
 
 ## Open questions

@@ -16,15 +16,47 @@ What tools will be installed:
 ![theme](assets/theme_preview.jpg)
 
 ## How to use it
+
+### envira (new)
+
+`envira` is a single static binary (x86_64 and aarch64 Linux, no dependencies). It knows the
+tools and configs from a catalog, shows what is installed, and installs, updates or reverts them.
+
 ```shell
-# lagacy scripts
-curl -fsSL https://boot.controlnet.space/ | bash  # if you have sudo permission
-curl -fsSL https://boot.controlnet.space/user | bash  # if you don't have sudo permission
+# install the binary into ~/.local/bin (checks its SHA-256)
+curl -fsSL https://boot.controlnet.space/envira | bash
+# or from PyPI
+pipx install envira        # or: uv tool install envira
+```
+
+```shell
+envira                     # the TUI: pick bundles, review the plan, watch it run
+envira status              # what is installed, missing, outdated or drifted
+envira plan                # what `envira sync` would do, without doing it
+envira sync -y             # install everything the selected bundles need
+envira install bat yazi    # some tools (or bundles), with their dependencies
+envira update              # update outdated tools in place
+envira retry               # retry what failed or was blocked in the last run
+envira log / explain <id>  # logs of the last run; why an item has its status
+envira doctor              # machine facts, catalog layers, PATH, shell integration
+```
+
+- With sudo, packages go system-wide; without it, envira picks user-scope routes
+  (`--scope user` forces that).
+- envira uses the catalog published at `boot.controlnet.space/envira/catalog.toml`, so new tools
+  arrive without a new release. It is cached for an hour, and it falls back to the cache and
+  then to the catalog built into the binary. `--no-remote` uses only the built-in one.
+- Your own items go in `~/.config/envira/catalog.d/*.toml`. `envira catalog schema` prints the
+  format, and `envira catalog check` validates it.
+- Variables: `ENVIRA_VERSION=v0.2.0` pins a release for the install script, and
+  `ENVIRA_INSTALL_DIR` changes where it puts the binary.
+
+### Legacy scripts
+
+```shell
+curl -fsSL https://boot.controlnet.space/ | bash        # if you have sudo permission
+curl -fsSL https://boot.controlnet.space/user | bash    # if you don't have sudo permission
 curl -fsSL https://boot.controlnet.space/verify | bash  # verify the installation
-# new scripts (still in development)
-curl -fsSL https://boot.controlnet.space/envira | bash && ~/.local/bin/envira
-# or you can install via pipx
-pipx install envira && envira
 ```
 
 ### For docker

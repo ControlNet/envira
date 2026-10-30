@@ -1,4 +1,4 @@
-# envira Rust implementation notes (feature/rust-cli, M1–M4 and the full catalog)
+# envira Rust implementation notes (feature/rust-cli, M1–M5 and the full catalog)
 
 Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rewrite-design.md`.
 
@@ -119,6 +119,32 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   both forms.
 - CI clippy flagged `st.f_bavail as u64` (u64 -> u64) while the local clippy on the same
   toolchain did not: libc's statvfs field types depend on the target and libc's build config.
+
+## Release delivery (M5, 2026-10-30)
+- Static binaries: build inside `rust:1.93-alpine`, where musl is native. Install
+  `musl-dev cmake make perl gcc g++ python3`; aws-lc-sys (rustls' crypto) needs cmake and a C++
+  compiler. With no cross toolchain, aarch64 builds on GitHub's free `ubuntu-24.04-arm` runners
+  (public repos).
+  - x86_64 links as `static-pie`; `file` says "static-pie linked" there and "statically linked" on
+    aarch64. A check must accept both (`static(-pie|ally) linked`).
+- One `maturin build --compatibility manylinux_2_17 musllinux_1_1` with `bindings = "bin"` gives a
+  `py3-none-manylinux…musllinux…` wheel that installs on glibc and musl systems alike. The binary is
+  copied out of the same target dir, so the wheel and the release asset are the same build.
+- Static musl has no NSS: `getpwnam` does not see LDAP/SSSD users. Fall back to the system
+  `getent passwd <name|uid>`, which uses the host's glibc NSS, then to `$USER`/`$LOGNAME`.
+- HTTPS from the static binary was checked on Ubuntu and Fedora. reqwest 0.13's `rustls` feature
+  uses rustls-platform-verifier, which reads the system CA store. A machine without
+  `ca-certificates` therefore cannot fetch; the catalog then falls back to the embedded snapshot.
+- `envira catalog show` prints the merged catalog. Loaded back as a single file it is
+  byte-identical, categories included, so the published `catalog.toml` is simply that output.
+- clap: `bool` flags with `env = …` accept only `true`/`false`. Use
+  `value_parser = BoolishValueParser::new()` so `ENVIRA_NO_REMOTE=1` works. Tests that need the
+  flag unset use `env -u`.
+- `envira.sh` tests run in CI as a `bootstrap` job: `python3 -m http.server` serves the `dist-x86_64`
+  artifact, and `ENVIRA_BASE_URL` points the script at it. Appending to the binary must make the
+  script exit non-zero and install nothing.
+- PyPI trusted publishing is bound to the workflow file name (`release.yaml`) and the environment
+  names (`pypi`, `testpypi`). Renaming either breaks publishing silently until the next tag.
 
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
