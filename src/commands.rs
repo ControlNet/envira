@@ -128,6 +128,14 @@ pub async fn doctor(sess: &Session) -> Result<i32> {
     if let Some(u) = &f.drop_to {
         println!("           running as root for {u}: user-scope steps run as {u}");
     }
+    let disks: Vec<String> = [f.home.clone(), std::env::temp_dir(), "/usr/local".into()]
+        .iter()
+        .filter_map(|d| {
+            crate::plan::disk_free(d)
+                .map(|(_, free)| format!("{} {}", d.display(), crate::plan::fmt_bytes(free)))
+        })
+        .collect();
+    println!("free disk  {}", disks.join(" · "));
     println!("state      {}", sess.paths.state_dir.display());
     println!("config     {}", sess.paths.config_dir.display());
     println!("catalog    {}", sess.loaded.layers.join(" + "));
@@ -799,6 +807,13 @@ pub fn print_plan(plan: &Plan, sess: &Session) {
     }
     for (id, why) in &plan.skipped {
         println!("  skip {id}: {why}");
+    }
+    for (dir, free) in plan.low_space(&sess.facts) {
+        println!(
+            "warning: only {} free on {}; installs may fail with \"No space left on device\"",
+            crate::plan::fmt_bytes(free),
+            dir.display()
+        );
     }
 }
 

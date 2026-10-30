@@ -1098,17 +1098,24 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         Span::styled("✓ sudo not needed", t.s(t.green))
     };
+    let low = plan.low_space(&app.facts);
+    let rest = if low.is_empty() {
+        Span::styled(
+            " · steps run in order · a failed step only blocks its dependents",
+            t.s(t.dim),
+        )
+    } else {
+        let what: Vec<String> = low
+            .iter()
+            .map(|(d, free)| format!("{} on {}", crate::plan::fmt_bytes(*free), d.display()))
+            .collect();
+        Span::styled(
+            format!(" · ! low disk space: {} free", what.join(", ")),
+            t.s(t.red),
+        )
+    };
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from(first),
-            Line::from(vec![
-                sudo,
-                Span::styled(
-                    " · steps run in order · a failed step only blocks its dependents",
-                    t.s(t.dim),
-                ),
-            ]),
-        ]),
+        Paragraph::new(vec![Line::from(first), Line::from(vec![sudo, rest])]),
         inner,
     );
 

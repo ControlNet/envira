@@ -85,6 +85,52 @@ impl Plan {
     pub fn is_empty(&self) -> bool {
         self.units.is_empty()
     }
+
+    /// Filesystems this plan writes to that have less than [`LOW_SPACE`] free: the home, the
+    /// temp dir (downloads, builds) and, with system units, `/usr/local` and `/var` (apt).
+    /// Each filesystem is reported once, by the first of its directories.
+    pub fn low_space(&self, facts: &Facts) -> Vec<(std::path::PathBuf, u64)> {
+        if self.units.is_empty() {
+            return vec![];
+        }
+        let mut dirs = vec![facts.home.clone(), std::env::temp_dir()];
+        if self.units.iter().any(|u| u.scope == Scope::System) {
+            dirs.extend(["/usr/local".into(), "/var".into()]);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        dirs.into_iter()
+            .filter_map(|d| {
+                let (dev, free) = disk_free(&d)?;
+                (seen.insert(dev) && free < LOW_SPACE).then_some((d, free))
+            })
+            .collect()
+    }
+}
+
+/// Below this much free space a plan warns before it runs.
+pub const LOW_SPACE: u64 = 500 * 1024 * 1024;
+
+/// `(device, free bytes)` of the filesystem holding `path`, or of its nearest existing ancestor.
+pub fn disk_free(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let existing = path.ancestors().find(|p| p.exists())?;
+    let dev = std::fs::metadata(existing).ok()?.dev();
+    let c = std::ffi::CString::new(existing.as_os_str().as_encoded_bytes()).ok()?;
+    // SAFETY: statvfs fills the zeroed struct for a valid C string path.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some((dev, st.f_bavail as u64 * st.f_frsize as u64))
+}
+
+pub fn fmt_bytes(n: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if n >= 1024 * MB {
+        format!("{:.1} GB", n as f64 / (1024 * MB) as f64)
+    } else {
+        format!("{} MB", n / MB)
+    }
 }
 
 fn uses_sudo(cmd: &str) -> bool {
@@ -796,6 +842,21 @@ mod tests {
 
     fn ids(p: &Plan) -> Vec<&str> {
         p.units.iter().map(|u| u.id.as_str()).collect()
+    }
+
+    #[test]
+    fn free_space_is_measured_on_existing_ancestors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (dev, free) = disk_free(&dir.path().join("not/yet/created")).unwrap();
+        assert_eq!(Some(dev), disk_free(dir.path()).map(|d| d.0));
+        assert!(free > 0);
+        assert_eq!(fmt_bytes(300 * 1024 * 1024), "300 MB");
+        assert_eq!(fmt_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+        assert!(
+            Plan::default()
+                .low_space(&Facts::sample(dir.path()))
+                .is_empty()
+        );
     }
 
     #[test]
