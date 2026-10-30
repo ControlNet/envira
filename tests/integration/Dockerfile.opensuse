@@ -2,7 +2,9 @@
 # passwordless sudo and no unzip (envira installs it as a dependency).
 FROM opensuse/tumbleweed:latest
 
-RUN zypper --non-interactive install --no-recommends sudo zsh python3 curl ca-certificates shadow gzip tar \
+# gawk as on a normal install: otherwise zypper may satisfy `awk` with busybox-gawk, which later
+# conflicts with packages that require the real gawk (xorg-x11-Xvnc via fonts-config).
+RUN zypper --non-interactive install --no-recommends sudo zsh python3 curl ca-certificates shadow gzip tar gawk \
  && zypper clean --all
 
 RUN useradd -m -s /bin/zsh user \
