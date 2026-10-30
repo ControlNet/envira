@@ -131,7 +131,8 @@ remote() { env -u ENVIRA_NO_REMOTE ENVIRA_CACHE_DIR=/tmp/cache ENVIRA_CATALOG_UR
 remote http://127.0.0.1:8765/catalog.toml | tee /tmp/remote.txt
 grep -q "remote http://127.0.0.1:8765/catalog.toml (updated now)" /tmp/remote.txt
 remote http://127.0.0.1:8765/catalog.toml | grep -q "(cached just now)"
-cmp /tmp/site/catalog.toml /tmp/cache/catalog.toml
+# The cached file is the download, byte for byte (coreutils only: cmp is missing on some images).
+[ "$(sha256sum < /tmp/site/catalog.toml)" = "$(sha256sum < /tmp/cache/catalog.toml)" ]
 kill "$web"
 # Unreachable and no cache: the embedded catalog, within the 3 s timeout.
 rm -rf /tmp/cache
