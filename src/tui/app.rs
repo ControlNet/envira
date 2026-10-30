@@ -999,6 +999,7 @@ pub mod tests {
         let paths = Paths {
             state_dir: "/home/user/.local/state/envira".into(),
             config_dir: "/home/user/.config/envira".into(),
+            cache_dir: "/home/user/.cache/envira".into(),
         };
         let mut a = App::new(&loaded, cat.clone(), facts, paths, true);
         let items = cat
@@ -1195,6 +1196,7 @@ pub mod tests {
         a.paths = Paths {
             state_dir: dir.path().join("state"),
             config_dir: dir.path().join("config"),
+            cache_dir: dir.path().join("cache"),
         };
         let plan = a.make_plan(&["codex".into()]);
         let mut rec = RunRecord::planned(&plan, "20261029-140500", "sync");

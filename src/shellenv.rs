@@ -228,6 +228,7 @@ mod tests {
         let paths = Paths {
             state_dir: d.path().join(".local/state/envira"),
             config_dir: d.path().join(".config/envira"),
+            cache_dir: d.path().join(".cache/envira"),
         };
         (d, load(&[embedded_layer()]).unwrap().catalog, facts, paths)
     }

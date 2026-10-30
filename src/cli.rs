@@ -19,6 +19,9 @@ pub struct Global {
     /// Ignore ~/.config/envira/catalog.d.
     #[arg(long, global = true)]
     pub no_overlay: bool,
+    /// Use the catalog built into this envira, not the published one.
+    #[arg(long, global = true, env = "ENVIRA_NO_REMOTE", value_parser = clap::builder::BoolishValueParser::new())]
+    pub no_remote: bool,
     /// Where `any`-scope methods install: system (needs sudo) or user. Default: system when sudo is available.
     #[arg(long, global = true, value_enum)]
     pub scope: Option<ScopeArg>,

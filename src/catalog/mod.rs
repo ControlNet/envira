@@ -1,4 +1,5 @@
 pub mod load;
+pub mod remote;
 pub mod schema;
 pub mod validate;
 
@@ -16,12 +17,21 @@ pub struct CatalogOptions {
     pub explicit: Vec<PathBuf>,
     /// `~/.config/envira/catalog.d`; skipped when it does not exist.
     pub overlay: Option<PathBuf>,
+    /// The published catalog, used instead of the embedded snapshot when it can be.
+    pub remote: Option<remote::Remote>,
 }
 
 pub fn load_catalog(opts: &CatalogOptions) -> Result<Loaded> {
     let mut layers = Vec::new();
+    let mut warning = None;
     if opts.explicit.is_empty() {
-        layers.push(load::embedded_layer());
+        let base = opts.remote.as_ref().and_then(|r| {
+            let (layer, w) =
+                remote::remote_layer(r, std::time::SystemTime::now(), remote::http_fetch);
+            warning = w;
+            layer
+        });
+        layers.push(base.unwrap_or_else(load::embedded_layer));
     } else {
         for p in &opts.explicit {
             layers.push(load::path_layer("explicit", p)?);
@@ -32,7 +42,9 @@ pub fn load_catalog(opts: &CatalogOptions) -> Result<Loaded> {
     {
         layers.push(load::path_layer("overlay", dir)?);
     }
-    load::load(&layers)
+    let mut loaded = load::load(&layers)?;
+    loaded.warnings.extend(warning);
+    Ok(loaded)
 }
 
 impl Catalog {

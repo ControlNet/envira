@@ -29,7 +29,7 @@ impl Session {
     pub fn open(global: &Global) -> Result<Session> {
         let facts = Facts::probe();
         let paths = Paths::new(&facts);
-        let loaded = load_valid(global, &paths)?;
+        let loaded = load_valid(global, &paths, &facts)?;
         let path = status::effective_path(&loaded.catalog, &facts);
         let runner: Arc<dyn Runner> = Arc::new(RealRunner {
             env: CmdEnv {
@@ -52,7 +52,7 @@ impl Session {
 
     /// Re-reads every catalog layer (TUI `r`).
     pub fn reload(&mut self) -> Result<()> {
-        let loaded = load_valid(&self.global, &self.paths)?;
+        let loaded = load_valid(&self.global, &self.paths, &self.facts)?;
         self.catalog = Arc::new(loaded.catalog.clone());
         self.loaded = loaded;
         Ok(())
@@ -147,15 +147,23 @@ impl Session {
     }
 }
 
-pub fn catalog_options(global: &Global, paths: &Paths) -> CatalogOptions {
+pub fn catalog_options(global: &Global, paths: &Paths, facts: &Facts) -> CatalogOptions {
     CatalogOptions {
         explicit: global.catalog.clone(),
         overlay: (!global.no_overlay).then(|| paths.overlay_dir()),
+        remote: (!global.no_remote).then(|| catalog::remote::Remote {
+            url: std::env::var("ENVIRA_CATALOG_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| catalog::remote::URL.into()),
+            cache: paths.cache_dir.join("catalog.toml"),
+            owner: facts.drop_to.as_ref().map(|_| (facts.uid, facts.gid)),
+        }),
     }
 }
 
-fn load_valid(global: &Global, paths: &Paths) -> Result<Loaded> {
-    let loaded = catalog::load_catalog(&catalog_options(global, paths))?;
+fn load_valid(global: &Global, paths: &Paths, facts: &Facts) -> Result<Loaded> {
+    let loaded = catalog::load_catalog(&catalog_options(global, paths, facts))?;
     let report = validate::validate(&loaded);
     if !report.is_ok() {
         bail!(

@@ -756,6 +756,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().join("state"),
             config_dir: dir.path().join("config"),
+            cache_dir: dir.path().join("cache"),
         };
         let runner = Arc::new(FakeRunner::default());
         let ctx = ExecCtx {

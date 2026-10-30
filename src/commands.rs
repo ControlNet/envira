@@ -386,7 +386,7 @@ pub fn catalog_cmd(global: &Global, cmd: &CatalogCmd) -> Result<i32> {
     }
     let facts = crate::facts::Facts::probe();
     let paths = Paths::new(&facts);
-    let loaded = catalog::load_catalog(&app::catalog_options(global, &paths))?;
+    let loaded = catalog::load_catalog(&app::catalog_options(global, &paths, &facts))?;
     match cmd {
         CatalogCmd::Check => {
             let r = validate::validate(&loaded);

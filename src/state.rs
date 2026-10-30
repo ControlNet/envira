@@ -13,6 +13,7 @@ use crate::facts::Facts;
 pub struct Paths {
     pub state_dir: PathBuf,
     pub config_dir: PathBuf,
+    pub cache_dir: PathBuf,
 }
 
 impl Paths {
@@ -33,9 +34,14 @@ impl Paths {
             .map(PathBuf::from)
             .or_else(|| xdg("XDG_CONFIG_HOME").map(|p| p.join("envira")))
             .unwrap_or_else(|| facts.home.join(".config/envira"));
+        let cache_dir = std::env::var_os("ENVIRA_CACHE_DIR")
+            .map(PathBuf::from)
+            .or_else(|| xdg("XDG_CACHE_HOME").map(|p| p.join("envira")))
+            .unwrap_or_else(|| facts.home.join(".cache/envira"));
         Paths {
             state_dir,
             config_dir,
+            cache_dir,
         }
     }
 
@@ -403,6 +409,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().join("s"),
             config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
         };
         assert!(State::load(&paths).unwrap().is_none());
 
@@ -442,6 +449,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().join("s"),
             config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
         };
         let mut run = State {
             bundles: vec!["base".into()],
@@ -465,6 +473,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().join("s"),
             config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
         };
         std::fs::create_dir_all(&paths.state_dir).unwrap();
         std::fs::write(paths.state_file(), "bundles = [\"base\"\ntools = {").unwrap();
@@ -489,6 +498,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().join("s"),
             config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
         };
         let held = RunLock::acquire(&paths, &facts).unwrap();
         let err = format!("{:#}", RunLock::acquire(&paths, &facts).unwrap_err());
@@ -513,6 +523,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().join("s"),
             config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
         };
         let mut ids = Vec::new();
         for _ in 0..3 {
@@ -534,6 +545,7 @@ mod tests {
         let paths = Paths {
             state_dir: dir.path().into(),
             config_dir: dir.path().into(),
+            cache_dir: dir.path().into(),
         };
         for id in ["20260101-000000", "20260102-000000", "20260103-000000"] {
             let mut r = RunRecord {

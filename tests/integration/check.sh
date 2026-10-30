@@ -121,6 +121,26 @@ import json, sys
 s = {i["id"]: i for i in json.load(sys.stdin)}
 assert s["bun"]["ownership"] == "managed", s["bun"]'
 
+echo "=== published catalog: download, cache, fallback"
+mkdir -p /tmp/site
+envira catalog show > /tmp/site/catalog.toml
+python3 -m http.server -d /tmp/site -b 127.0.0.1 8765 >/dev/null 2>&1 &
+web=$!
+for _ in $(seq 50); do [ -n "$(curl -fsI http://127.0.0.1:8765/catalog.toml 2>/dev/null)" ] && break; sleep 0.2; done
+remote() { env -u ENVIRA_NO_REMOTE ENVIRA_CACHE_DIR=/tmp/cache ENVIRA_CATALOG_URL="$1" envira catalog check; }
+remote http://127.0.0.1:8765/catalog.toml | tee /tmp/remote.txt
+grep -q "remote http://127.0.0.1:8765/catalog.toml (updated now)" /tmp/remote.txt
+remote http://127.0.0.1:8765/catalog.toml | grep -q "(cached just now)"
+cmp /tmp/site/catalog.toml /tmp/cache/catalog.toml
+kill "$web"
+# Unreachable and no cache: the embedded catalog, within the 3 s timeout.
+rm -rf /tmp/cache
+start=$(date +%s)
+remote http://127.0.0.1:9/catalog.toml | tee /tmp/remote.txt
+grep -q "^warning: could not fetch http://127.0.0.1:9/catalog.toml" /tmp/remote.txt
+grep -q "^embedded" /tmp/remote.txt
+[ $(( $(date +%s) - start )) -le 5 ]
+
 echo "=== recovery: lock, SIGTERM, retry and step timeout"
 # A throwaway catalog and state, so the managed shell files of the runs above stay untouched.
 export ENVIRA_STATE_DIR=$(mktemp -d) ENVIRA_CONFIG_DIR=$(mktemp -d)

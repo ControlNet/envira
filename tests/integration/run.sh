@@ -17,7 +17,8 @@ docker build -q -t "envira-it-$distro" -f "tests/integration/Dockerfile.$distro"
 token=()
 if [ -n "${GITHUB_TOKEN:-}" ]; then token=(-e GITHUB_TOKEN); fi
 for mode in ${MODES:-sudo user}; do
-  docker run --rm "${token[@]}" -e ENVIRA_MODE="$mode" \
+  # The branch's own catalog (built in), not the published one.
+  docker run --rm "${token[@]}" -e ENVIRA_MODE="$mode" -e ENVIRA_NO_REMOTE=1 \
     -v "$bin:/usr/local/bin/envira:ro" \
     -v "$PWD/tests/integration/${SUITE:-check}.sh:/suite.sh:ro" \
     -v "$PWD/verify.sh:/verify.sh:ro" \
