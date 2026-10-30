@@ -532,6 +532,7 @@ docker, ctop, bandwhich, chsh or inotify).
 | `sed` of the commented `# export PATH=…` line in .zshrc | not done | PATH comes from envira's env.sh |
 | `sudo update-pciids`, `cargo cache -a` | not done | refreshes and cleanups, not machine state |
 | aliases `top=btop`, `du=dust`, `ping=gping`, `ps=procs`, `nano=micro` | not set | user decision 2026-10-29: only `zel`, `ls`, `df` for now; the rest is to be revisited |
+| `cargo install --force yazi-build` | prebuilt `sxyazi/yazi` release first, `yazi-build` as fallback | user decision 2026-10-30: compiling took 6 of the 14 minutes of a CI full sync and minutes on real machines; the release has both `yazi` and `ya` |
 | pinned bat 0.26.1, btop 1.4.7, nvim 0.12.5, ctop 0.7.7 | latest | updates are handled by `envira update` |
 
 ## Legacy script parity (long-term parallel maintenance)

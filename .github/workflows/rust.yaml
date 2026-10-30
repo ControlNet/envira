@@ -25,6 +25,11 @@ on:
       - '.github/workflows/rust.yaml'
   workflow_dispatch:
 
+# A newer push to the same branch or PR cancels the run still going for the older one.
+concurrency:
+  group: rust-cli-${{ github.ref }}
+  cancel-in-progress: true
+
 # The job token only needs to read; it is passed into the test containers to raise the
 # GitHub API rate limit of release downloads and latest-version queries.
 permissions:

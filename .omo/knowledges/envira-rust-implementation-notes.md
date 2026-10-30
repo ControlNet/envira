@@ -93,6 +93,15 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - Tests that fork children race with `flock` tests: until exec, a child holds a copy of every
   descriptor (O_CLOEXEC closes it only at exec), so a released lock can look held for a moment.
 
+- CI full sync (sudo, 112 items) took ~14 min, 6 of them compiling `yazi-build`; the next were
+  lunarvim (68 s) and ripgrep's pcre2 build (32 s). Profile with
+  `gh api repos/<owner>/<repo>/actions/jobs/<id>/logs` (`gh run view --log` returned nothing for
+  older jobs) and the `✓ <id> <version> (<time>)` lines.
+- yazi 26.x prints `Yazi` then `    Version: 26.9.1 (...)` on separate lines; the detect regex covers
+  both forms.
+- CI clippy flagged `st.f_bavail as u64` (u64 -> u64) while the local clippy on the same
+  toolchain did not: libc's statvfs field types depend on the target and libc's build config.
+
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
 - reqwest 0.13: TLS feature is `rustls` (not `rustls-tls`); `default-features = false, features = ["blocking", "json", "rustls"]`.

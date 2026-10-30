@@ -152,11 +152,13 @@ steps = [
 [tools.yazi]
 desc = "Terminal file manager"
 bins = ["yazi", "ya"]
-detect = { cmd = "yazi --version", version = 'Yazi (\S+)' }
+# Old builds print `Yazi 25.5.31 (...)`, newer ones `Yazi` and `    Version: 26.9.1 (...)`.
+detect = { cmd = "yazi --version", version = 'Yazi\s+(?:Version:\s*)?(\d\S*)' }
 install = [
-  # yazi-build compiles yazi and ya (run.sh); the release download is the fallback without cargo.
-  { run = "cargo install --force yazi-build", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/yazi-build", json = "crate.max_stable_version" } },
+  # The prebuilt release takes seconds; compiling yazi-build (run.sh) takes minutes and is the
+  # fallback where no release asset fits.
   { method = "github-release", repo = "sxyazi/yazi", asset = "yazi-{arch}-unknown-linux-musl.zip", bins = ["yazi", "ya"] },
+  { run = "cargo install --force yazi-build", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/yazi-build", json = "crate.max_stable_version" } },
 ]
 
 [configs.yazi-theme]
