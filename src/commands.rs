@@ -292,6 +292,37 @@ pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
     Ok(0)
 }
 
+/// One line per kept run, newest first.
+pub fn log_list(sess: &Session) -> Result<i32> {
+    let runs = state::list_runs(&sess.paths);
+    if runs.is_empty() {
+        println!("No runs yet.");
+        return Ok(0);
+    }
+    let locked = state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
+    for (n, id) in runs.iter().enumerate() {
+        let Ok(rec) = RunRecord::load(&sess.paths, id) else {
+            println!("{id}  (no readable run.toml)");
+            continue;
+        };
+        let how = match &rec.finished {
+            Some(_) => "finished",
+            None if n == 0 && locked => "running",
+            None => "interrupted",
+        };
+        let ok = rec.units.iter().filter(|u| u.outcome == "ok").count();
+        let left = rec.unfinished().len();
+        println!(
+            "{id}  {:<14} {:<11} {ok:>3} ok  {left:>3} unfinished  of {}",
+            rec.command,
+            how,
+            rec.units.len()
+        );
+    }
+    println!("`envira log --run <id>` shows one run; `envira log <item>` the last log of an item.");
+    Ok(0)
+}
+
 pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32> {
     let run_id = match run {
         Some(r) => r.to_string(),

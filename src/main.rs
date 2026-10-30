@@ -93,7 +93,8 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 commands::plan_cmd(&sess, &items, script).await
             }
             Some(Command::Env) => commands::env_cmd(&sess).await,
-            Some(Command::Log { item, run }) => {
+            Some(Command::Log { list: true, .. }) => commands::log_list(&sess),
+            Some(Command::Log { item, run, .. }) => {
                 commands::log(&sess, item.as_deref(), run.as_deref())
             }
             Some(Command::Doctor) => commands::doctor(&sess).await,

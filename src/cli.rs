@@ -119,6 +119,9 @@ pub enum Command {
         item: Option<String>,
         #[arg(long)]
         run: Option<String>,
+        /// List the kept runs with their outcome counts.
+        #[arg(long, conflicts_with_all = ["item", "run"])]
+        list: bool,
     },
     /// Why an item has its status: detect/check commands with their exit codes and output,
     /// the install route, recorded state and what installing it would run.
