@@ -113,8 +113,24 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 ## Testing
 - `cargo test`: unit tests plus a fake `Runner` (substring rules; `on_install` flips detection after a
   successful install) for executor flows, and `TestBackend` renders for TUI screens.
-- `tests/integration/run.sh`: Docker (ubuntu:24.04, user with passwordless sudo). `MODES="sudo user"`;
-  user mode sets `ENVIRA_PRIVILEGE=none`. It never touches the host.
+- `tests/integration/run.sh`: Docker (user with passwordless sudo). `MODES="sudo user"`;
+  user mode sets `ENVIRA_PRIVILEGE=none`. It never touches the host. `DISTRO=ubuntu|fedora|arch|opensuse`
+  picks `Dockerfile.$DISTRO` (ubuntu:24.04, fedora:44, archlinux, opensuse/tumbleweed); CI runs the
+  check suite on all four.
+- Multi-distro lessons (2026-10-30):
+  - `sudo -n -v` needs *every* matching sudoers rule to be NOPASSWD. openSUSE ships
+    `ALL ALL=(ALL) ALL` with `Defaults targetpw`, so it asked for a password despite the user's own
+    NOPASSWD rule. Probe with `sudo -n true` (`app::sudo_without_password`).
+  - Package renames: p7zip → `7zip` (dnf/pacman/zypper), ping → `iputils`, libfuse2 → `fuse-libs` /
+    `fuse2` / `libfuse2`, sshd → `openssh` on Arch, net-tools → `net-tools-deprecated` on openSUSE.
+  - The Arch image ships without a sync database and goes stale fast: pacman installs fall back to
+    `pacman -Syu` when `-S` fails.
+  - `get.docker.com` rejects Arch and openSUSE; they install `docker` from their own repos and need
+    `systemctl enable` (configs.docker-service).
+  - Tests that wait for a step to start must match the log's `│ begin` line, not "begin": the plan
+    output printed earlier contains the word.
+  - zsh does not word-split an unquoted `$e`, so `docker run $e …` passes `-e A=B` as one argument;
+    run such loops under bash.
 - Run ids are second-resolution timestamps; back-to-back runs (revert then apply) collided and shared
   one log dir until `new_run_id` added `-02`, `-03` suffixes.
 - Safe manual TUI runs on a real machine: `ENVIRA_STATE_DIR=<tmp>/state ENVIRA_CONFIG_DIR=<tmp>/config envira`

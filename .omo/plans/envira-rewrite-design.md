@@ -492,7 +492,7 @@ static binaries are copied into `/usr/local/bin`.
 | `editors` | neovim (~/.nvim), lemonade, texlab |
 | `ai-agents` | codex + codex-sandbox-network, antigravity (agy), cursor-agent (agent), claude, opencode, oh-my-opencode, openchamber, omp |
 | `monitoring` | btop, bottom, nvitop, nviwatch, bandwhich |
-| `containers` | docker, docker-service (Arch), docker-group, lazydocker, dive, ctop |
+| `containers` | docker, docker-service (Arch, openSUSE), docker-group, lazydocker, dive, ctop |
 | `data-science` | miniconda, conda-settings (changeps1), jupyter (TOS + jupyterlab), hf (+ hf_transfer) |
 | `secrets` | infisical (+ INFISICAL_* env, ienv init), ienv |
 | `system` | inotify-watches (`/etc/sysctl.conf` line + live value) |
@@ -567,7 +567,7 @@ src/
   state.rs, fs.rs (`envira fs`), fetch.rs (`envira fetch-release`), shellenv.rs
   tui/       (mod.rs event loop, app.rs state + keys, ui.rs BC1 rendering, theme.rs)
 catalog/*.toml, catalog/templates.toml, catalog/schema.json
-tests/integration/ (Docker: run.sh, check.sh, Dockerfile.ubuntu)
+tests/integration/ (Docker: run.sh, check.sh, full.sh, Dockerfile.{ubuntu,fedora,arch,opensuse})
 ```
 
 ## Testing
@@ -576,8 +576,10 @@ tests/integration/ (Docker: run.sh, check.sh, Dockerfile.ubuntu)
   backend step construction and version parsing.
 - Executor through a `Runner` trait with a fake implementation for failure/blocking/retry flows.
 - TUI: `ratatui::backend::TestBackend` for key flows only (dashboard filter, plan confirm, run summary).
-- Integration: reuse `.github/integration-test/` Docker images: `envira sync -y --bundle core` then
-  `envira status --json` must report all core tools installed; run twice to prove idempotence.
+- Integration (`tests/integration/run.sh`, in CI): `check` installs a few items, then tests status,
+  idempotence, shell integration, update, adopt and recovery (lock, SIGTERM, retry, timeout, a flaky
+  download); `full` syncs whole bundles and runs `verify.sh`. Both run with and without sudo, on
+  Ubuntu, Fedora, Arch and openSUSE images (`DISTRO`).
 
 ## Milestones
 1. **M1 status (headless)** (done): catalog schema + templates + facts + detect + `status` / `doctor` /
