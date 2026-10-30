@@ -120,7 +120,7 @@ pub async fn execute(
     let _ = record.save(&ctx.paths, &ctx.facts);
     // Point state at this run now: if envira dies midway, `retry` resumes this run.
     state.last_run = Some(ctx.run_id.clone());
-    let _ = state.save(&ctx.paths, &ctx.facts);
+    let _ = state.save_run(&ctx.paths, &ctx.facts);
     let mut bad: BTreeSet<String> = BTreeSet::new();
 
     for (idx, unit) in plan.units.iter().enumerate() {
@@ -148,7 +148,7 @@ pub async fn execute(
             seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
         };
         if let Err(e) = state
-            .save(&ctx.paths, &ctx.facts)
+            .save_run(&ctx.paths, &ctx.facts)
             .and_then(|_| record.save(&ctx.paths, &ctx.facts))
         {
             let _ = tx.send(Event::Line(
@@ -166,7 +166,7 @@ pub async fn execute(
     state.mark_all_seen(&ctx.catalog);
     state.last_run = Some(ctx.run_id.clone());
     record.finished = Some(state::now_rfc3339());
-    let _ = state.save(&ctx.paths, &ctx.facts);
+    let _ = state.save_run(&ctx.paths, &ctx.facts);
     let _ = record.save(&ctx.paths, &ctx.facts);
     state::prune_runs(&ctx.paths, KEEP_RUNS);
     let _ = tx.send(Event::Finished(record.clone()));

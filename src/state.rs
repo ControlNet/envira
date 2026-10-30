@@ -151,6 +151,17 @@ impl State {
         write_atomic(&paths.state_file(), text.as_bytes(), facts)
     }
 
+    /// Saves the results of a run. The selection (bundles, include, exclude) is taken from disk
+    /// first: a run never changes it, while the TUI or `sync --bundle` may have meanwhile.
+    pub fn save_run(&mut self, paths: &Paths, facts: &Facts) -> Result<()> {
+        if let Ok(Some(disk)) = State::load(paths) {
+            self.bundles = disk.bundles;
+            self.include = disk.include;
+            self.exclude = disk.exclude;
+        }
+        self.save(paths, facts)
+    }
+
     /// Desired ids: bundle members plus `include`, minus `exclude`.
     pub fn desired(&self, cat: &Catalog) -> BTreeSet<String> {
         let mut d: BTreeSet<String> = self
@@ -422,6 +433,30 @@ mod tests {
             toml::from_str("[bundles.terminal]\nitems=[\"bat\",\"herdr\"]\n").unwrap();
         let d = back.desired(&cat);
         assert_eq!(d.into_iter().collect::<Vec<_>>(), vec!["bat", "codex"]);
+    }
+
+    #[test]
+    fn run_saves_keep_selection_changes_made_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let facts = Facts::sample(dir.path());
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+        };
+        let mut run = State {
+            bundles: vec!["base".into()],
+            ..Default::default()
+        };
+        run.save(&paths, &facts).unwrap();
+        // Another envira subscribes a bundle while the run is going.
+        let mut other = State::load(&paths).unwrap().unwrap();
+        other.bundles.push("terminal".into());
+        other.save(&paths, &facts).unwrap();
+        run.last_run = Some("r1".into());
+        run.save_run(&paths, &facts).unwrap();
+        let disk = State::load(&paths).unwrap().unwrap();
+        assert_eq!(disk.bundles, vec!["base", "terminal"]);
+        assert_eq!(disk.last_run.as_deref(), Some("r1"));
     }
 
     #[test]
