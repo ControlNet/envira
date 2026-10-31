@@ -54,6 +54,26 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  # Apple Silicon: lints and unit tests, then the read-only commands on the runner itself.
+  macos:
+    name: macOS (aarch64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - name: Read-only commands
+        env:
+          ENVIRA_NO_REMOTE: '1'
+        run: |
+          e=target/release/envira
+          $e --version
+          $e doctor
+          $e catalog check
+          $e status | tail -n 3
+
   # The static release binaries and wheels (x86_64, aarch64).
   dist:
     uses: ./.github/workflows/build.yaml

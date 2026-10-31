@@ -102,7 +102,9 @@ pub fn placeholders(tpl: &str) -> Vec<String> {
 /// Values for template expansion.
 #[derive(Debug, Clone)]
 pub struct Vars {
-    pub arch: String,
+    /// Key of per-platform tables: the arch on Linux (`x86_64`), `<os>-<arch>` elsewhere
+    /// (`macos-aarch64`), so a table of Linux assets has no value on a Mac.
+    pub variant: String,
     builtins: BTreeMap<&'static str, String>,
     params: Params,
 }
@@ -127,7 +129,7 @@ impl Vars {
         b.insert("id", id.to_string());
         b.insert("bin", bin.to_string());
         Vars {
-            arch: facts.arch.clone(),
+            variant: variant_key(facts),
             builtins: b,
             params: Params::new(),
         }
@@ -216,9 +218,9 @@ impl Vars {
                 }
                 Ok(out)
             }
-            Value::Object(by_arch) => match by_arch.get(&self.arch) {
+            Value::Object(by_arch) => match by_arch.get(&self.variant) {
                 Some(v) => self.words(name, v),
-                None => Err(format!("{{{name}}} has no value for arch {}", self.arch)),
+                None => Err(format!("{{{name}}} has no value for {}", self.variant)),
             },
             Value::Null => Ok(vec![]),
         }
@@ -243,6 +245,14 @@ impl Vars {
             out = format!("{}/{rest}", self.builtins["home"]);
         }
         Ok(out)
+    }
+}
+
+pub fn variant_key(facts: &Facts) -> String {
+    if facts.os == "linux" {
+        facts.arch.clone()
+    } else {
+        format!("{}-{}", facts.os, facts.arch)
     }
 }
 
@@ -292,6 +302,8 @@ pub enum Pred {
     Family(String),
     Arch(String),
     Shell(String),
+    /// `linux` or `macos`.
+    Os(String),
 }
 
 pub fn parse_pred(s: &str) -> Result<(bool, Pred), String> {
@@ -313,6 +325,7 @@ pub fn parse_pred(s: &str) -> Result<(bool, Pred), String> {
             "family" => Pred::Family(v.to_lowercase()),
             "arch" => Pred::Arch(v.to_string()),
             "shell" => Pred::Shell(v.to_string()),
+            "os" => Pred::Os(v.to_lowercase()),
             _ => return Err(format!("unknown predicate {s:?}")),
         },
         Some(_) => return Err(format!("empty value in predicate {s:?}")),
@@ -331,6 +344,7 @@ fn holds(p: &Pred, f: &Facts) -> bool {
         Pred::Family(d) => f.families.iter().any(|x| x == d),
         Pred::Arch(a) => f.arch == *a,
         Pred::Shell(s) => f.has_shell(s),
+        Pred::Os(o) => f.os == *o,
     }
 }
 
@@ -400,7 +414,7 @@ mod tests {
         assert!(
             v.expand("{asset}", Ctx::Shell)
                 .unwrap_err()
-                .contains("arch x86_64")
+                .contains("no value for x86_64")
         );
     }
 
@@ -440,6 +454,34 @@ mod tests {
     }
 
     #[test]
+    fn variant_tables_are_per_os() {
+        let mut facts = Facts::sample(Path::new("/Users/user"));
+        facts.os = "macos".into();
+        facts.arch = "aarch64".into();
+        let p = |v: Value| -> Params { serde_json::from_value(v).unwrap() };
+        // A table with only Linux (plain arch) keys has nothing for a Mac: the entry is not
+        // feasible there, rather than downloading a Linux binary.
+        let linux_only = p(json!({"asset": {"x86_64": "a-linux-x64", "aarch64": "a-linux-arm"}}));
+        let v = Vars::new(&facts, "a", "a", "~/.local/bin", false).with_params(&linux_only);
+        let err = v.expand("{asset}", Ctx::Shell).unwrap_err();
+        assert!(err.contains("macos-aarch64"), "{err}");
+        let both = p(json!({"asset": {"aarch64": "a-linux-arm", "macos-aarch64": "a-darwin-arm"}}));
+        let v = Vars::new(&facts, "a", "a", "~/.local/bin", false).with_params(&both);
+        assert_eq!(v.expand("{asset}", Ctx::Shell).unwrap(), "a-darwin-arm");
+        // Linux keeps reading the plain arch key.
+        let f = Facts::sample(Path::new("/home/user"));
+        let v = Vars::new(&f, "a", "a", "~/.local/bin", false).with_params(&both);
+        assert!(
+            v.expand("{asset}", Ctx::Shell).is_err(),
+            "x86_64 has no key"
+        );
+        let mut f = f;
+        f.arch = "aarch64".into();
+        let v = Vars::new(&f, "a", "a", "~/.local/bin", false).with_params(&both);
+        assert_eq!(v.expand("{asset}", Ctx::Shell).unwrap(), "a-linux-arm");
+    }
+
+    #[test]
     fn sudo_only_for_system_scope_when_not_root() {
         let facts = Facts::sample(Path::new("/home/user"));
         let v = Vars::new(&facts, "x", "x", "/usr/local/bin", true);
@@ -458,6 +500,10 @@ mod tests {
         assert_eq!(unmet(&w(&["gpu"]), &f), Some("gpu"));
         f.gpu = true;
         assert_eq!(unmet(&w(&["gpu"]), &f), None);
+        assert_eq!(unmet(&w(&["os:linux"]), &f), None);
+        assert_eq!(unmet(&w(&["os:macos"]), &f), Some("os:macos"));
+        f.os = "macos".into();
+        assert_eq!(unmet(&w(&["!os:linux"]), &f), None);
         assert!(parse_pred("colour").is_err());
         assert!(parse_pred("distro:").is_err());
     }

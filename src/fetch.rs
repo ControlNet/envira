@@ -181,7 +181,7 @@ pub fn run(args: &FetchArgs) -> Result<()> {
 }
 
 /// Installs `files` into `to`: atomically when `via` is empty, else staged in a temp dir and
-/// copied with `<via> install -D -m 755`.
+/// copied with `<via> install -m 755` (after `<via> mkdir -p`; BSD `install` has no `-D`).
 fn place(files: &[(String, Vec<u8>)], to: &Path, via: &[String]) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let Some((prog, pre)) = via.split_first() else {
@@ -193,21 +193,31 @@ fn place(files: &[(String, Vec<u8>)], to: &Path, via: &[String]) -> Result<Vec<P
         }
         return Ok(out);
     };
+    let run = |args: &[&std::ffi::OsStr]| -> Result<()> {
+        let st = std::process::Command::new(prog)
+            .args(pre)
+            .args(args)
+            .status()
+            .with_context(|| format!("running {prog}"))?;
+        if !st.success() {
+            let shown: Vec<_> = args.iter().map(|a| a.to_string_lossy()).collect();
+            bail!("{} {} failed ({st})", via.join(" "), shown.join(" "));
+        }
+        Ok(())
+    };
+    run(&["mkdir".as_ref(), "-p".as_ref(), to.as_os_str()])?;
     let stage = tempfile::tempdir().context("creating a staging directory")?;
     for (bin, data) in files {
         let src = stage.path().join(bin);
         std::fs::write(&src, data).with_context(|| format!("writing {}", src.display()))?;
         let dest = to.join(bin);
-        let st = std::process::Command::new(prog)
-            .args(pre)
-            .args(["install", "-D", "-m", "755"])
-            .arg(&src)
-            .arg(&dest)
-            .status()
-            .with_context(|| format!("running {prog}"))?;
-        if !st.success() {
-            bail!("{} install {} failed ({st})", via.join(" "), dest.display());
-        }
+        run(&[
+            "install".as_ref(),
+            "-m".as_ref(),
+            "755".as_ref(),
+            src.as_os_str(),
+            dest.as_os_str(),
+        ])?;
         out.push(dest);
     }
     Ok(out)
@@ -409,7 +419,7 @@ mod tests {
             assert_eq!(mode & 0o777, 0o755, "{}", f.display());
         }
         let err = place(&files, &d.path().join("x"), &["false".to_string()]).unwrap_err();
-        assert!(format!("{err:#}").contains("false install"), "{err:#}");
+        assert!(format!("{err:#}").contains("false mkdir -p"), "{err:#}");
     }
 
     #[test]

@@ -117,7 +117,12 @@ impl RealRunner {
         let e = &self.env;
         let mut c = match &e.drop_to {
             Some(user) => {
-                let mut c = Command::new("runuser");
+                // util-linux's runuser is Linux-only; root's `sudo -u` needs no password.
+                let mut c = Command::new(if cfg!(target_os = "macos") {
+                    "sudo"
+                } else {
+                    "runuser"
+                });
                 c.args(["-u", user, "--", "env"])
                     .arg(format!("HOME={}", e.home.display()))
                     .arg(format!("USER={}", e.user))

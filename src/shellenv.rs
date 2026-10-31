@@ -131,7 +131,13 @@ pub fn rc_block(shell: &str, paths: &Paths, facts: &Facts) -> String {
 }
 
 pub fn rc_files(facts: &Facts) -> Vec<(&'static str, PathBuf)> {
-    [("zsh", ".zshrc"), ("bash", ".bashrc")]
+    // macOS terminals start login shells, and a login bash reads ~/.bash_profile, not ~/.bashrc.
+    let bash = if facts.os == "macos" {
+        ".bash_profile"
+    } else {
+        ".bashrc"
+    };
+    [("zsh", ".zshrc"), ("bash", bash)]
         .into_iter()
         .map(|(s, f)| (s, facts.home.join(f)))
         .filter(|(s, f)| facts.has_shell(s) || f.exists())
@@ -285,6 +291,32 @@ mod tests {
         assert_eq!(
             path.trim(),
             format!("{}/.bun/bin:/usr/bin:/bin", d.path().display())
+        );
+    }
+
+    #[test]
+    fn macos_bash_uses_the_login_profile() {
+        let (d, _cat, mut facts, _paths) = setup();
+        let names = |f: &Facts| {
+            rc_files(f)
+                .into_iter()
+                .map(|(s, p)| (s, p.strip_prefix(d.path()).unwrap().display().to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&facts),
+            [
+                ("zsh", ".zshrc".to_string()),
+                ("bash", ".bashrc".to_string())
+            ]
+        );
+        facts.os = "macos".into();
+        assert_eq!(
+            names(&facts),
+            [
+                ("zsh", ".zshrc".to_string()),
+                ("bash", ".bash_profile".to_string())
+            ]
         );
     }
 
