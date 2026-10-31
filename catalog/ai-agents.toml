@@ -16,14 +16,16 @@ steps = [{ use = "toml-set", file = "~/.codex/config.toml", key = "sandbox_works
 desc = "Google Antigravity CLI"
 depends = ["curl"]
 bin = "agy"
-install = [{ method = "script", url = "https://antigravity.google/cli/install.sh", shell = "bash" }]
+# The installer's release manifest; the version is the same on every platform.
+install = [{ method = "script", url = "https://antigravity.google/cli/install.sh", shell = "bash", latest = { http = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json", json = "version" } }]
 
 [tools.cursor-agent]
 desc = "Cursor agent CLI"
 depends = ["curl"]
 bin = "agent"
 bins = ["agent", "cursor-agent"]
-install = [{ method = "script", url = "https://cursor.com/install", shell = "bash", update = "agent update" }]
+# The installer pins the current build in its download URL (downloads.cursor.com/lab/<version>-<commit>).
+install = [{ method = "script", url = "https://cursor.com/install", shell = "bash", update = "agent update", latest = { http = "https://cursor.com/install", regex = 'downloads\.cursor\.com/lab/(\d[\d.]*\d)' } }]
 
 [tools.claude]
 desc = "Claude Code"
@@ -51,7 +53,8 @@ install = [{ run = "bun add -g @openchamber/web", depends = ["bun"], latest = { 
 [tools.omp]
 desc = "omp agent CLI"
 depends = ["curl"]
-install = [{ method = "script", url = "https://omp.sh/install" }]
+# The build service the installer downloads from; the version is the same on every target.
+install = [{ method = "script", url = "https://omp.sh/install", latest = { http = "https://build.stencil.so/api/products/omp/latest/linux-x86_64?channel=stable", json = "build.version" } }]
 
 [bundles.ai-agents]
 name = "AI agents"

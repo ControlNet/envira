@@ -287,6 +287,42 @@ mod tests {
         let q = query_for(&cat, &f, "bun", &bun).unwrap().unwrap();
         assert!(q.http.unwrap().contains("oven-sh/bun"));
         assert_eq!(q.json.as_deref(), Some("tag_name"));
+        let gcc = route_of(&cat, "build-tools", "dnf");
+        let q = query_for(&cat, &f, "build-tools", &gcc).unwrap().unwrap();
+        assert_eq!(
+            q.cmd.as_deref(),
+            Some("dnf -q -C repoquery --latest-limit=1 --qf '%{version}\\n' gcc make perl")
+        );
+        let tmux = route_of(&cat, "tmux", "zypper");
+        let q = query_for(&cat, &f, "tmux", &tmux).unwrap().unwrap();
+        assert_eq!(q.cmd.as_deref(), Some("zypper -n --no-refresh info tmux"));
+    }
+
+    #[tokio::test]
+    async fn dnf_and_zypper_answers_parse() {
+        let cat = load(&[embedded_layer()]).unwrap().catalog;
+        let f = Facts::sample(Path::new("/home/user"));
+        let r = FakeRunner::default();
+        // Real output from Fedora and openSUSE Leap (a warning first, then the candidate).
+        r.rule("repoquery", 0, "15.2.1\n4.4.1\n5.40.2\n")
+            .rule(
+                "info tmux",
+                0,
+                "Warning: Repository 'Main Update Repository' metadata expired.\nInformation for package tmux:\n-------------------------------\nRepository     : Main Repository\nName           : tmux\nVersion        : 3.3a-150300.3.6.1\nStatus         : not installed\n",
+            )
+            .rule("info git", 104, "package 'git' not found.\n");
+        let q = |id: &str, via: &str| {
+            query_for(&cat, &f, id, &route_of(&cat, id, via))
+                .unwrap()
+                .unwrap()
+        };
+        let gcc = run_query(&q("build-tools", "dnf"), &r).await;
+        assert_eq!(gcc.as_deref(), Ok("15.2.1"));
+        assert_eq!(
+            run_query(&q("tmux", "zypper"), &r).await.as_deref(),
+            Ok("3.3a")
+        );
+        assert!(run_query(&q("git", "zypper"), &r).await.is_err());
     }
 
     fn route_of(cat: &Catalog, id: &str, via: &str) -> Route {

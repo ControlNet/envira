@@ -263,7 +263,7 @@ when = ["family:arch"]
 install = [
   # Manjaro ships yay in its repositories; Arch builds it from the AUR (makepkg asks sudo itself).
   { method = "pacman", package = "yay", when = ["distro:manjaro"] },
-  { run = "git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si --noconfirm", when = ["distro:arch"], depends = ["git", "build-tools"] },
+  { run = "git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si --noconfirm", when = ["distro:arch"], depends = ["git", "build-tools"], latest = { http = "https://aur.archlinux.org/rpc/v5/info/yay", json = "results.0.Version" } },
 ]
 
 [bundles.base]

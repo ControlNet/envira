@@ -72,6 +72,9 @@ scope = "system"
 install = "{sudo} dnf install -y {package}"
 update = "{sudo} dnf upgrade -y {package}"
 installed = { cmd = "rpm -q --qf '%{{VERSION}}\\n' {package}", regex = '^(\S+)' }
+# Newest version in the local metadata cache, like apt-cache policy: -C keeps it off the network
+# (without it dnf downloads the metadata for a normal user, far beyond the query timeout).
+latest = { cmd = "dnf -q -C repoquery --latest-limit=1 --qf '%{{version}}\\n' {package}", regex = '^(\S+)' }
 
 [methods.pacman]
 desc = "Arch package"
@@ -91,6 +94,8 @@ scope = "system"
 install = "{sudo} zypper --non-interactive install {package}"
 update = "{sudo} zypper --non-interactive update {package}"
 installed = { cmd = "rpm -q --qf '%{{VERSION}}\\n' {package}", regex = '^(\S+)' }
+# `Version` is the candidate from the local repository cache (--no-refresh: no network, no root).
+latest = { cmd = "zypper -n --no-refresh info {package}", regex = 'Version\s*:\s*(?:\d+:)?([^-\s]+)' }
 
 [methods.brew]
 desc = "Homebrew formula (macOS)"

@@ -92,7 +92,7 @@ install = [
   { method = "dnf", package = "pipx" },
   { method = "pacman", package = "python-pipx" },
   # openSUSE, CentOS and machines without sudo (run.sh / run_user.sh: pip --user).
-  { run = "python3 -m pip install --user pipx || python3 -m pip install --user --break-system-packages pipx", update = "python3 -m pip install --user --upgrade pipx || python3 -m pip install --user --upgrade --break-system-packages pipx", depends = ["python3"] },
+  { run = "python3 -m pip install --user pipx || python3 -m pip install --user --break-system-packages pipx", update = "python3 -m pip install --user --upgrade pipx || python3 -m pip install --user --upgrade --break-system-packages pipx", depends = ["python3"], latest = { http = "https://pypi.org/pypi/pipx/json", json = "info.version" } },
 ]
 
 [tools.uv]

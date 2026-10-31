@@ -10,6 +10,8 @@ install = [
   { method = "pacman", package = "docker" },
   { method = "zypper", package = "docker" },
   # get.docker.com supports Debian/Ubuntu, Fedora, RHEL and CentOS, but not Arch or openSUSE.
+  # No `latest`: it adds Docker's package repository, so the system upgrade keeps docker-ce
+  # current, and re-running the script over an existing install is not supported.
   { method = "script", url = "https://get.docker.com", scope = "system", when = ["!family:arch", "!family:suse"] },
 ]
 

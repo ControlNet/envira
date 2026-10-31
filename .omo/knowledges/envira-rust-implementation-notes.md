@@ -46,6 +46,20 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - `rustup check` prints `stable-<triple> - update available: A (..) -> B (..)` or `up to date: A`
   and exits 100 when an update exists.
 - `fnm ls-remote --lts | tail -n 1` gives the newest LTS (`--latest` is not on every fnm version).
+- dnf (verified 2026-10-31 on Fedora and CentOS Stream 9 as a normal user):
+  `dnf -q -C repoquery --latest-limit=1 --qf '%{version}\n' <pkgs>` reads the system metadata cache
+  in ~1 s. Without `-C`, dnf4 downloads its own metadata for a non-root user (40 s, past the 20 s
+  query timeout). Several packages print one line each, sorted by name; an unknown package prints
+  nothing with exit 0.
+- zypper (Tumbleweed and Leap 15.6, normal user): `zypper -n --no-refresh info <pkg>` shows the
+  candidate in `Version : 3.3a-150300.3.6.1` (with `Status : out-of-date (version X installed)`
+  when behind), after "metadata expired" warnings; an unknown package exits 104.
+- Vendor sources without GitHub releases: herdr `https://herdr.dev/latest.json` → `version`;
+  antigravity `…run.app/manifests/<os>_<amd64|arm64>.json` → `version` (`linux_x64` is a 404);
+  omp `https://build.stencil.so/api/products/omp/latest/<linux|macos>-<x86_64|arm64>?channel=stable`
+  → `build.version`; cursor's `https://cursor.com/install` embeds `downloads.cursor.com/lab/<ver>-<commit>`;
+  conda packages `https://api.anaconda.org/package/anaconda/<pkg>` → `latest_version`;
+  AUR `https://aur.archlinux.org/rpc/v5/info/<pkg>` → `results.0.Version` (`13.1.0-1`).
 - `bun upgrade`, `herdr update`, `pipx upgrade`, `npm install -g <pkg>@latest`,
   `apt-get install --only-upgrade -y` are the in-place updaters.
 - Never re-plan an update with the machine's scope preference: a `~/.local/bin` tool on a sudo

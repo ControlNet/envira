@@ -69,8 +69,8 @@ apply = "curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/f
 desc = "Terminal workspace manager"
 depends = ["curl"]
 detect = { cmd = "herdr --version", version = '(\d+\.\d+\S*)' }
-# No published latest-version source; `envira update herdr` runs the built-in updater.
-install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "herdr update" }]
+# The release manifest the installer reads.
+install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "herdr update", latest = { http = "https://herdr.dev/latest.json", json = "version" } }]
 
 [tools.lsd]
 desc = "ls with colours and icons"
