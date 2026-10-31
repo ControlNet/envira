@@ -611,7 +611,7 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
     1. `version` checks that the tag equals the `Cargo.toml` version;
     2. `publish` uploads the wheels to PyPI by trusted publishing (`pypi` / `testpypi`
        environments, bound to the file name `release.yaml`);
-    3. `crates` publishes the crate to crates.io (`crates-io` environment): trusted publishing, or
+    3. `crates` publishes the crate to crates.io (no environment): trusted publishing, or
        the `CARGO_REGISTRY_TOKEN` secret when set (needed for the first version), and skipped when
        the version is already there. Manual runs do `cargo publish --dry-run` only;
     4. `release` creates the GitHub release with the binaries, checksums and `catalog.toml`;
