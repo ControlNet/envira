@@ -106,7 +106,7 @@ if [[ -f /etc/redhat-release ]]; then
 
     # if fedora
     if cat /etc/redhat-release | grep -qiE "Fedora"; then
-        sudo dnf install -y python3 pipx gedit vim git git-lfs curl wget zsh gcc make perl screen tmux ncdu xsel unzip bat screenfetch neofetch fastfetch mosh iperf3 nmap btop
+        sudo dnf install -y python3 pipx gedit vim git git-lfs curl wget zsh gcc libatomic make perl screen tmux ncdu xsel unzip bat screenfetch neofetch fastfetch mosh iperf3 nmap btop
     # if centos
     else
         sudo yum install -y python3 dnf gedit vim git git-lfs curl wget zsh gcc make perl screen tmux ncdu xsel unzip iperf3 nmap
