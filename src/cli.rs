@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "envira", version, about = "Install, update and track your Linux toolset", long_about = None)]
+#[command(name = "envira", version, about = "Install, update and track your Linux and macOS toolset", long_about = None)]
 pub struct Cli {
     #[command(flatten)]
     pub global: Global,

@@ -1,27 +1,21 @@
 # envira
-A script to fast build my zsh theme environment
 
-It supports the following distributions:
-- Ubuntu and Mint
-- Redhat, CentOS, ...
-- Manjaro
+Set up a development machine from a declarative catalog: zsh with oh-my-zsh and the mzz-ys theme,
+language toolchains (Rust, Go, Node.js, Python), modern terminal tools, editors, coding agents and
+monitors. About 100 tools and 20 configs.
 
-What tools will be installed:
-- The basic development tools (vim, wget, git, ...)
-- Install zsh as the default shell
-- A theme (modified mzz-ys) for zsh with oh-my-zsh
-- Frequently used languages and package managers (python with conda, nodejs, rust, golang, ...)
-- Modern linux terminal tools (exa, bat, fd, ripgrep, lazygit, lunarvim, ...) with alias
+envira shows what is installed, missing, outdated or drifted, installs what is missing with its
+dependencies, updates tools in place, and applies or reverts configs. It runs as a TUI or as plain
+commands for scripts and Dockerfiles.
 
-![theme](assets/theme_preview.jpg)
+- Linux x86_64 and aarch64: Ubuntu/Debian, Fedora/RHEL, Arch/Manjaro, openSUSE. A single static
+  binary with no dependencies.
+- macOS on Apple Silicon, with Homebrew.
+- With or without sudo: without it, envira picks user-scope routes.
 
-## How to use it
+![theme](https://raw.githubusercontent.com/ControlNet/envira/main/assets/theme_preview.jpg)
 
-### envira (new)
-
-`envira` is a single binary for Linux (x86_64 and aarch64, static, no dependencies) and Apple Silicon
-Macs. It knows the tools and configs from a catalog, shows what is installed, and installs, updates
-or reverts them.
+## Install
 
 ```shell
 # install into ~/.local/bin (checks its SHA-256) and open envira
@@ -34,6 +28,10 @@ pipx install envira        # or: uv tool install envira
 cargo binstall envira      # or: cargo install --locked envira
 ```
 
+Run the curl line again to update envira itself.
+
+## Use
+
 ```shell
 envira                     # the TUI: pick bundles, review the plan, watch it run
 envira status              # what is installed, missing, outdated or drifted
@@ -45,6 +43,25 @@ envira retry               # retry what failed or was blocked in the last run
 envira log / explain <id>  # logs of the last run; why an item has its status
 envira doctor              # machine facts, catalog layers, PATH, shell integration
 ```
+
+Bundles (`envira sync -b <bundle>`):
+
+| Bundle | What it covers |
+|---|---|
+| `full` | Everything the legacy `run.sh` sets up (all bundles below except `extras`) |
+| `user` | What the legacy `run_user.sh` sets up without sudo |
+| `base` | Distribution packages every machine gets |
+| `shell` | zsh, oh-my-zsh, theme, plugins, tmux and git settings |
+| `toolchains` | Rust, Go, Node.js, Python and JavaScript toolchains |
+| `terminal` | Daily terminal tools (bat, fzf, lazygit, ripgrep, yazi, zoxide, …) |
+| `editors` | Neovim, clipboard bridge and LaTeX language server |
+| `ai-agents` | Coding agents and their settings |
+| `monitoring` | System, GPU and network monitors |
+| `containers` | Docker, its setup and container tools |
+| `data-science` | Miniconda, Jupyter and the Hugging Face CLI |
+| `secrets` | Infisical CLI and ienv |
+| `system` | Kernel and system settings |
+| `extras` | Older or redundant tools from the legacy scripts |
 
 - With sudo, packages go system-wide; without it, envira picks user-scope routes
   (`--scope user` forces that).
@@ -60,7 +77,30 @@ envira doctor              # machine facts, catalog layers, PATH, shell integrat
 - Variables for the install script: `ENVIRA_VERSION=v0.2.0` pins a release,
   `ENVIRA_INSTALL_DIR` changes where it puts the binary, and `ENVIRA_NO_LAUNCH=1` only installs.
 
-### Legacy scripts
+## Docker
+
+```dockerfile
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl sudo zsh \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -m -s /bin/zsh user \
+ && echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/user
+
+USER user
+WORKDIR /home/user
+RUN curl -fsSL https://boot.controlnet.space/envira | bash -s -- sync -b full -y
+
+CMD ["/bin/zsh"]
+```
+
+This is the setup the CI integration tests use: a normal user with passwordless sudo. For a user
+without sudo, drop `sudo` and the sudoers line and sync `-b user` instead.
+
+## Legacy scripts
+
+The shell scripts envira replaces. They still work and are still served.
 
 ```shell
 curl -fsSL https://boot.controlnet.space/ | bash        # if you have sudo permission
@@ -68,9 +108,7 @@ curl -fsSL https://boot.controlnet.space/user | bash    # if you don't have sudo
 curl -fsSL https://boot.controlnet.space/verify | bash  # verify the installation
 ```
 
-### For docker
-
-Full tools and configurations for the environment:
+Full tools and configurations in Docker with the legacy scripts:
 ```dockerfile
 FROM ubuntu:22.04
 
@@ -108,7 +146,7 @@ RUN git config --global alias.lsd "log --graph --decorate --pretty=oneline --abb
 RUN echo "changeps1: false" >> /root/.condarc
 ```
 
-### Detail Steps
+What `run.sh` does, step by step:
 
 1. Checks the Linux distribution and installs a set of common development tools using the appropriate package manager.
 2. Installs pipx, a tool for installing and running Python applications in isolated environments.
@@ -137,11 +175,9 @@ RUN echo "changeps1: false" >> /root/.condarc
 25. Installs several utilities (lsd, git-delta, duf, dust, fd, ripgrep, gping, procs, xh, uv, speedtest-cli, gdown, zoxide, micro, scc, viu, pm2) and sets up aliases for some of them.
 26. Installs several system monitoring tools (bottom, nvitop, bpytop, bandwhich).
 
-### Long install tip (keep sudo alive)
-
-If your sudo credential times out during a long installation, `run.sh` now automatically refreshes sudo credentials in the background after the first sudo prompt.
-
+If your sudo credential times out during a long installation, `run.sh` refreshes sudo credentials
+in the background after the first sudo prompt.
 
 ## License
 
-AGPL 3.0 - see [LICENSE](LICENSE) file for details.
+AGPL 3.0 - see [LICENSE](https://github.com/ControlNet/envira/blob/main/LICENSE) file for details.
