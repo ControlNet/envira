@@ -15,7 +15,7 @@ bare=/usr/bin:/bin:/usr/sbin:/sbin
 e() { env PATH="$bare" "$envira" "$@"; }
 
 echo "=== machine"
-e doctor | head -n 12
+{ e doctor || true; } | head -n 12
 echo "preinstalled formulae: $(brew list --formula | wc -l | tr -d ' ')"
 
 echo "=== status with a bare PATH"
