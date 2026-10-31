@@ -1,10 +1,10 @@
 name: Release to PyPI
 
-# A push to main deploys boot.controlnet.space (scripts, catalog.toml, binaries). A `v*` tag also
-# publishes the wheels (Linux x86_64 / aarch64, macOS arm64) to PyPI, the crate to crates.io, and
-# creates the GitHub release that envira.sh and cargo binstall install from; its version must match
-# Cargo.toml. Trusted publishing is bound to the workflow file name, and on PyPI also to the
-# `pypi` / `testpypi` environments.
+# A push to main deploys boot.controlnet.space: scripts and catalog.toml from main, binaries from
+# the latest release. A `v*` tag also publishes the wheels (Linux x86_64 / aarch64, macOS arm64) to
+# PyPI, the crate to crates.io, and creates the GitHub release that envira.sh and cargo binstall
+# install from; its version must match Cargo.toml. Trusted publishing is bound to the workflow file
+# name, and on PyPI also to the `pypi` / `testpypi` environments.
 on:
   push:
     tags:
@@ -146,9 +146,14 @@ jobs:
             dist/envira-*-macos.sha256
             dist/catalog.toml
 
+  # On a tag, after the GitHub release exists (the site mirrors its binaries). One deploy at a
+  # time, so a push to main that started earlier cannot overwrite the new release's mirror.
   release-web:
     if: ${{ !cancelled() && !failure() && github.event_name == 'push' }}
-    needs: [test, rust]
+    needs: [test, rust, release]
+    concurrency:
+      group: release-web
+      cancel-in-progress: false
     uses: ./.github/workflows/release_web.yaml
     secrets:
       DEPLOY_PRIVATE: ${{ secrets.DEPLOY_PRIVATE }}

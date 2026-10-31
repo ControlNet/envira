@@ -621,10 +621,14 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
   - The crate ships `src/`, `catalog/` (embedded by `include_dir!`), `verify.sh` (a unit test reads
     it), README, LICENSE and the lock file (`include` in `Cargo.toml`); `rust.yaml` runs
     `cargo package --locked` on every push so a missing file fails before a tag.
-  - On a push to main (and on a tag push), `release-web` deploys the site.
+  - On a push to main (and on a tag push, after `release`), `release-web` deploys the site.
   - As on main before, the legacy test matrix runs but does not gate publishing.
-- `release_web.yaml` puts the binaries and checksums in `files/`, plus `files/envira`, the x86_64
-  binary under its old name. `catalog.toml` goes in `envira/`. The legacy scripts' paths are unchanged.
+- `release_web.yaml` puts a release's binaries and checksums in `files/`, plus `files/envira`, the
+  x86_64 binary under its old name: the tag's release on a tag push (the deploy waits for the
+  `release` job), the latest release on other pushes, so pushes to main never publish unreleased
+  binaries. `catalog.toml` (from the run's build) goes in `envira/`, so catalog changes go live
+  from main. Deploys run one at a time (`concurrency: release-web`). The legacy scripts' paths are
+  unchanged.
 - `envira.sh` (`boot.controlnet.space/envira`):
   - maps `uname -m` to the asset;
   - downloads it from the GitHub release (`latest`, or `ENVIRA_VERSION`; `ENVIRA_BASE_URL` for a
