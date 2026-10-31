@@ -38,6 +38,7 @@ jobs:
         mv verify.sh ~/dist/verify.html
         mv envira.sh ~/dist/envira/index.html
         mv ~/artifacts/envira-*-linux ~/artifacts/envira-*-linux.sha256 ~/dist/files/
+        mv ~/artifacts/envira-*-macos ~/artifacts/envira-*-macos.sha256 ~/dist/files/
         cp ~/dist/files/envira-x86_64-linux ~/dist/files/envira
         mv ~/artifacts/catalog.toml ~/dist/envira/catalog.toml
         echo "boot.controlnet.space" > ~/dist/CNAME

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs envira for this machine into ~/.local/bin:
 #   curl -fsSL https://boot.controlnet.space/envira | bash
-# The binary is static (musl): any x86_64 or aarch64 Linux, no dependencies. Its SHA-256 is
-# checked against the release's checksum file before it is installed.
+# Linux (x86_64, aarch64): a static musl binary, no dependencies. macOS: Apple Silicon. Its
+# SHA-256 is checked against the release's checksum file before it is installed.
 #   ENVIRA_VERSION=v0.2.0    a release tag instead of the latest release
 #   ENVIRA_BASE_URL=URL      where envira-<arch>-linux and its .sha256 are (a mirror, CI)
 #   ENVIRA_INSTALL_DIR=DIR   instead of ~/.local/bin
@@ -15,12 +15,17 @@ fi
 info() { printf "${CYAN}${BOLD}[envira]${RESET} %s\n" "$*"; }
 fail() { printf "${RED}${BOLD}[envira]${RESET} %s\n" "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = Linux ] || fail "envira runs on Linux only (this is $(uname -s))."
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=macos ;;
+  *) fail "envira runs on Linux and macOS (this is $(uname -s))." ;;
+esac
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
   aarch64 | arm64) arch=aarch64 ;;
   *) fail "no envira build for $(uname -m); x86_64 and aarch64 are available." ;;
 esac
+[ "$os-$arch" != macos-x86_64 ] || fail "no envira build for Intel Macs yet; Apple Silicon only."
 
 repo="https://github.com/ControlNet/envira/releases"
 if [ -n "${ENVIRA_BASE_URL:-}" ]; then
@@ -31,7 +36,7 @@ else
   base="$repo/latest/download"
 fi
 dir="${ENVIRA_INSTALL_DIR:-$HOME/.local/bin}"
-asset="envira-$arch-linux"
+asset="envira-$arch-$os"
 
 if command -v curl >/dev/null 2>&1; then
   fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
