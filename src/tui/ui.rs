@@ -631,7 +631,6 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             };
             let note_color = match (it.label, it.ownership) {
                 (Label::Failed, _) => t.red,
-                (_, Some(Ownership::Adoptable)) => t.yellow,
                 _ if update_needs_sudo(app, it) => t.yellow,
                 _ => t.dim,
             };
@@ -866,6 +865,12 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
             )),
         }
         lines.push(Line::from(spans));
+        if it.ownership == Some(Ownership::Adoptable) {
+            lines.push(Line::styled(
+                "installed outside envira, updated in place · A records it as managed (no reinstall)",
+                t.s(t.dim),
+            ));
+        }
     }
     if !it.present
         && it.reason.is_none()
@@ -1562,6 +1567,10 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("tab  J K", "Info / Commands / Log · scroll it"),
     ("x", "revert selected configs"),
     ("S", "new installs: system (sudo) or user scope"),
+    (
+        "A",
+        "adopt selected (else this) tools installed outside envira",
+    ),
     ("t", "retry what the last run left unfinished"),
     ("R  r", "re-detect + check updates · reload catalog"),
     ("esc", "clear the search"),

@@ -15,7 +15,7 @@ use crate::facts::Facts;
 use crate::latest::{Fetch, Latest};
 use crate::plan::{Plan, Planner, UpdateTarget};
 use crate::state::{Paths, RunRecord, State};
-use crate::status::{ItemStatus, Label, Snapshot};
+use crate::status::{ItemStatus, Label, Ownership, Snapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -552,6 +552,52 @@ impl App {
         }
     }
 
+    /// Records adoptable tools as managed without reinstalling them (`envira adopt`): the
+    /// selected ones, else the one under the cursor.
+    fn adopt(&mut self) -> Vec<Cmd> {
+        let Some(snap) = &self.snap else {
+            return vec![];
+        };
+        let mut ids: Vec<String> = self
+            .selected
+            .iter()
+            .filter(|id| snap.get(id).is_some_and(|i| i.adoption().is_some()))
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            let Some(it) = self.current() else {
+                return vec![];
+            };
+            if it.adoption().is_none() {
+                let why = match it.ownership {
+                    Some(Ownership::Managed) => "is already managed",
+                    Some(Ownership::External) => {
+                        "is external: envira cannot tell how it was installed"
+                    }
+                    _ if !it.present => "is not installed",
+                    _ => "cannot be adopted",
+                };
+                self.notify(format!("{} {why}", it.id));
+                return vec![];
+            }
+            ids.push(it.id.clone());
+        }
+        let records: Vec<_> = ids
+            .iter()
+            .filter_map(|id| Some((id.clone(), snap.get(id)?.adoption()?)))
+            .collect();
+        let state = self.state.get_or_insert_with(State::default);
+        for (id, rec) in records {
+            state.tools.insert(id, rec);
+        }
+        self.notify(match &ids[..] {
+            [one] => format!("{one} is now managed"),
+            many => format!("{} tools are now managed", many.len()),
+        });
+        self.detecting = true;
+        vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)]
+    }
+
     /// Records a mouse target while drawing.
     pub fn hit(&self, area: Rect, h: Hit) {
         if area.width > 0 && area.height > 0 {
@@ -743,6 +789,7 @@ impl App {
                 self.detecting = true;
                 return vec![Cmd::Reload];
             }
+            KeyCode::Char('A') => return self.adopt(),
             KeyCode::Char('S') => {
                 if !self.facts.privilege.can_elevate() {
                     self.notify("No sudo here: new installs go to user scope");
@@ -1566,6 +1613,42 @@ pub mod tests {
         a.on_key(key(KeyCode::Left));
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.screen, Screen::Plan);
+    }
+
+    #[test]
+    fn shift_a_adopts_the_selection_else_the_cursor_tool() {
+        let mut a = app();
+        a.selected.clear();
+        let adoptable: Vec<String> = a
+            .rows()
+            .iter()
+            .filter(|i| i.adoption().is_some())
+            .map(|i| i.id.clone())
+            .collect();
+        assert!(adoptable.len() >= 3, "{adoptable:?}");
+        a.cursor = a.rows().iter().position(|i| i.id == adoptable[0]).unwrap();
+        let cmds = a.on_key(key(KeyCode::Char('A')));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        let rec = &a.state.as_ref().unwrap().tools[&adoptable[0]];
+        assert_eq!(rec.method.as_deref(), Some("script"));
+        assert!(
+            rec.installed_at.is_some(),
+            "a record with installed_at is managed"
+        );
+        assert!(a.toast_text().unwrap().contains("is now managed"));
+
+        // The selection wins over the cursor.
+        a.selected = [adoptable[1].clone(), adoptable[2].clone()].into();
+        a.on_key(key(KeyCode::Char('A')));
+        let st = a.state.as_ref().unwrap();
+        assert!(st.is_managed(&adoptable[1]) && st.is_managed(&adoptable[2]));
+        assert!(a.toast_text().unwrap().contains("2 tools are now managed"));
+
+        // Nothing adoptable under the cursor: it says why and changes nothing.
+        a.selected.clear();
+        a.cursor = a.rows().iter().position(|i| !i.present).unwrap();
+        assert!(a.on_key(key(KeyCode::Char('A'))).is_empty());
+        assert!(a.toast_text().unwrap().contains("is not installed"));
     }
 
     #[test]

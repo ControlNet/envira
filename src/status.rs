@@ -14,7 +14,7 @@ use crate::plan::{
     Kind, Planner, Route, UpdateTarget, bin_dir, config_steps, detect_cmd, path_route, route_for,
 };
 use crate::runner::Runner;
-use crate::state::{LastResult, Scope, State};
+use crate::state::{LastResult, Scope, State, ToolRecord};
 use crate::template::{Ctx, Vars, shell_quote, unmet};
 
 const DETECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -116,6 +116,20 @@ pub struct ItemStatus {
 }
 
 impl ItemStatus {
+    /// The state record that makes an adoptable tool managed, without reinstalling it.
+    pub fn adoption(&self) -> Option<ToolRecord> {
+        let r = self.route.as_ref()?;
+        (self.ownership == Some(Ownership::Adoptable)).then(|| ToolRecord {
+            method: Some(r.via.clone()),
+            scope: Some(r.scope),
+            version: self.method_version.clone().or(self.version.clone()),
+            installed_at: Some(crate::state::now_rfc3339()),
+            last_result: LastResult::Ok,
+            last_error: None,
+            last_run: None,
+        })
+    }
+
     /// Why a present item is not updated, or the update target for it.
     pub fn update_target(&self, explicit: bool) -> Result<UpdateTarget, String> {
         let i = self;

@@ -15,7 +15,6 @@ use crate::latest::Fetch;
 use crate::plan::Route;
 use crate::plan::{Plan, as_script};
 use crate::shellenv;
-use crate::state::ToolRecord;
 use crate::state::{self, Paths, RunRecord, State};
 use crate::status::{ItemStatus, Label, Ownership, Snapshot};
 
@@ -715,19 +714,8 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
                     r.via,
                     r.scope
                 );
-                if !dry_run {
-                    state.tools.insert(
-                        id.clone(),
-                        ToolRecord {
-                            method: Some(r.via.clone()),
-                            scope: Some(r.scope),
-                            version: i.method_version.clone().or(i.version.clone()),
-                            installed_at: Some(state::now_rfc3339()),
-                            last_result: state::LastResult::Ok,
-                            last_error: None,
-                            last_run: None,
-                        },
-                    );
+                if !dry_run && let Some(rec) = i.adoption() {
+                    state.tools.insert(id.clone(), rec);
                 }
                 adopted += 1;
             }

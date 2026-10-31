@@ -352,6 +352,9 @@ Scope display (user decision 2026-10-31, design canvas option A):
   note shows where they live (`external · ~/.nvm/versions/…`).
 - Overview: `N / M installed · X system Y user`. To install: system units in orange.
 - Managed system tools on a machine without sudo: note `managed · update needs sudo`.
+- `adoptable` is plain (dim), not a warning: envira updates those in place like managed ones.
+  `A` adopts the selected adoptable tools, else the one under the cursor (same record as
+  `envira adopt`, no reinstall); Info says so on adoptable tools.
 - `envira status` prints the same via (with `→` for planned) and scope columns; `--scope` now also
   changes the planned routes it shows.
 
