@@ -342,6 +342,19 @@ Screens:
    selected and the cursor on Bundles; the state exists in memory with the whole catalog seen and
    is saved by the first bundle kept or the first run.
 
+Scope display (user decision 2026-10-31, design canvas option A):
+- Header: privilege (`root`, `sudo ✓`, `sudo (password)`, `no sudo`) and `new installs → system|user`
+  with `(S: other)` when sudo is available. `S` flips the TUI's scope for `any` methods for this
+  session (like `--scope`); entries that are system-only stay system.
+- Items: own `scope` column; installed system tools in orange. Missing items show the route an
+  install would take as `→ via` with its scope, dimmed. External tools show no via (envira does not
+  know how they got there); their scope comes from the binary's path (under `$HOME` = user) and the
+  note shows where they live (`external · ~/.nvm/versions/…`).
+- Overview: `N / M installed · X system Y user`. To install: system units in orange.
+- Managed system tools on a machine without sudo: note `managed · update needs sudo`.
+- `envira status` prints the same via (with `→` for planned) and scope columns; `--scope` now also
+  changes the planned routes it shows.
+
 Dashboard model (user decision 2026-10-31): the selection is the install set, and Enter installs it.
 - It starts as what the kept bundles miss (`envira install` without arguments), and is filled again
   after each run.

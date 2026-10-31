@@ -77,7 +77,13 @@ fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
 
 /// Detects everything and sends the snapshot (with cached latest versions), then checks latest
 /// versions per `fetch` and sends those answers.
-fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>, fetch: Fetch) {
+/// `prefer_system` is the TUI's current scope choice (`S`), which can differ from `--scope`.
+fn spawn_detect(
+    sess: &Session,
+    tx: mpsc::UnboundedSender<AppEvent>,
+    fetch: Fetch,
+    prefer_system: bool,
+) {
     let (cat, facts, runner, paths) = (
         sess.catalog.clone(),
         sess.facts.clone(),
@@ -92,7 +98,8 @@ fn spawn_detect(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>, fetch: Fetc
                 None
             }
         };
-        let mut snap = status::snapshot(&cat, &facts, state.as_ref(), runner.as_ref()).await;
+        let mut snap =
+            status::snapshot(&cat, &facts, state.as_ref(), runner.as_ref(), prefer_system).await;
         let mut cache = latest::Cache::load(&paths);
         let cached = latest::check(
             &cat,
@@ -133,7 +140,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
             }
         });
     }
-    spawn_detect(&sess, tx.clone(), Fetch::IfStale);
+    spawn_detect(&sess, tx.clone(), Fetch::IfStale, sess.prefer_system());
     let mut app = App::new(
         &sess.loaded,
         sess.catalog.clone(),
@@ -198,14 +205,14 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 Cmd::Refresh(fetch) => {
                     app.detecting = true;
                     app.checking_latest |= fetch != Fetch::CacheOnly;
-                    spawn_detect(&sess, tx.clone(), fetch);
+                    spawn_detect(&sess, tx.clone(), fetch, app.prefer_system);
                 }
                 Cmd::Reload => match sess.reload() {
                     Ok(()) => {
                         app.catalog = sess.catalog.clone();
                         app.loaded_layers = sess.loaded.layers.clone();
                         app.notify("Catalog reloaded");
-                        spawn_detect(&sess, tx.clone(), Fetch::CacheOnly);
+                        spawn_detect(&sess, tx.clone(), Fetch::CacheOnly, app.prefer_system);
                     }
                     Err(e) => {
                         app.detecting = false;

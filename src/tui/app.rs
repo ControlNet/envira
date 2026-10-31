@@ -516,6 +516,20 @@ impl App {
                 self.detecting = true;
                 return vec![Cmd::Reload];
             }
+            KeyCode::Char('S') => {
+                if !self.facts.privilege.can_elevate() {
+                    self.notify("No sudo here: new installs go to user scope");
+                    return vec![];
+                }
+                self.prefer_system = !self.prefer_system;
+                self.notify(format!(
+                    "New installs go to {} scope",
+                    if self.prefer_system { "system" } else { "user" }
+                ));
+                // Missing items show the route they would take in the new scope.
+                self.detecting = true;
+                return vec![Cmd::Refresh(Fetch::CacheOnly)];
+            }
             KeyCode::Char('u') => {
                 let (targets, skipped, what) = self.update_targets();
                 if targets.is_empty() {
@@ -895,6 +909,7 @@ pub mod tests {
     use super::*;
     use crate::catalog::load::{embedded_layer, load};
     use crate::plan::Kind;
+    use crate::state::Scope;
     use crate::status::Ownership;
     use std::path::Path;
 
@@ -1323,6 +1338,35 @@ pub mod tests {
         a.on_key(key(KeyCode::Left));
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.screen, Screen::Plan);
+    }
+
+    #[test]
+    fn shift_s_switches_where_new_installs_go() {
+        let mut a = app();
+        assert!(a.prefer_system);
+        let cmds = a.on_key(key(KeyCode::Char('S')));
+        assert!(!a.prefer_system);
+        assert!(matches!(cmds[..], [Cmd::Refresh(Fetch::CacheOnly)]));
+        assert!(a.toast_text().unwrap().contains("user scope"));
+        // Plans follow the choice.
+        a.on_key(key(KeyCode::Enter));
+        let (plan, _) = a.plan.as_ref().unwrap();
+        assert!(
+            plan.units.iter().all(|u| u.scope == Scope::User),
+            "{plan:?}"
+        );
+        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(KeyCode::Char('S')));
+        assert!(a.prefer_system);
+
+        let mut a = app();
+        let mut f = (*a.facts).clone();
+        f.privilege = crate::facts::Privilege::None;
+        a.facts = Arc::new(f);
+        a.prefer_system = false;
+        assert!(a.on_key(key(KeyCode::Char('S'))).is_empty());
+        assert!(!a.prefer_system);
+        assert!(a.toast_text().unwrap().contains("No sudo"));
     }
 
     #[test]

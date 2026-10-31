@@ -82,8 +82,19 @@ fn print_items(snap: &Snapshot) {
             Label::Failed => i.last_error.clone().unwrap_or_default(),
             _ => String::new(),
         };
-        println!(
-            "  {} {:<24} {:<12} {:<10} {:<15} {}",
+        // Missing items show the route an install would take, behind an arrow.
+        let planned = !i.present && i.label != Label::NotApplicable;
+        let via = match (&i.via, planned) {
+            (Some(v), true) => format!("→ {v}"),
+            (Some(v), false) => v.clone(),
+            (None, _) => "—".into(),
+        };
+        let scope = match i.scope {
+            Some(s) if i.label != Label::NotApplicable => s.to_string(),
+            _ => String::new(),
+        };
+        let line = format!(
+            "  {} {:<24} {:<12} {:<10} {:<17} {:<7}{}",
             i.label.glyph(),
             i.id,
             match (i.kind, i.method_version.as_ref().or(i.version.as_ref())) {
@@ -93,9 +104,11 @@ fn print_items(snap: &Snapshot) {
                 _ => "—",
             },
             i.label.text(),
-            i.via.as_deref().unwrap_or("—"),
+            via,
+            scope,
             detail
         );
+        println!("{}", line.trim_end());
     }
 }
 
@@ -232,12 +245,13 @@ pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
                 item.path.as_deref().unwrap_or("—")
             );
             if let Some(o) = item.ownership {
-                println!(
-                    "  {} via {} ({})",
-                    o.as_str(),
-                    item.via.as_deref().unwrap_or("?"),
-                    item.scope.map(|s| s.to_string()).unwrap_or_default()
-                );
+                let via = item
+                    .via
+                    .as_deref()
+                    .map(|v| format!(" via {v}"))
+                    .unwrap_or_default();
+                let scope = item.scope.map(|s| format!(" ({s})")).unwrap_or_default();
+                println!("  {}{via}{scope}", o.as_str());
             }
         }
         crate::plan::Kind::Config => {

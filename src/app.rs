@@ -84,7 +84,14 @@ impl Session {
     }
 
     pub async fn snapshot(&self, state: Option<&State>) -> Snapshot {
-        status::snapshot(&self.catalog, &self.facts, state, self.runner.as_ref()).await
+        status::snapshot(
+            &self.catalog,
+            &self.facts,
+            state,
+            self.runner.as_ref(),
+            self.prefer_system(),
+        )
+        .await
     }
 
     /// Adds latest versions (from the cache, or queried per `fetch`) and marks outdated tools.

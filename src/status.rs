@@ -329,12 +329,14 @@ pub async fn probe_config(cat: &Catalog, facts: &Facts, id: &str, runner: &dyn R
     true
 }
 
-/// Detects every item and derives its status.
+/// Detects every item and derives its status; `prefer_system` picks the scope that missing
+/// items would install in (see `--scope`).
 pub async fn snapshot(
     cat: &Catalog,
     facts: &Facts,
     state: Option<&State>,
     runner: &dyn Runner,
+    prefer_system: bool,
 ) -> Snapshot {
     let ids = cat.item_ids();
     let probes: BTreeMap<String, ToolProbe> = futures::stream::iter(ids.iter().cloned())
@@ -363,6 +365,7 @@ pub async fn snapshot(
     let st = state.unwrap_or(&empty);
     let desired = st.desired(cat);
     let mut planner = Planner::new(cat, facts, &present);
+    planner.prefer_system = prefer_system;
 
     let items = ids
         .iter()
@@ -431,7 +434,18 @@ pub async fn snapshot(
                         scope = Some(r.scope);
                         (Some(Ownership::Adoptable), Some(r))
                     }
-                    None => (Some(Ownership::External), None),
+                    // Not ours: where it lives is all we know, not how it got there.
+                    None => {
+                        via = None;
+                        scope = p.path.as_deref().map(|path| {
+                            if path.starts_with(&home) {
+                                Scope::User
+                            } else {
+                                Scope::System
+                            }
+                        });
+                        (Some(Ownership::External), None)
+                    }
                 }
             };
             let drifted = kind == Kind::Config && !p.present && crec.is_some_and(|r| r.applied);
@@ -677,7 +691,7 @@ mod tests {
                 last_run: None,
             },
         );
-        let snap = snapshot(&c, &f, Some(&st), &r).await;
+        let snap = snapshot(&c, &f, Some(&st), &r, true).await;
         let get = |id: &str| snap.get(id).unwrap().clone();
 
         let bat = get("bat");
@@ -744,12 +758,20 @@ mod tests {
                 last_run: None,
             },
         );
-        let mut snap = snapshot(&c, &f, Some(&st), &r).await;
+        let mut snap = snapshot(&c, &f, Some(&st), &r, true).await;
         let get = |s: &Snapshot, id: &str| s.get(id).unwrap().clone();
         // Built from source into ~/.cargo/bin: the github-release entry installs elsewhere and the
         // cargo entry's `installed` query did not match, so envira leaves it alone.
         assert_eq!(get(&snap, "yazi").ownership, Some(Ownership::External));
         assert_eq!(get(&snap, "yazi").route, None);
+        // External tools show where they live, not the route a new install would take.
+        assert_eq!(get(&snap, "yazi").via, None);
+        assert_eq!(get(&snap, "yazi").scope, Some(Scope::User));
+        assert_eq!(get(&snap, "curl").ownership, Some(Ownership::External));
+        assert_eq!(
+            (get(&snap, "curl").via, get(&snap, "curl").scope),
+            (None, Some(Scope::System))
+        );
         // Vendor script: the installer decides the location, so it updates in place.
         let herdr = get(&snap, "herdr").route.unwrap();
         assert_eq!((herdr.via.as_str(), herdr.scope), ("script", Scope::User));
@@ -795,10 +817,31 @@ mod tests {
     async fn first_run_has_nothing_new_or_desired() {
         let c = cat();
         let f = Facts::sample(Path::new("/home/user"));
-        let snap = snapshot(&c, &f, None, &FakeRunner::default()).await;
+        let snap = snapshot(&c, &f, None, &FakeRunner::default(), true).await;
         assert!(snap.first_run);
         assert_eq!(snap.get("herdr").unwrap().label, Label::Available);
         assert!(snap.to_install().is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_items_show_the_scope_they_would_install_in() {
+        let c = cat();
+        let f = Facts::sample(Path::new("/home/user"));
+        let r = FakeRunner::default();
+        let sys = snapshot(&c, &f, None, &r, true).await;
+        let user = snapshot(&c, &f, None, &r, false).await;
+        let lazygit = |s: &Snapshot| {
+            let i = s.get("lazygit").unwrap();
+            (i.via.clone(), i.scope)
+        };
+        assert_eq!(
+            lazygit(&sys),
+            (Some("github-release".into()), Some(Scope::System))
+        );
+        assert_eq!(
+            lazygit(&user),
+            (Some("github-release".into()), Some(Scope::User))
+        );
     }
 
     #[test]

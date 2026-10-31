@@ -119,7 +119,10 @@ impl Facts {
     pub fn summary(&self) -> String {
         let sudo = match self.privilege {
             Privilege::Root => "root",
-            Privilege::Sudo { .. } => "sudo ✓",
+            Privilege::Sudo { passwordless: true } => "sudo ✓",
+            Privilege::Sudo {
+                passwordless: false,
+            } => "sudo (password)",
             Privilege::None => "no sudo",
         };
         let mut s = format!(

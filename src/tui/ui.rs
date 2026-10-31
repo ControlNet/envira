@@ -11,7 +11,8 @@ use super::theme::Theme;
 use crate::commands::fmt_duration;
 use crate::exec::Outcome;
 use crate::plan::{Action, Kind, Planner};
-use crate::status::{ItemStatus, Label};
+use crate::state::Scope;
+use crate::status::{ItemStatus, Label, Ownership};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -197,7 +198,20 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         Constraint::Length(1),
     ])
     .areas(area);
-    header(f, h, app, t, vec![Span::raw(app.facts.summary())]);
+    let mut what = vec![
+        Span::raw(app.facts.summary()),
+        Span::styled(" · new installs → ", t.s(t.dim)),
+    ];
+    if app.prefer_system {
+        what.push(Span::styled("system", t.s(t.orange)));
+    } else {
+        what.push(Span::raw("user"));
+    }
+    if app.facts.privilege.can_elevate() {
+        let other = if app.prefer_system { "user" } else { "system" };
+        what.push(Span::styled(format!(" (S: {other})"), t.s(t.dim)));
+    }
+    header(f, h, app, t, what);
     overview(f, ov, app, t);
     let left_w = if area.width >= 110 { 36 } else { 30 };
     let [left, right] =
@@ -254,9 +268,15 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let outdated = snap.count(|i| i.label == Label::Outdated);
     let updatable = snap.count(|i| i.route.is_some());
     let cols = columns(inner, 4);
+    let system = snap.count(|i| i.present && i.scope == Some(Scope::System));
+    let user = snap.count(|i| i.present && i.scope == Some(Scope::User));
+    let mut installed = format!("/ {applicable} installed · {system} system {user} user");
+    if installed.chars().count() + present.to_string().len() + 1 > cols[0].width as usize {
+        installed = format!("/ {applicable} installed · {system} system");
+    }
     let cells: [(Line, Line); 4] = [
         (
-            stat(t, present, t.green, format!("/ {applicable} installed")),
+            stat(t, present, t.green, installed),
             bar(t, cols[0].width, &[(present, t.green)], applicable),
         ),
         (
@@ -436,7 +456,9 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         spans.push(Span::styled(format!("{g} "), t.s(c)));
         spans.push(Span::styled(
             format!("{}  ", u.id),
-            t.s(if app.selected.contains(&u.id) {
+            t.s(if u.scope == Scope::System {
+                t.orange
+            } else if app.selected.contains(&u.id) {
                 t.fg
             } else {
                 t.dim
@@ -489,6 +511,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         "latest",
         "status",
         "via",
+        "scope",
         "owner / note",
     ])
     .style(t.s(t.dim));
@@ -503,15 +526,38 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Label::NotApplicable => it.reason.clone().unwrap_or_default(),
                 Label::Failed => it.last_error.clone().unwrap_or_default(),
                 Label::Drifted => "check fails after envira applied it".into(),
-                _ => it
-                    .ownership
-                    .map(|o| o.as_str().to_string())
-                    .unwrap_or_default(),
+                _ if update_needs_sudo(app, it) => "managed · update needs sudo".into(),
+                _ => match (it.ownership, &it.path) {
+                    (Some(Ownership::External), Some(p)) => {
+                        format!("external · {}", short_path(app, p))
+                    }
+                    (o, _) => o.map(|o| o.as_str().to_string()).unwrap_or_default(),
+                },
             };
             let note_color = match (it.label, it.ownership) {
                 (Label::Failed, _) => t.red,
-                (_, Some(crate::status::Ownership::Adoptable)) => t.yellow,
+                (_, Some(Ownership::Adoptable)) => t.yellow,
+                _ if update_needs_sudo(app, it) => t.yellow,
                 _ => t.dim,
+            };
+            // Missing items show the route an install would take, behind an arrow.
+            let planned = !it.present && it.label != Label::NotApplicable;
+            let via = match (&it.via, planned) {
+                (Some(v), true) => format!("→ {v}"),
+                (Some(v), false) => v.clone(),
+                (None, _) if it.label == Label::NotApplicable => String::new(),
+                (None, _) => "—".into(),
+            };
+            let scope = match it.scope {
+                Some(s) if it.label != Label::NotApplicable => Span::styled(
+                    s.to_string(),
+                    t.s(if s == Scope::System && !planned {
+                        t.orange
+                    } else {
+                        t.dim
+                    }),
+                ),
+                _ => Span::raw(""),
             };
             let version = match (it.kind, it.method_version.as_ref().or(it.version.as_ref())) {
                 (Kind::Config, _) => String::new(),
@@ -549,10 +595,8 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Cell::from(version),
                 Cell::from(latest),
                 Cell::from(Span::styled(it.label.text(), t.s(label_color(t, it.label)))),
-                Cell::from(Span::styled(
-                    it.via.clone().unwrap_or_else(|| "—".into()),
-                    t.s(t.dim),
-                )),
+                Cell::from(Span::styled(via, t.s(t.dim))),
+                Cell::from(scope),
                 Cell::from(Span::styled(note, t.s(note_color))),
             ]);
             if i == app.cursor && app.focus == Focus::Items {
@@ -566,10 +610,11 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(22),
-        Constraint::Length(10),
-        Constraint::Length(10),
         Constraint::Length(9),
-        Constraint::Length(14),
+        Constraint::Length(9),
+        Constraint::Length(9),
+        Constraint::Length(15),
+        Constraint::Length(6),
         Constraint::Min(8),
     ];
     if rows.is_empty() {
@@ -647,11 +692,15 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
         ),
         Span::styled(format!("  {} · {kind}", it.category), t.s(t.dim)),
     ];
-    if let Some(s) = it.scope {
-        first.push(Span::styled(format!(" · {s}"), t.s(t.dim)));
-    }
-    if let Some(v) = &it.via {
-        first.push(Span::styled(format!(" · via {v}"), t.s(t.dim)));
+    if it.present {
+        if let Some(s) = it.scope {
+            let c = if s == Scope::System { t.orange } else { t.dim };
+            first.push(Span::styled(" · ", t.s(t.dim)));
+            first.push(Span::styled(s.to_string(), t.s(c)));
+        }
+        if let Some(v) = &it.via {
+            first.push(Span::styled(format!(" · via {v}"), t.s(t.dim)));
+        }
     }
     let mut lines = vec![
         Line::from(first),
@@ -700,6 +749,13 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
             (None, None, None) => {}
         }
         match &it.route {
+            Some(r) if update_needs_sudo(app, it) => spans.push(Span::styled(
+                format!(
+                    "  · updates via {} (system) need sudo, which this user lacks",
+                    r.via
+                ),
+                t.s(t.yellow),
+            )),
             Some(r) => spans.push(Span::styled(
                 format!("  · updates via {} ({})", r.via, r.scope),
                 t.s(t.dim),
@@ -710,6 +766,16 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
             )),
         }
         lines.push(Line::from(spans));
+    }
+    if !it.present
+        && it.reason.is_none()
+        && let (Some(v), Some(s)) = (&it.via, it.scope)
+    {
+        let sudo = if s == Scope::System { ", sudo" } else { "" };
+        lines.push(Line::styled(
+            format!("would install via {v} ({s}{sudo})"),
+            t.s(t.dim),
+        ));
     }
     if let Some(r) = &it.reason {
         lines.push(Line::styled(
@@ -1385,6 +1451,7 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("/  f", "search · cycle status filter"),
     ("tab  J K", "Info / Commands / Log · scroll it"),
     ("x", "revert selected configs"),
+    ("S", "new installs: system (sudo) or user scope"),
     ("t", "retry what the last run left unfinished"),
     ("R  r", "re-detect + check updates · reload catalog"),
     ("esc", "clear the search"),
@@ -1445,6 +1512,29 @@ fn help(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .chain([Line::raw(""), Line::styled("any key closes", t.s(t.dim))])
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// A system-scope tool envira manages, on a machine where this user cannot use sudo.
+fn update_needs_sudo(app: &App, it: &ItemStatus) -> bool {
+    it.ownership == Some(Ownership::Managed)
+        && it.route.as_ref().is_some_and(|r| r.scope == Scope::System)
+        && !app.facts.privilege.can_elevate()
+}
+
+/// `~/…` for paths in the home directory, keeping the first two levels below it.
+fn short_path(app: &App, path: &str) -> String {
+    let home = format!("{}/", app.facts.home.display());
+    match path.strip_prefix(&home) {
+        Some(rest) => {
+            let parts: Vec<&str> = rest.split('/').collect();
+            if parts.len() > 3 {
+                format!("~/{}/{}/…", parts[0], parts[1])
+            } else {
+                format!("~/{rest}")
+            }
+        }
+        None => path.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1647,5 +1737,56 @@ mod tests {
             "{s}"
         );
         render(&a, 70, 20);
+    }
+
+    #[test]
+    fn items_show_where_tools_live_and_would_go() {
+        let mut a = app();
+        let mut snap = a.snap.clone().unwrap();
+        for i in &mut snap.items {
+            match i.id.as_str() {
+                "bat" => {
+                    i.via = Some("apt".into());
+                    i.scope = Some(Scope::System);
+                    i.ownership = Some(Ownership::Managed);
+                }
+                "yazi" => {
+                    i.via = None;
+                    i.scope = Some(Scope::User);
+                    i.ownership = Some(Ownership::External);
+                    i.route = None;
+                    i.path = Some("/home/user/.nvm/versions/node/bin/yazi".into());
+                }
+                "codex" => {
+                    i.via = Some("npm".into());
+                    i.scope = Some(Scope::User);
+                }
+                _ => {}
+            }
+        }
+        a.on_snapshot(snap, None);
+        a.filter = Filter::All;
+        let s = render(&a, 180, 60);
+        for needle in ["new installs → system (S: user)", "scope", "1 system"] {
+            assert!(s.contains(needle), "{needle:?} missing in\n{s}");
+        }
+        let row = |a: &mut App, id: &str| {
+            a.search = id.into();
+            let s = render(a, 180, 60);
+            s.lines()
+                .find(|l| l.contains(&format!(" {id} ")))
+                .unwrap_or_else(|| panic!("no {id} row in\n{s}"))
+                .to_string()
+        };
+        let bat = row(&mut a, "bat");
+        assert!(bat.contains("apt") && bat.contains("system"), "{bat}");
+        let codex = row(&mut a, "codex");
+        assert!(codex.contains("→ npm") && codex.contains("user"), "{codex}");
+        let yazi = row(&mut a, "yazi");
+        assert!(yazi.contains("external · ~/.nvm/versions/…"), "{yazi}");
+        a.search.clear();
+        a.prefer_system = false;
+        let s = render(&a, 180, 60);
+        assert!(s.contains("new installs → user (S: system)"), "{s}");
     }
 }

@@ -14,6 +14,8 @@ pub struct Theme {
     pub cyan: Color,
     pub blue: Color,
     pub magenta: Color,
+    /// System scope: installed as root, updated with sudo.
+    pub orange: Color,
     /// Background of the cursor row; `None` uses reverse video.
     pub cursor_bg: Option<Color>,
 }
@@ -31,6 +33,7 @@ impl Theme {
             cyan: Color::Rgb(0x7d, 0xcf, 0xff),
             blue: Color::Rgb(0x7a, 0xa2, 0xf7),
             magenta: Color::Rgb(0xbb, 0x9a, 0xf7),
+            orange: Color::Rgb(0xff, 0x9e, 0x64),
             cursor_bg: Some(Color::Rgb(0x28, 0x34, 0x57)),
         }
     }
@@ -47,6 +50,7 @@ impl Theme {
             cyan: Color::Rgb(0x04, 0xa5, 0xe5),
             blue: Color::Rgb(0x1e, 0x66, 0xf5),
             magenta: Color::Rgb(0x88, 0x39, 0xef),
+            orange: Color::Rgb(0xfe, 0x64, 0x0b),
             cursor_bg: Some(Color::Rgb(0xcc, 0xd0, 0xda)),
         }
     }
@@ -63,6 +67,7 @@ impl Theme {
             cyan: Color::Cyan,
             blue: Color::Blue,
             magenta: Color::Magenta,
+            orange: Color::LightYellow,
             cursor_bg: None,
         }
     }
