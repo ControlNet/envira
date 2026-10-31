@@ -49,8 +49,10 @@ print("ok: all present and managed; bat via", status["bat"]["via"])
 PY
 
 echo "=== a closed pipe ends a read-only command quietly"
-envira doctor 2>/tmp/pipe.err | head -n 1
-if grep -q panicked /tmp/pipe.err; then cat /tmp/pipe.err; exit 1; fi
+# envira ends by SIGPIPE (141) once head exits; a panic would print to stderr and exit 101.
+{ envira doctor 2>/tmp/pipe.err && c=0 || c=$?; echo "doctor exit $c" >>/tmp/pipe.err; } | head -n 1
+cat /tmp/pipe.err
+if grep -q panicked /tmp/pipe.err; then exit 1; fi
 
 echo "=== second run must be a no-op"
 out=$(envira install -y -q "${items[@]}")
