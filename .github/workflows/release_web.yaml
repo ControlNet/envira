@@ -28,9 +28,9 @@ jobs:
         merge-multiple: true
         path: ~/artifacts
 
-    # files/envira-<arch>-linux(.sha256): mirrors of the release binaries; files/envira: the
-    # x86_64 binary under the name the first envira.sh downloaded; envira/catalog.toml: the
-    # catalog every envira fetches.
+    # files/envira-<arch>-<os>(.sha256): dev builds of this push (releases are on GitHub, which
+    # envira.sh installs from); files/envira: the x86_64 Linux build under the name the first
+    # envira.sh downloaded; envira/catalog.toml: the catalog every envira fetches.
     - name: Clean files
       run: |
         mv run.sh ~/dist/index.html

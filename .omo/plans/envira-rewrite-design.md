@@ -623,7 +623,7 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
     `cargo package --locked` on every push so a missing file fails before a tag.
   - On a push to main (and on a tag push), `release-web` deploys the site.
   - As on main before, the legacy test matrix runs but does not gate publishing.
-- `release_web.yaml` puts the binaries and checksums in `files/`, plus `files/envira`, the x86_64
+- `release_web.yaml` puts the dev builds of the push (binaries and checksums) in `files/`, plus `files/envira`, the x86_64
   binary under its old name. `catalog.toml` goes in `envira/`. The legacy scripts' paths are unchanged.
 - `envira.sh` (`boot.controlnet.space/envira`):
   - maps `uname -m` to the asset;
