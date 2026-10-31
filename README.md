@@ -30,6 +30,8 @@ curl -fsSL https://boot.controlnet.space/envira | bash
 curl -fsSL https://boot.controlnet.space/envira | bash -s -- sync -b full -y
 # or from PyPI
 pipx install envira        # or: uv tool install envira
+# or from crates.io: the release binary, or a build from source (Rust 1.93+ and a C compiler)
+cargo binstall envira      # or: cargo install --locked envira
 ```
 
 ```shell

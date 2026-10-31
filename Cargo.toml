@@ -2,10 +2,30 @@
 name = "envira"
 version = "0.1.0"
 edition = "2024"
-description = "Install, update and track a Linux toolset from a declarative TOML catalog"
+description = "Install, update and track a Linux and macOS toolset from a declarative TOML catalog"
 license = "AGPL-3.0-only"
 repository = "https://github.com/ControlNet/envira"
+homepage = "https://github.com/ControlNet/envira"
+readme = "README.md"
+keywords = ["dotfiles", "bootstrap", "installer", "tui", "dev-environment"]
+categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.93"
+# What crates.io gets: the catalog is embedded at build time; verify.sh is read by a unit test.
+include = ["/src", "/catalog", "/verify.sh", "/README.md", "/LICENSE", "/Cargo.lock"]
+
+# `cargo binstall envira` takes the release binaries instead of compiling.
+[package.metadata.binstall]
+pkg-fmt = "bin"
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/envira-x86_64-linux"
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/envira-x86_64-linux"
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/envira-aarch64-linux"
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/envira-aarch64-linux"
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/envira-aarch64-macos"
 
 [dependencies]
 anyhow = "1.0.104"

@@ -145,6 +145,15 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   script exit non-zero and install nothing.
 - PyPI trusted publishing is bound to the workflow file name (`release.yaml`) and the environment
   names (`pypi`, `testpypi`). Renaming either breaks publishing silently until the next tag.
+- crates.io trusted publishing can only be configured on a crate that already exists, so the first
+  version needs an API token (the `CARGO_REGISTRY_TOKEN` secret, or a local `cargo publish`). The
+  `crates` job prefers the secret when set and skips a version that is already published, so a
+  manual first publish does not fail the tag run.
+- crates.io packages only what `include` lists. `include_dir!`/`include_str!` targets outside it
+  (`catalog/`, `verify.sh`) break the build or the tests of the published crate; `cargo package
+  --locked` (build of the packaged source) catches it. The crates.io API wants a User-Agent.
+- `cargo binstall` reads `[package.metadata.binstall]`; per-target `overrides` map the Rust
+  triples (gnu and musl alike) to the release asset names `envira-<arch>-<os>` (`pkg-fmt = "bin"`).
 
 - `sudo` resets the environment, so `sudo envira fetch-release` ran without `GITHUB_TOKEN`. Only
   the sudo-mode CI jobs hit GitHub's anonymous limit (60/h per runner IP). Fix: run the network part

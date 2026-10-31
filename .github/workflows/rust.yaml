@@ -53,6 +53,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # What crates.io would get builds on its own (catches files missing from `include`).
+      - run: cargo package --locked
 
   # Apple Silicon: lints and unit tests, then installs on the runner itself (no containers on
   # macOS; each job gets a fresh VM).

@@ -30,7 +30,7 @@ Problems it must solve that the legacy scripts (`run.sh`, `run_user.sh`, `verify
 | Methods / actions | Data templates in `catalog/templates.toml`; Rust only provides generic primitives |
 | Install scope | `prefer_scope` system when sudo else user; no symlinking user installs by default |
 | macOS | Apple Silicon first (`feature/macos`, 2026-10-31): Homebrew is the first route on macOS, Linux-only items say `os:linux`; Docker stays Linux-only for now |
-| PyPI | Keep `envira` on PyPI as maturin `bindings = "bin"` wheels carrying the Rust binary, plus the curl bootstrap (`envira.sh`); crates.io not yet (see Open questions) |
+| PyPI, crates.io | Keep `envira` on PyPI as maturin `bindings = "bin"` wheels carrying the Rust binary, plus the curl bootstrap (`envira.sh`). The crate goes to crates.io from the same tag; `[package.metadata.binstall]` points `cargo binstall` at the release binaries |
 
 Lessons from the old branch, applied here:
 - No version gate / auto-handoff, evidence artifacts, or verifier "profiles". Keep the model small.
@@ -611,9 +611,16 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
     1. `version` checks that the tag equals the `Cargo.toml` version;
     2. `publish` uploads the wheels to PyPI by trusted publishing (`pypi` / `testpypi`
        environments, bound to the file name `release.yaml`);
-    3. `release` creates the GitHub release with the binaries, checksums and `catalog.toml`;
-    4. `verify` installs `envira==<version>` from PyPI and runs it on Linux x86_64, Linux aarch64
-       and macOS.
+    3. `crates` publishes the crate to crates.io (`crates-io` environment): trusted publishing, or
+       the `CARGO_REGISTRY_TOKEN` secret when set (needed for the first version), and skipped when
+       the version is already there. Manual runs do `cargo publish --dry-run` only;
+    4. `release` creates the GitHub release with the binaries, checksums and `catalog.toml`;
+    5. `verify` installs `envira==<version>` from PyPI and runs it on Linux x86_64, Linux aarch64
+       and macOS; `verify-crate` runs `cargo binstall` (release binary) on Linux and macOS and
+       `cargo install` (source) on Linux.
+  - The crate ships `src/`, `catalog/` (embedded by `include_dir!`), `verify.sh` (a unit test reads
+    it), README, LICENSE and the lock file (`include` in `Cargo.toml`); `rust.yaml` runs
+    `cargo package --locked` on every push so a missing file fails before a tag.
   - On a push to main (and on a tag push), `release-web` deploys the site.
   - As on main before, the legacy test matrix runs but does not gate publishing.
 - `release_web.yaml` puts the binaries and checksums in `files/`, plus `files/envira`, the x86_64
@@ -708,6 +715,5 @@ tests/integration/ (Docker: run.sh, check.sh, full.sh, Dockerfile.{ubuntu,fedora
    legacy parity test were done early, see "Full catalog port".)
 
 ## Open questions
-- Is the `envira` crate name free on crates.io?
 - How many log runs to keep (20 now)? `status` uses cached latest versions only; the TUI checks in the
   background on start (6 h cache).
