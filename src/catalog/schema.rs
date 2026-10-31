@@ -131,6 +131,9 @@ pub struct Tool {
     /// Install methods in order of preference; the first feasible one is used.
     #[serde(default)]
     pub install: Vec<InstallEntry>,
+    /// Installed by hand, never by envira (instead of `install`): where to get it. Shown as the
+    /// reason the tool is n/a, and for entries that need it.
+    pub manual: Option<String>,
     #[serde(default)]
     pub depends: Vec<String>,
     #[serde(default)]

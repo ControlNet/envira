@@ -172,6 +172,8 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
 - Homebrew-installed tools: `brew list --versions` starts Ruby for each call; listing
   `$(brew --prefix)/Cellar/<formula>` is instant (`brew --prefix` with no argument is a shell fast
   path). Formula versions carry a `_N` revision suffix, so the regex stops at `_`.
+- Homebrew is a `manual` tool (detected, never installed). Its installer needs an interactive sudo
+  password and pulls the Command Line Tools, which does not fit an unattended plan step.
 - fnm on macOS keeps its data in `~/Library/Application Support/fnm`, not `~/.local/share/fnm`.
 - A brew-installed go would break: the catalog's shell env exports `GOROOT=~/.go`. go keeps its
   tarball route instead, with the OS from `uname -s`. fzf keeps its own installer for the same

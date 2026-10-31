@@ -7,9 +7,9 @@ desc = "Homebrew, the package manager the macOS routes use"
 when = ["os:macos"]
 bin = "brew"
 detect = { cmd = "brew --version", version = 'Homebrew (\S+)' }
-# The installer asks for sudo itself (to create /opt/homebrew) and refuses to run as root;
-# `sudo -n true` makes envira ask for the password first and fails fast without sudo.
-install = [{ run = "sudo -n true && NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"", scope = "system", update = "brew update" }]
+# Its installer needs an interactive sudo and the Command Line Tools; envira leaves it to the user.
+# Without it, brew entries are skipped and the next route (if any) is used.
+manual = "https://brew.sh (then open a new terminal)"
 shell = { path = ["/opt/homebrew/bin", "/opt/homebrew/sbin"] }
 
 [tools.git]

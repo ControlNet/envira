@@ -305,8 +305,10 @@ fn check_tools(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                 check_regex(c, "tools", id, "detect.version", v);
             }
         }
-        if t.install.is_empty() {
-            c.err("tools", id, "no install entries");
+        match (t.install.is_empty(), t.manual.is_some()) {
+            (true, false) => c.err("tools", id, "no install entries (or `manual`)"),
+            (false, true) => c.err("tools", id, "both `manual` and install entries"),
+            _ => {}
         }
         for (i, e) in t.install.iter().enumerate() {
             let what = format!("install[{i}]");
@@ -597,6 +599,19 @@ mod tests {
         let r = check("[tools.a]\ndepends = [\"nope\"]\ninstall = [{ method = \"carg\" }]\n");
         assert!(has(&r.errors, "unknown item \"nope\""), "{:?}", r.errors);
         assert!(has(&r.errors, "unknown method \"carg\""), "{:?}", r.errors);
+    }
+
+    #[test]
+    fn manual_tools_need_no_install_entries() {
+        let r = check("[tools.a]\nmanual = \"see https://example.org\"\n[tools.b]\ndesc = \"x\"\n");
+        assert_eq!(r.errors.len(), 1, "{:?}", r.errors);
+        assert!(has(&r.errors, "tools.b"), "{:?}", r.errors);
+        let r = check("[tools.a]\nmanual = \"x\"\ninstall = [{ run = \"true\" }]\n");
+        assert!(
+            has(&r.errors, "both `manual` and install entries"),
+            "{:?}",
+            r.errors
+        );
     }
 
     #[test]

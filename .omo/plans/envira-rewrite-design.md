@@ -437,7 +437,8 @@ there is none); the previous line is recorded under the key `RE` for `restore --
 **`[tools.<id>]`.** `desc`, `category`, `bin` (default: id), `bins` (default: `[bin]`; used for
 `command -v` and portable copies), `detect = { cmd, version }` (default `{bin} --version` and a
 generic version regex), `depends`, `when`, `shell = { path, env, alias, init = { zsh, bash } }`, and
-`install = [ … ]` in order of preference. An entry is either `{ method = "…", <params> }` or
+`install = [ … ]` in order of preference, or instead `manual = "where to get it"` for a tool the
+user installs by hand (Homebrew): it is never planned, and its text is the n/a reason. An entry is either `{ method = "…", <params> }` or
 `{ run = "…" }`, plus optional `depends` (needed only for this entry), `when`, `scope`, `portable`,
 `lanes` (shared resources an installer uses without naming them in the command, e.g. LunarVim's
 `npm install -g`: `packages`, `pipx`, `npm`, `build`).
@@ -635,8 +636,11 @@ Apple Silicon first. The Rust changes are small; most of the work is catalog dat
 - Routes: `[methods.brew]` (user scope, because Homebrew refuses root; it shares the packages lane
   because of brew's global lock).
   - 45 tools have a brew entry listed first. On Linux it never applies.
-  - A `homebrew` tool installs Homebrew itself. Its command starts with `sudo -n true`, so envira asks
-    for the password first.
+  - envira does not install Homebrew (user decision 2026-10-31): its installer needs an
+    interactive sudo and the Command Line Tools. `homebrew` is a `manual` tool. Without it, brew
+    entries are skipped with "needs homebrew (install it yourself: https://brew.sh …)", and the
+    next route is used: fnm and other vendor scripts, cargo, pipx, npm. Tools whose only Mac route
+    is brew show that reason as n/a.
   - Release-asset tables have no `macos-*` keys yet, so on a Mac those entries are skipped rather
     than downloading Linux binaries.
 - Linux-only items say `os:linux`: docker and its configs (Docker is Linux-only for now),
@@ -650,8 +654,7 @@ Apple Silicon first. The Rust changes are small; most of the work is catalog dat
   containers, though every job gets a fresh VM. It uses a bare PATH and installs tools the image
   lacks. It also checks the no-op second run, n/a Linux-only items, zsh and bash_profile
   integration, adoption of a brew-installed tool, and config revert/apply.
-  - Not covered: installing Homebrew itself (the image has it) and a clean Mac (Tart or UTM on Apple
-    hardware).
+  - Not covered: a clean Mac without Homebrew (the image has it; Tart or UTM on Apple hardware).
 - Distribution: `build.yaml` builds `envira-aarch64-macos` (deployment target 11.0, only system
   libraries) and a `macosx_11_0_arm64` wheel, and installs it with `envira.sh` on the same runner.
   `envira.sh` maps Darwin to `macos` and refuses Intel Macs plainly.

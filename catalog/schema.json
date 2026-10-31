@@ -597,6 +597,13 @@
             "$ref": "#/$defs/InstallEntry"
           }
         },
+        "manual": {
+          "description": "Installed by hand, never by envira (instead of `install`): where to get it. Shown as the\nreason the tool is n/a, and for entries that need it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "shell": {
           "anyOf": [
             {

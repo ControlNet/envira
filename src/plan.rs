@@ -457,6 +457,9 @@ impl<'a> Planner<'a> {
         if let Some(w) = unmet(&tool.when, facts) {
             return Err(format!("when {w} is not met"));
         }
+        if let Some(m) = &tool.manual {
+            return Err(format!("install it yourself: {m}"));
+        }
         let verify = vec![detect_cmd(cat, facts, id)];
         let mut notes: Vec<String> = Vec::new();
         for (idx, entry) in tool.install.iter().enumerate() {
@@ -947,8 +950,8 @@ mod tests {
     fn macos_prefers_homebrew_and_skips_linux_only_items() {
         let c = cat();
         let f = mac();
-        // Every Mac has curl and unzip.
-        let base = set(&["curl", "unzip"]);
+        // Every Mac has curl and unzip; Homebrew is installed by hand.
+        let base = set(&["curl", "unzip", "homebrew"]);
         let plan = Planner::new(&c, &f, &base).plan(&["bat".into(), "codex".into()], false);
         let via: Vec<(&str, &str)> = plan
             .units
@@ -958,7 +961,6 @@ mod tests {
         assert_eq!(
             via,
             [
-                ("homebrew", "run"),
                 ("bat", "brew"),
                 ("fnm", "brew"),
                 ("nodejs", "run"),
@@ -968,7 +970,7 @@ mod tests {
             "{:?}",
             plan.skipped
         );
-        let bat = &plan.units[1];
+        let bat = &plan.units[0];
         assert_eq!(bat.scope, Scope::User, "brew runs as the user");
         assert_eq!(
             bat.steps[0].cmd.as_deref(),
@@ -976,16 +978,30 @@ mod tests {
         );
         // libatomic (Linux only) is not needed for nodejs on a Mac.
         assert!(plan.units.iter().all(|u| u.id != "libatomic"));
-        assert!(plan.needs_sudo(&f), "installing Homebrew asks for sudo");
+        assert!(!plan.needs_sudo(&f));
 
         // Release tables without macos-* keys are not used on a Mac, and Linux-only items say so.
-        let brew = set(&["homebrew", "curl", "unzip"]);
-        let mut p = Planner::new(&c, &f, &brew);
+        let mut p = Planner::new(&c, &f, &base);
         assert_eq!(p.choose("lazygit").unwrap().via, "brew");
         let docker = p.choose("docker").unwrap_err();
         assert!(docker.contains("os:linux"), "{docker}");
         assert!(p.choose("docker-group").is_err());
         assert!(p.choose("default-shell").is_err());
+    }
+
+    #[test]
+    fn without_homebrew_macos_falls_back_or_explains() {
+        let c = cat();
+        let f = mac();
+        let base = set(&["curl", "unzip"]);
+        let mut p = Planner::new(&c, &f, &base);
+        // envira does not install Homebrew: it says where to get it.
+        let brew = p.choose("homebrew").unwrap_err();
+        assert!(brew.contains("https://brew.sh"), "{brew}");
+        // fnm falls back to its own install script; lazygit has no other route on a Mac.
+        assert_eq!(p.choose("fnm").unwrap().via, "script");
+        let lazygit = p.choose("lazygit").unwrap_err();
+        assert!(lazygit.contains("needs homebrew"), "{lazygit}");
     }
 
     #[test]
