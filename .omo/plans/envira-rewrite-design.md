@@ -295,7 +295,6 @@ envira                      # TUI on a terminal, `status` otherwise
 envira status [--json] [--latest [--refresh]]   # latest versions: cached 6 h, network only with --latest
 envira install [<item|bundle>...] [--force] [-y] [--dry-run] [-q]
                             # no items: what the kept bundles miss; bundles named are kept
-                            # (`sync [-b B]...` from 0.1.0 is a hidden alias)
 envira retry  [-y]          # every unit the last run did not finish
 envira config apply|revert <config>... [-y]
 envira plan   [<item|bundle>...] [--script]
@@ -316,7 +315,8 @@ Headless commands are the same engine as the TUI; `install full -y` is the Docke
 `sync` and `install` were one command split in two until 0.1.0: `sync -b B` kept bundles and
 installed what they missed, `install X` installed X once. Now `install` does both: bundles it is
 given join the kept ones (individual tools and configs do not), and with no arguments it
-installs what the kept bundles miss.
+installs what the kept bundles miss. `sync` was removed without an alias (user decision
+2026-10-31).
 
 ## TUI
 Visual direction (chosen 2026-10-29, design "BC1"; mockups live in a private design canvas, not in the

@@ -63,12 +63,8 @@ pub enum Command {
     },
     /// Install tools, configs or bundles with their dependencies; bundles named here are kept
     /// on this machine. Without arguments: whatever the kept bundles miss.
-    #[command(alias = "sync")]
     Install {
         items: Vec<String>,
-        /// Same as naming the bundle (`envira sync -b full` from envira 0.1.0).
-        #[arg(long = "bundle", short = 'b', hide = true)]
-        bundles: Vec<String>,
         /// Reinstall even when already present.
         #[arg(long)]
         force: bool,
@@ -278,42 +274,4 @@ pub enum FsCmd {
         #[arg(long)]
         key: Option<String>,
     },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn install(args: &[&str]) -> (Vec<String>, Vec<String>, bool) {
-        match Cli::parse_from(args).command {
-            Some(Command::Install {
-                items,
-                bundles,
-                run,
-                ..
-            }) => (items, bundles, run.yes),
-            other => panic!("not install: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sync_from_envira_0_1_is_install() {
-        let none: Vec<String> = vec![];
-        assert_eq!(
-            install(&["envira", "install"]),
-            (none.clone(), none.clone(), false)
-        );
-        assert_eq!(
-            install(&["envira", "sync"]),
-            (none.clone(), none.clone(), false)
-        );
-        assert_eq!(
-            install(&["envira", "sync", "-b", "full", "--bundle", "extras", "-y"]),
-            (none, vec!["full".to_string(), "extras".to_string()], true)
-        );
-        assert_eq!(
-            install(&["envira", "install", "full", "bat"]).0,
-            vec!["full".to_string(), "bat".to_string()]
-        );
-    }
 }
