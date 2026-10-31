@@ -211,7 +211,7 @@ impl Snapshot {
         }
     }
 
-    /// Desired and not present (what `sync` installs), excluding items that cannot be installed.
+    /// Desired and not present (what `install` without items installs), excluding items that cannot be installed.
     pub fn to_sync(&self) -> Vec<String> {
         self.items
             .iter()

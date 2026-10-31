@@ -21,7 +21,7 @@ commands for scripts and Dockerfiles.
 # install into ~/.local/bin (checks its SHA-256) and open envira
 curl -fsSL https://boot.controlnet.space/envira | bash
 # install and run a command instead, e.g. in a Dockerfile or CI (no terminal needed)
-curl -fsSL https://boot.controlnet.space/envira | bash -s -- sync -b full -y
+curl -fsSL https://boot.controlnet.space/envira | bash -s -- install full -y
 # or from PyPI
 pipx install envira        # or: uv tool install envira
 # or from crates.io: the release binary, or a build from source (Rust 1.93+ and a C compiler)
@@ -35,16 +35,17 @@ Run the curl line again to update envira itself.
 ```shell
 envira                     # the TUI: pick bundles, review the plan, watch it run
 envira status              # what is installed, missing, outdated or drifted
-envira plan                # what `envira sync` would do, without doing it
-envira sync -y             # install everything the selected bundles need
-envira install bat yazi    # some tools (or bundles), with their dependencies
+envira install full        # a bundle: installs it, and this machine keeps it
+envira install             # later: whatever the kept bundles miss (new catalog items too)
+envira install bat yazi    # some tools or configs, with their dependencies (not kept)
+envira plan                # what `envira install` would do, without doing it
 envira update              # update outdated tools in place
 envira retry               # retry what failed or was blocked in the last run
 envira log / explain <id>  # logs of the last run; why an item has its status
 envira doctor              # machine facts, catalog layers, PATH, shell integration
 ```
 
-Bundles (`envira sync -b <bundle>`):
+Bundles (`envira install <bundle>`):
 
 | Bundle | What it covers |
 |---|---|
@@ -90,13 +91,13 @@ RUN apt-get update \
 
 USER user
 WORKDIR /home/user
-RUN curl -fsSL https://boot.controlnet.space/envira | bash -s -- sync -b full -y
+RUN curl -fsSL https://boot.controlnet.space/envira | bash -s -- install full -y
 
 CMD ["/bin/zsh"]
 ```
 
 This is the setup the CI integration tests use: a normal user with passwordless sudo. For a user
-without sudo, drop `sudo` and the sudoers line and sync `-b user` instead.
+without sudo, drop `sudo` and the sudoers line and install `user` instead.
 
 ## Legacy scripts
 

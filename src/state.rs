@@ -158,7 +158,7 @@ impl State {
     }
 
     /// Saves the results of a run. The selection (bundles, include, exclude) is taken from disk
-    /// first: a run never changes it, while the TUI or `sync --bundle` may have meanwhile.
+    /// first: a run never changes it, while the TUI or `install <bundle>` may have meanwhile.
     pub fn save_run(&mut self, paths: &Paths, facts: &Facts) -> Result<()> {
         if let Ok(Some(disk)) = State::load(paths) {
             self.bundles = disk.bundles;
@@ -215,7 +215,7 @@ pub fn write_atomic(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
 }
 
 /// Exclusive lock on the state directory for the length of a run, so two envira processes (a
-/// TUI and a CLI `sync`, say) never install at once or overwrite each other's state. Released
+/// TUI and a CLI `install`, say) never install at once or overwrite each other's state. Released
 /// when dropped or when the process dies. `envira fs` and `fetch-release`, which steps call,
 /// never take it.
 #[derive(Debug)]

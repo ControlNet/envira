@@ -508,15 +508,21 @@ pub fn fs_cmd(cmd: &FsCmd) -> Result<i32> {
 }
 
 // ------------------------------------------------------------------------------------------------
-// sync / install / retry / config / plan / env
+// install / retry / config / plan / env
 // ------------------------------------------------------------------------------------------------
 
-pub async fn sync(sess: &Session, bundles: &[String], opts: &RunOpts) -> Result<i32> {
-    let mut state = sess.state()?.unwrap_or_default();
-    for b in bundles {
-        if !sess.catalog.bundles.contains_key(b) {
+/// Without items: whatever the bundles this machine keeps miss. With items: those tools, configs
+/// and bundles with their dependencies; bundles named here join the kept ones.
+pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOpts) -> Result<i32> {
+    let disk = sess.state()?;
+    let mut state = disk.clone().unwrap_or_default();
+    if items.is_empty() {
+        if force {
+            bail!("--force reinstalls the items it is given; name them");
+        }
+        if state.bundles.is_empty() && state.include.is_empty() {
             bail!(
-                "unknown bundle {b:?} (available: {})",
+                "no bundles kept on this machine yet; use `envira install <bundle>` (available: {}) or pick bundles in the TUI",
                 sess.catalog
                     .bundles
                     .keys()
@@ -525,27 +531,28 @@ pub async fn sync(sess: &Session, bundles: &[String], opts: &RunOpts) -> Result<
                     .join(", ")
             );
         }
+        let snap = sess.snapshot(Some(&state)).await;
+        let plan = sess.plan(&snap.present(), &snap.to_sync(), false);
+        return run_plan(sess, plan, state, "install", opts).await;
+    }
+    let targets = sess.expand_targets(items)?;
+    let mut added = false;
+    for b in items
+        .iter()
+        .filter(|n| sess.catalog.bundles.contains_key(*n))
+    {
         if !state.bundles.contains(b) {
             state.bundles.push(b.clone());
+            added = true;
         }
     }
-    if state.bundles.is_empty() && state.include.is_empty() {
-        bail!("no bundles selected; use `envira sync --bundle <name>` or pick bundles in the TUI");
-    }
-    if !opts.dry_run && !bundles.is_empty() {
+    if added && !opts.dry_run {
         state.save(&sess.paths, &sess.facts)?;
     }
-    let snap = sess.snapshot(Some(&state)).await;
-    let plan = sess.plan(&snap.present(), &snap.to_sync(), false);
-    run_plan(sess, plan, state, "sync", opts).await
-}
-
-pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOpts) -> Result<i32> {
-    let targets = sess.expand_targets(items)?;
-    let state = sess.state()?;
-    let snap = sess.snapshot(state.as_ref()).await;
+    let known = disk.is_some() || added;
+    let snap = sess.snapshot(known.then_some(&state)).await;
     let plan = sess.plan(&snap.present(), &targets, force);
-    run_plan(sess, plan, state.unwrap_or_default(), "install", opts).await
+    run_plan(sess, plan, state, "install", opts).await
 }
 
 pub async fn update(

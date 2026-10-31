@@ -225,7 +225,7 @@ Ownership:
 1. Load catalog (remote -> cache -> embedded), probe facts, read state.
 2. Detect all tools in parallel (bounded concurrency, per-command timeout).
 3. Optionally check `latest` in parallel (network; cached with TTL; skipped with `--offline`).
-4. Plan: target set by command (`sync` = desired & missing; `update` = outdated & managed/adoptable;
+4. Plan: target set by command (`install` = desired & missing; `update` = outdated & managed/adoptable;
    `install X` = X), add missing deps, choose a method per tool, topologically sort.
    Present-but-unmanaged dependencies count as satisfied.
 5. Privilege: if any unit is system-scope and not root, run `sudo -v` once **before** entering raw
@@ -293,8 +293,9 @@ duplicates (e.g. an existing `alias ls='lsd'`) so the user can clean them up.
 ```
 envira                      # TUI on a terminal, `status` otherwise
 envira status [--json] [--latest [--refresh]]   # latest versions: cached 6 h, network only with --latest
-envira sync   [--bundle B]... [-y] [--dry-run] [-q]
-envira install <item|bundle>... [--force] [-y] [--dry-run] [-q]
+envira install [<item|bundle>...] [--force] [-y] [--dry-run] [-q]
+                            # no items: what the kept bundles miss; bundles named are kept
+                            # (`sync [-b B]...` from 0.1.0 is a hidden alias)
 envira retry  [-y]          # every unit the last run did not finish
 envira config apply|revert <config>... [-y]
 envira plan   [<item|bundle>...] [--script]
@@ -311,7 +312,11 @@ Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <sec
         -j/--jobs <n>
 Hidden, used by templates: envira fs ..., envira fetch-release ...
 ```
-Headless commands are the same engine as the TUI; `sync -y --bundle full` is the Docker / CI path.
+Headless commands are the same engine as the TUI; `install full -y` is the Docker / CI path.
+`sync` and `install` were one command split in two until 0.1.0: `sync -b B` kept bundles and
+installed what they missed, `install X` installed X once. Now `install` does both: bundles it is
+given join the kept ones (individual tools and configs do not), and with no arguments it
+installs what the kept bundles miss.
 
 ## TUI
 Visual direction (chosen 2026-10-29, design "BC1"; mockups live in a private design canvas, not in the
@@ -639,7 +644,7 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
   - checks the SHA-256 and that the binary runs;
   - renames it into `~/.local/bin` (`ENVIRA_INSTALL_DIR`);
   - then opens envira when there is a terminal. Under `curl … | bash`, stdin is the script, so envira
-    gets `/dev/tty` as stdin. Arguments (`bash -s -- sync -b full -y`) are passed to envira and run
+    gets `/dev/tty` as stdin. Arguments (`bash -s -- install full -y`) are passed to envira and run
     without a terminal too. `ENVIRA_NO_LAUNCH=1` only installs. Without a terminal (Docker build,
     CI) it only installs, as before.
   - The whole script is a `main` function called on the last line, so a truncated download runs

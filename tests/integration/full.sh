@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside the container (see run.sh, SUITE=full): syncs whole bundles like the legacy scripts
 # do (sudo: full + extras, like run.sh; user: the user bundle, like run_user.sh), checks the
-# result with the legacy verify.sh, then checks that a second sync has nothing to do.
+# result with the legacy verify.sh, then checks that a second `envira install` has nothing to do.
 set -uo pipefail
 
 # Installs packages as the administrator would, with the distro's package manager.
@@ -30,13 +30,13 @@ if [ "${ENVIRA_MODE:-sudo}" = user ]; then
       admin_install git wget gcc make perl unzip libatomic1 python3-pip python3-devel python3-curses ;;
   esac
   export ENVIRA_PRIVILEGE=none
-  bundles=(-b user -b extras)
+  bundles=(user extras)
 else
-  bundles=(-b full -b extras)
+  bundles=(full extras)
 fi
 
-echo "=== sync ${bundles[*]} (${ENVIRA_MODE:-sudo})"
-envira sync -y -q "${bundles[@]}" || status=1
+echo "=== install ${bundles[*]} (${ENVIRA_MODE:-sudo})"
+envira install -y -q "${bundles[@]}" || status=1
 
 echo "=== status"
 envira status
@@ -54,8 +54,8 @@ done
 echo "=== verify.sh"
 bash /verify.sh || status=1
 
-echo "=== second sync must be a no-op"
-out=$(envira sync -y -q 2>&1)
+echo "=== installing the kept bundles again must be a no-op"
+out=$(envira install -y -q 2>&1)
 echo "$out"
 grep -q "Nothing to do." <<<"$out" || status=1
 

@@ -108,8 +108,13 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             Some(Command::Adopt { items, dry_run }) => {
                 commands::adopt(&sess, &items, dry_run).await
             }
-            Some(Command::Sync { bundles, run }) => commands::sync(&sess, &bundles, &run).await,
-            Some(Command::Install { items, force, run }) => {
+            Some(Command::Install {
+                mut items,
+                bundles,
+                force,
+                run,
+            }) => {
+                items.extend(bundles);
                 commands::install(&sess, &items, force, &run).await
             }
             Some(Command::Retry { run }) => commands::retry(&sess, &run).await,

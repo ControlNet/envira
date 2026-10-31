@@ -2,7 +2,7 @@
 # Installs envira for this machine into ~/.local/bin and opens it:
 #   curl -fsSL https://boot.controlnet.space/envira | bash
 # Arguments after `bash -s --` are passed to envira instead, e.g. for a Dockerfile or CI:
-#   curl -fsSL https://boot.controlnet.space/envira | bash -s -- sync -b full -y
+#   curl -fsSL https://boot.controlnet.space/envira | bash -s -- install full -y
 # Linux (x86_64, aarch64): a static musl binary, no dependencies. macOS: Apple Silicon. Its
 # SHA-256 is checked against the release's checksum file before it is installed.
 #   ENVIRA_VERSION=v0.2.0    a release tag instead of the latest release

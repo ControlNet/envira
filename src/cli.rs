@@ -61,18 +61,14 @@ pub enum Command {
         #[arg(long)]
         refresh: bool,
     },
-    /// Install whatever the selected bundles need.
-    Sync {
-        /// Add a bundle to the bundles this machine keeps in sync (repeatable).
-        #[arg(long = "bundle", short = 'b')]
-        bundles: Vec<String>,
-        #[command(flatten)]
-        run: RunOpts,
-    },
-    /// Install tools or apply configs (ids or bundle names), with their dependencies.
+    /// Install tools, configs or bundles with their dependencies; bundles named here are kept
+    /// on this machine. Without arguments: whatever the kept bundles miss.
+    #[command(alias = "sync")]
     Install {
-        #[arg(required = true)]
         items: Vec<String>,
+        /// Same as naming the bundle (`envira sync -b full` from envira 0.1.0).
+        #[arg(long = "bundle", short = 'b', hide = true)]
+        bundles: Vec<String>,
         /// Reinstall even when already present.
         #[arg(long)]
         force: bool,
@@ -112,7 +108,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// Show what `sync` (or `install <items>`) would do.
+    /// Show what `install` (or `install <items>`) would do.
     Plan {
         items: Vec<String>,
         /// Print the plan as a shell script.
@@ -282,4 +278,42 @@ pub enum FsCmd {
         #[arg(long)]
         key: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn install(args: &[&str]) -> (Vec<String>, Vec<String>, bool) {
+        match Cli::parse_from(args).command {
+            Some(Command::Install {
+                items,
+                bundles,
+                run,
+                ..
+            }) => (items, bundles, run.yes),
+            other => panic!("not install: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sync_from_envira_0_1_is_install() {
+        let none: Vec<String> = vec![];
+        assert_eq!(
+            install(&["envira", "install"]),
+            (none.clone(), none.clone(), false)
+        );
+        assert_eq!(
+            install(&["envira", "sync"]),
+            (none.clone(), none.clone(), false)
+        );
+        assert_eq!(
+            install(&["envira", "sync", "-b", "full", "--bundle", "extras", "-y"]),
+            (none, vec!["full".to_string(), "extras".to_string()], true)
+        );
+        assert_eq!(
+            install(&["envira", "install", "full", "bat"]).0,
+            vec!["full".to_string(), "bat".to_string()]
+        );
+    }
 }
