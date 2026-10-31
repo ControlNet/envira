@@ -1,9 +1,11 @@
 name: Lagacy Test
+# The legacy scripts install from upstream, so they also run weekly to catch breakage that
+# comes without a change here.
 on:
-  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
   push:
-    branches-ignore:
-      - main
     paths:
       - 'run.sh'
       - 'run_user.sh'
@@ -18,6 +20,10 @@ on:
       - '.github/integration-test/**'
       - '.github/workflows/lagacy_test.yaml'
         
+concurrency:
+  group: lagacy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
