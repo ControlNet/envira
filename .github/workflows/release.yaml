@@ -188,6 +188,10 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
 
       - name: cargo binstall (release binary)
+        env:
+          # binstall looks the release up through the GitHub API; anonymous calls from shared
+          # runner IPs get 403 (rate limit).
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           v=${GITHUB_REF_NAME#v}
           for i in 1 2 3 4 5; do
