@@ -219,7 +219,7 @@ Ownership:
   so; the next start begins fresh. Writes are fsync'd before the atomic rename.
 - Desired set = expand(bundles) + include - exclude, filtered by `when` / feasibility.
 - First run on a machine without state (including legacy-provisioned ones): detect everything,
-  ask for bundles (TUI picker or `--bundle`), mark the whole catalog as seen.
+  ask for bundles (TUI picker or `envira install <bundle>`), mark the whole catalog as seen.
 
 ## Reconcile and execution
 1. Load catalog (remote -> cache -> embedded), probe facts, read state.
@@ -337,7 +337,9 @@ Screens:
 3. **Run**: left = queue with per-unit state and elapsed time; right = live log of the focused unit
    (follow mode, scrollback); cancel current unit (kills process group); summary with `r` = retry failed.
 4. **History / logs**: previous runs and per-tool logs.
-5. **First-run picker**: choose bundles for this machine.
+5. **First-run picker**: choose bundles for this machine. Bundles that are mostly present start
+   ticked; enter keeps the ticked ones and plans their install, esc skips (keeps none, and the
+   picker does not come back; bundles can be kept later in [2]).
 
 Keys (dashboard): `space` toggle, `i` install selected (else what the kept bundles miss, like
 `envira install`), `u` update selected/outdated,

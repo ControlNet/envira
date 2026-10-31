@@ -1592,7 +1592,7 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
             ("space", "pick or drop a bundle"),
             ("a  n", "pick all · pick none"),
             ("enter", "save and plan the install"),
-            ("esc", "save the picks without installing"),
+            ("esc", "skip: keep no bundles (pick them later in [2])"),
             ("q", "quit"),
         ],
         Screen::Plan => &[

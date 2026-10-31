@@ -474,13 +474,17 @@ impl App {
             KeyCode::Char('a') => self.picker = ids.into_iter().collect(),
             KeyCode::Char('n') => self.picker.clear(),
             KeyCode::Char('?') => self.help = true,
+            // Enter keeps the ticked bundles and plans their install; Esc skips: no bundles are
+            // kept (pick them later in [2]), and the picker does not come back.
             KeyCode::Enter | KeyCode::Esc => {
                 let mut st = self.state.clone().unwrap_or_default();
-                st.bundles = self
-                    .bundle_ids()
-                    .into_iter()
-                    .filter(|b| self.picker.contains(b))
-                    .collect();
+                if k.code == KeyCode::Enter {
+                    st.bundles = self
+                        .bundle_ids()
+                        .into_iter()
+                        .filter(|b| self.picker.contains(b))
+                        .collect();
+                }
                 st.mark_all_seen(&self.catalog);
                 self.state = Some(st);
                 self.screen = Screen::Dashboard;
@@ -1251,5 +1255,25 @@ pub mod tests {
         assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
         assert_eq!(a.state.as_ref().unwrap().bundles, vec!["ai-agents"]);
         assert_eq!(a.screen, Screen::Plan);
+    }
+
+    /// Esc skips the picker: whatever was ticked is not kept, and the picker does not come back.
+    #[test]
+    fn picker_skip_keeps_no_bundles() {
+        let mut a = app();
+        let mut snap = a.snap.clone().unwrap();
+        snap.first_run = true;
+        a.screen = Screen::Loading;
+        a.state = None;
+        a.on_snapshot(snap, None);
+        assert_eq!(a.screen, Screen::Picker);
+        // Bundles that are mostly present start ticked.
+        a.picker.insert("ai-agents".into());
+        let cmds = a.on_key(key(KeyCode::Esc));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        let st = a.state.as_ref().unwrap();
+        assert!(st.bundles.is_empty(), "{:?}", st.bundles);
+        assert!(!st.seen.is_empty());
+        assert_eq!(a.screen, Screen::Dashboard);
     }
 }
