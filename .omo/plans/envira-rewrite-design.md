@@ -625,6 +625,12 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
   - As on main before, the legacy test matrix runs but does not gate publishing.
 - `release_web.yaml` puts the dev builds of the push (binaries and checksums) in `files/`, plus `files/envira`, the x86_64
   binary under its old name. `catalog.toml` goes in `envira/`. The legacy scripts' paths are unchanged.
+- Before it deploys, `release_web.yaml` runs `tests/catalog-compat.sh` with the latest released
+  x86_64 binary. Released envira fetch the catalog from main within the hour, so that binary must
+  load it (`catalog check`, the same load and validation as the remote fetch, with unknown fields
+  rejected), unless its `min_envira` is newer than the release, which older envira skip with a
+  warning. A catalog using unreleased syntax without a raised `min_envira` stops the deploy.
+  Before the first release there is nothing to check.
 - `envira.sh` (`boot.controlnet.space/envira`):
   - maps `uname -m` to the asset;
   - downloads it from the GitHub release (`latest`, or `ENVIRA_VERSION`; `ENVIRA_BASE_URL` for a

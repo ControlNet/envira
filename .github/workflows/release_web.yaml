@@ -44,6 +44,22 @@ jobs:
         echo "boot.controlnet.space" > ~/dist/CNAME
         ls -lR ~/dist/files ~/dist/envira
 
+    # Released envira read this catalog within the hour: the latest release must load it, unless
+    # its min_envira is newer. Nothing to check before the first release.
+    - name: The latest release can use the catalog
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        latest=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+          --limit 1 --json tagName --jq '.[0].tagName // ""')
+        if [ -z "$latest" ]; then
+          echo "::notice::no GitHub release yet; the catalog is not checked against one"
+          exit 0
+        fi
+        gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern envira-x86_64-linux --dir ~/released
+        chmod 755 ~/released/envira-x86_64-linux
+        bash tests/catalog-compat.sh ~/released/envira-x86_64-linux ~/dist/envira/catalog.toml
+
     - name: Init git and commit
       env:
         DEPLOY_PRIVATE: ${{ secrets.DEPLOY_PRIVATE }}

@@ -232,3 +232,9 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   one log dir until `new_run_id` added `-02`, `-03` suffixes.
 - Safe manual TUI runs on a real machine: `ENVIRA_STATE_DIR=<tmp>/state ENVIRA_CONFIG_DIR=<tmp>/config envira`
   keeps state writes out of `~/.local/state`. Do not confirm plans on the host.
+- Catalog changes go live from main, but users run the last release. `tests/catalog-compat.sh
+  <released envira> <catalog.toml>` gates the site deploy: the released binary must pass
+  `catalog check` on the new catalog, or the catalog's `min_envira` must be newer than it. Schema
+  structs use `deny_unknown_fields`, so a new field is caught. The latest release is looked up with
+  `gh release list` (empty only when none exists), so a failed download fails the deploy instead of
+  skipping the check.
