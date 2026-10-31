@@ -623,7 +623,13 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
   - downloads it from the GitHub release (`latest`, or `ENVIRA_VERSION`; `ENVIRA_BASE_URL` for a
     mirror or CI);
   - checks the SHA-256 and that the binary runs;
-  - renames it into `~/.local/bin` (`ENVIRA_INSTALL_DIR`).
+  - renames it into `~/.local/bin` (`ENVIRA_INSTALL_DIR`);
+  - then opens envira when there is a terminal. Under `curl … | bash`, stdin is the script, so envira
+    gets `/dev/tty` as stdin. Arguments (`bash -s -- sync -b full -y`) are passed to envira and run
+    without a terminal too. `ENVIRA_NO_LAUNCH=1` only installs. Without a terminal (Docker build,
+    CI) it only installs, as before.
+  - The whole script is a `main` function called on the last line, so a truncated download runs
+    nothing.
 
   The `bootstrap` CI job serves the fresh build locally, installs with the script, and checks that
   a tampered binary is refused.

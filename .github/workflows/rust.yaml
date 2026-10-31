@@ -99,9 +99,11 @@ jobs:
           for _ in $(seq 50); do curl -fsI http://127.0.0.1:8000/envira-x86_64-linux >/dev/null && break; sleep 0.2; done
           HOME=$(mktemp -d)
           export HOME ENVIRA_BASE_URL=http://127.0.0.1:8000
-          bash envira.sh
+          # No terminal here: it installs and does not open envira.
+          bash envira.sh </dev/null
           "$HOME/.local/bin/envira" --version
-          "$HOME/.local/bin/envira" --no-remote status | tail -n 1
+          # As `curl … | bash -s -- ARGS`: the arguments go to envira.
+          cat envira.sh | bash -s -- --no-remote status | tail -n 1
           echo tampered >> site/envira-x86_64-linux
           if ENVIRA_INSTALL_DIR="$HOME/tampered" bash envira.sh; then echo "a tampered binary was installed"; exit 1; fi
           test ! -e "$HOME/tampered/envira"

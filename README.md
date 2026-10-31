@@ -24,8 +24,10 @@ Macs. It knows the tools and configs from a catalog, shows what is installed, an
 or reverts them.
 
 ```shell
-# install the binary into ~/.local/bin (checks its SHA-256)
+# install into ~/.local/bin (checks its SHA-256) and open envira
 curl -fsSL https://boot.controlnet.space/envira | bash
+# install and run a command instead, e.g. in a Dockerfile or CI (no terminal needed)
+curl -fsSL https://boot.controlnet.space/envira | bash -s -- sync -b full -y
 # or from PyPI
 pipx install envira        # or: uv tool install envira
 ```
@@ -53,8 +55,8 @@ envira doctor              # machine facts, catalog layers, PATH, shell integrat
   then to the catalog built into the binary. `--no-remote` uses only the built-in one.
 - Your own items go in `~/.config/envira/catalog.d/*.toml`. `envira catalog schema` prints the
   format, and `envira catalog check` validates it.
-- Variables: `ENVIRA_VERSION=v0.2.0` pins a release for the install script, and
-  `ENVIRA_INSTALL_DIR` changes where it puts the binary.
+- Variables for the install script: `ENVIRA_VERSION=v0.2.0` pins a release,
+  `ENVIRA_INSTALL_DIR` changes where it puts the binary, and `ENVIRA_NO_LAUNCH=1` only installs.
 
 ### Legacy scripts
 
