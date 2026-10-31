@@ -1,7 +1,8 @@
 # envira Rewrite Design (Rust + ratatui)
 
-Status: M1–M5 implemented on `feature/rust-cli` (M1–M4 2026-10-29, M5 2026-10-30); not yet merged to main. Supersedes the architecture on
-`origin/feature/cli-app`.
+Status: M1–M5 implemented (M1–M4 2026-10-29, M5 2026-10-30), macOS support added, merged to main
+and released as v0.1.0 on 2026-10-31. Development continues on main; `v*` tags release. Supersedes
+the architecture on `origin/feature/cli-app`.
 
 ## Intent
 A single static binary that installs, updates, and tracks the user's Linux toolset on any machine:

@@ -1,4 +1,4 @@
-# envira Rust implementation notes (feature/rust-cli, M1–M5 and the full catalog)
+# envira Rust implementation notes (M1–M5, macOS, the full catalog; on main since v0.1.0)
 
 Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rewrite-design.md`.
 
