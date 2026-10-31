@@ -48,6 +48,10 @@ assert (via != "github-release") if mode == "sudo" else (via == "github-release"
 print("ok: all present and managed; bat via", status["bat"]["via"])
 PY
 
+echo "=== a closed pipe ends a read-only command quietly"
+envira doctor 2>/tmp/pipe.err | head -n 1
+if grep -q panicked /tmp/pipe.err; then cat /tmp/pipe.err; exit 1; fi
+
 echo "=== second run must be a no-op"
 out=$(envira install -y -q "${items[@]}")
 echo "$out"

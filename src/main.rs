@@ -25,6 +25,12 @@ use cli::{Cli, Command, ConfigCmd};
 
 fn main() {
     let cli = Cli::parse();
+    if reads_only(&cli.command) {
+        // SAFETY: called before any thread starts; restores the default action.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
     let code = match run(cli) {
         Ok(c) => c,
         Err(e) => {
@@ -33,6 +39,23 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Read-only commands end quietly when the reader goes away (`envira doctor | head`), as other
+/// Unix tools do; Rust ignores SIGPIPE, so printing would panic instead. Commands that change the
+/// machine keep ignoring it: a closed pipe must not kill an install halfway.
+fn reads_only(c: &Option<Command>) -> bool {
+    matches!(
+        c,
+        None | Some(
+            Command::Status { .. }
+                | Command::Plan { .. }
+                | Command::Log { .. }
+                | Command::Explain { .. }
+                | Command::Doctor
+                | Command::Catalog { .. }
+        )
+    )
 }
 
 fn run(cli: Cli) -> anyhow::Result<i32> {
