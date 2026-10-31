@@ -24,7 +24,7 @@ Problems it must solve that the legacy scripts (`run.sh`, `run_user.sh`, `verify
 | Distribution | Linux: musl static binaries for `x86_64` and `aarch64`, built natively in Alpine (one runner per arch). macOS: `aarch64` binary built on `macos-15` (system libraries only) |
 | Catalog delivery | Fetched from the published site at runtime, cached; embedded copy as offline fallback |
 | Legacy scripts | Kept and hand-maintained in parallel long term; a CI parity check flags drift |
-| v1 scope | Tools (install / update / sync / retry), configs (apply / revert) + managed shell environment (PATH, env, alias, init) |
+| v1 scope | Tools (install / update / retry), configs (apply / revert) + managed shell environment (PATH, env, alias, init) |
 | Out of v1 | dotfiles (zsh theme, oh-my-zsh plugins, tmux, git config), tool uninstall |
 | Item kinds | `tools` (versioned, updatable; toolchains included) and `configs` (check / apply / revert) |
 | Dependencies | Explicit: item-level and method-level `depends`; method `expects` is a lint, never injected |
@@ -339,7 +339,8 @@ Screens:
 4. **History / logs**: previous runs and per-tool logs.
 5. **First-run picker**: choose bundles for this machine.
 
-Keys (dashboard): `space` toggle, `s` sync missing, `u` update selected/outdated, `i` install selected,
+Keys (dashboard): `space` toggle, `i` install selected (else what the kept bundles miss, like
+`envira install`), `u` update selected/outdated,
 `/` filter, `tab` switch pane, `l` logs, `R` refresh/check updates, `?` help, `q` quit.
 
 ## Data-driven catalog

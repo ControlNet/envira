@@ -489,7 +489,7 @@ impl App {
                     let targets = self.picker_targets();
                     let plan = self.make_plan(&targets);
                     if !plan.is_empty() {
-                        self.open_plan(plan, format!("first sync · {} bundles", self.picker.len()));
+                        self.open_plan(plan, format!("install · {} bundles", self.picker.len()));
                     }
                 }
                 return cmds;
@@ -598,12 +598,23 @@ impl App {
                 self.detecting = true;
                 return vec![Cmd::Reload];
             }
-            KeyCode::Char('s') => {
-                let targets = self.snap.as_ref().map(|s| s.to_sync()).unwrap_or_default();
+            // Like `envira install`: the selection, else whatever the kept bundles miss.
+            KeyCode::Char('i') => {
+                if !self.selected.is_empty() {
+                    let t = self.targets();
+                    let n = t.len();
+                    self.open_plan(self.make_plan(&t), format!("install · from {n} selected"));
+                    return vec![];
+                }
+                let targets = self
+                    .snap
+                    .as_ref()
+                    .map(|s| s.to_install())
+                    .unwrap_or_default();
                 if targets.is_empty() {
                     self.notify(
                         if self.state.as_ref().is_none_or(|s| s.bundles.is_empty()) {
-                            "No bundles selected: focus [2] Bundles and press space"
+                            "Nothing selected: space selects items, or keep bundles in [2]"
                         } else {
                             "Everything in your bundles is present"
                         },
@@ -612,14 +623,9 @@ impl App {
                     let n = targets.len();
                     self.open_plan(
                         self.make_plan(&targets),
-                        format!("sync · {n} missing in your bundles"),
+                        format!("install · {n} missing in your bundles"),
                     );
                 }
-            }
-            KeyCode::Char('i') => {
-                let t = self.targets();
-                let n = t.len();
-                self.open_plan(self.make_plan(&t), format!("install · from {n} selected"));
             }
             KeyCode::Char('x') => {
                 let t: Vec<String> = self
@@ -709,14 +715,11 @@ impl App {
                     let st = self.state.get_or_insert_with(State::default);
                     if let Some(pos) = st.bundles.iter().position(|x| x == b) {
                         st.bundles.remove(pos);
-                        self.notify(format!(
-                            "{} is no longer kept in sync",
-                            self.catalog.bundle_name(b)
-                        ));
+                        self.notify(format!("{} is no longer kept", self.catalog.bundle_name(b)));
                     } else {
                         st.bundles.push(b.clone());
                         self.notify(format!(
-                            "{} added: press s to sync",
+                            "{} kept: i installs what it misses",
                             self.catalog.bundle_name(b)
                         ));
                     }
@@ -1199,7 +1202,7 @@ pub mod tests {
             cache_dir: dir.path().join("cache"),
         };
         let plan = a.make_plan(&["codex".into()]);
-        let mut rec = RunRecord::planned(&plan, "20261029-140500", "sync");
+        let mut rec = RunRecord::planned(&plan, "20261029-140500", "install");
         rec.units[0].outcome = "failed".into();
         rec.save(&a.paths, &a.facts).unwrap();
         a.state.as_mut().unwrap().last_run = Some("20261029-140500".into());

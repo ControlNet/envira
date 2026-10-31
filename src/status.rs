@@ -212,7 +212,7 @@ impl Snapshot {
     }
 
     /// Desired and not present (what `install` without items installs), excluding items that cannot be installed.
-    pub fn to_sync(&self) -> Vec<String> {
+    pub fn to_install(&self) -> Vec<String> {
         self.items
             .iter()
             .filter(|i| i.desired && !i.present && i.label != Label::NotApplicable)
@@ -697,8 +697,8 @@ mod tests {
         assert_eq!(get("codex-sandbox-network").label, Label::Drifted);
         assert_eq!(get("yay").label, Label::NotApplicable);
         assert_eq!(get("pipx").label, Label::Available);
-        assert!(snap.to_sync().contains(&"yazi-theme".to_string()));
-        assert!(!snap.to_sync().contains(&"bat".to_string()));
+        assert!(snap.to_install().contains(&"yazi-theme".to_string()));
+        assert!(!snap.to_install().contains(&"bat".to_string()));
     }
 
     #[tokio::test]
@@ -798,7 +798,7 @@ mod tests {
         let snap = snapshot(&c, &f, None, &FakeRunner::default()).await;
         assert!(snap.first_run);
         assert_eq!(snap.get("herdr").unwrap().label, Label::Available);
-        assert!(snap.to_sync().is_empty());
+        assert!(snap.to_install().is_empty());
     }
 
     #[test]

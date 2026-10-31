@@ -532,7 +532,7 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
             );
         }
         let snap = sess.snapshot(Some(&state)).await;
-        let plan = sess.plan(&snap.present(), &snap.to_sync(), false);
+        let plan = sess.plan(&snap.present(), &snap.to_install(), false);
         return run_plan(sess, plan, state, "install", opts).await;
     }
     let targets = sess.expand_targets(items)?;
@@ -781,7 +781,7 @@ pub async fn plan_cmd(sess: &Session, items: &[String], script: bool) -> Result<
     let state = sess.state()?;
     let snap = sess.snapshot(state.as_ref()).await;
     let targets = if items.is_empty() {
-        snap.to_sync()
+        snap.to_install()
     } else {
         sess.expand_targets(items)?
     };

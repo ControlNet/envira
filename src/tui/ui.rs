@@ -218,7 +218,6 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         &[("Filter", "type"), ("Keep", "enter"), ("Clear", "esc")]
     } else {
         &[
-            ("Sync", "s"),
             ("Update", "u"),
             ("Install", "i"),
             ("Select", "space"),
@@ -238,7 +237,7 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let Some(snap) = &app.snap else { return };
     let applicable = snap.count(|i| i.present || i.label != Label::NotApplicable);
     let present = snap.count(|i| i.present);
-    let to_sync = snap.to_sync().len();
+    let to_install = snap.to_install().len();
     let missing = snap.count(|i| i.label == Label::Missing);
     let new = snap.count(|i| i.label == Label::New);
     let failed: Vec<&str> = snap
@@ -258,11 +257,11 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         (
             stat(
                 t,
-                to_sync,
+                to_install,
                 t.cyan,
-                format!("to sync · {missing} missing {new} new"),
+                format!("to install · {missing} missing {new} new"),
             ),
-            bar(t, cols[1].width, &[(to_sync, t.cyan)], applicable),
+            bar(t, cols[1].width, &[(to_install, t.cyan)], applicable),
         ),
         (
             stat(
@@ -408,10 +407,13 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(plan) = plan else {
-        let n = app.snap.as_ref().map(|s| s.to_sync().len()).unwrap_or(0);
+        let n = app.snap.as_ref().map(|s| s.to_install().len()).unwrap_or(0);
         let lines = vec![
             Line::styled("space selects items", t.s(t.dim)),
-            Line::styled(format!("s syncs bundles: {n} to install"), t.s(t.dim)),
+            Line::styled(
+                format!("i installs what your bundles miss: {n}"),
+                t.s(t.dim),
+            ),
         ];
         f.render_widget(Paragraph::new(lines), inner);
         return;
@@ -725,7 +727,7 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
     }
     if it.label == Label::New {
         lines.push(Line::styled(
-            "new in the catalog since your last sync",
+            "new in the catalog since your last install",
             t.s(t.cyan),
         ));
     }
@@ -906,7 +908,7 @@ fn picker(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 
     let [left, right] =
         Layout::horizontal([Constraint::Min(40), Constraint::Length(50)]).areas(main);
-    let block = panel(t, 2, "Bundles to keep in sync", true, vec![]);
+    let block = panel(t, 2, "Bundles to keep on this machine", true, vec![]);
     let inner = block.inner(left);
     f.render_widget(block, left);
     let mut lines = vec![Line::styled(
@@ -1570,9 +1572,8 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("↑↓ j k", "move"),
     ("space", "select item · subscribe bundle in [2]"),
     ("a", "select everything missing in view"),
-    ("s", "sync: install what your bundles miss"),
     ("u", "update the selection, else all outdated"),
-    ("i", "install / apply the selection"),
+    ("i", "install the selection, else what your bundles miss"),
     ("x", "revert selected configs"),
     ("/  f", "search · cycle status filter"),
     ("← →", "detail tabs in [5]"),
@@ -1590,7 +1591,7 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
             ("↑↓ j k", "move"),
             ("space", "pick or drop a bundle"),
             ("a  n", "pick all · pick none"),
-            ("enter", "save and plan the first sync"),
+            ("enter", "save and plan the install"),
             ("esc", "save the picks without installing"),
             ("q", "quit"),
         ],
@@ -1684,7 +1685,7 @@ mod tests {
             "● Terminal",
             "◆",
             "herdr",
-            "Sync: s",
+            "Install: i",
         ] {
             assert!(s.contains(needle), "missing {needle:?} in\n{s}");
         }
@@ -1730,7 +1731,8 @@ mod tests {
     #[test]
     fn plan_and_run_screens_render() {
         let mut a = app();
-        a.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        // Nothing selected: i plans what the kept bundles miss.
+        a.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         let s = render(&a, 140, 40);
         assert!(
             s.contains("[2] Steps") && s.contains("codex") && s.contains("Run 4 steps: enter"),
@@ -1832,7 +1834,7 @@ mod tests {
         a.on_snapshot(snap, None);
         let s = render(&a, 140, 40);
         assert!(
-            s.contains("Bundles to keep in sync")
+            s.contains("Bundles to keep on this machine")
                 && s.contains("[3] Machine")
                 && s.contains("Review plan: enter"),
             "{s}"
