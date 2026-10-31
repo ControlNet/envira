@@ -1,6 +1,6 @@
 [package]
 name = "envira"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Install, update and track a Linux and macOS toolset from a declarative TOML catalog"
 license = "AGPL-3.0-only"
