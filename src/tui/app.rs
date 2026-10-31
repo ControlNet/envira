@@ -1,10 +1,12 @@
 //! TUI state and key handling. Pure logic: side effects are returned as `Cmd`s for the runtime.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 use tokio::sync::watch;
 
 use crate::catalog::{Catalog, Loaded};
@@ -85,6 +87,62 @@ pub enum DetailTab {
     Info,
     Commands,
     Log,
+}
+
+/// A panel the mouse wheel scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    Items,
+    Bundles,
+    Detail,
+    Plan,
+    Steps,
+    Log,
+}
+
+/// What lies under the mouse, as recorded by the last draw. Every click maps to what a key
+/// already does, so the mouse never reaches anything the keyboard cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hit {
+    Panel(Panel),
+    ItemRow(usize),
+    /// The `[ ]` of an item row.
+    ItemMark(usize),
+    BundleRow(usize),
+    /// The `● ○` of a bundle row.
+    BundleMark(usize),
+    Filter(Filter),
+    Detail(DetailTab),
+    /// An overview counter: shows that set in Items.
+    Counter(Filter),
+    /// A name in To install: jumps to it in Items.
+    Unit(String),
+    Key(KeyEvent),
+    PlanRow(usize),
+    StepRow(usize),
+}
+
+/// The key a key-bar entry stands for, when clicking it should press it. Navigation entries
+/// have no single key, and stopping a run stays keyboard only, so a stray click cannot kill an
+/// install.
+pub fn bar_key(name: &str, key: &str) -> Option<KeyEvent> {
+    if matches!(name, "Cancel running" | "Stop after running") {
+        return None;
+    }
+    let code = match key {
+        "space" => KeyCode::Char(' '),
+        "enter" => KeyCode::Enter,
+        "esc" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        _ => {
+            let mut cs = key.chars();
+            match (cs.next(), cs.next()) {
+                (Some(c), None) => KeyCode::Char(c),
+                _ => return None,
+            }
+        }
+    };
+    Some(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
 /// Side effects requested by the app.
@@ -211,6 +269,8 @@ pub struct App {
     pub quitting: bool,
     /// The last run left these units unfinished: `(run id, ids, whether it finished)`.
     pub last_run: Option<(String, Vec<String>, bool)>,
+    /// Mouse targets of the last frame; drawing fills it, later entries lie on top.
+    pub hits: RefCell<Vec<(Rect, Hit)>>,
 }
 
 impl App {
@@ -250,6 +310,7 @@ impl App {
             tick: 0,
             quitting: false,
             last_run: None,
+            hits: RefCell::new(Vec::new()),
         }
     }
 
@@ -447,6 +508,142 @@ impl App {
             Screen::Dashboard => self.dashboard_key(k),
             Screen::Plan => self.plan_key(k),
             Screen::Run => self.run_key(k),
+        }
+    }
+
+    /// Records a mouse target while drawing.
+    pub fn hit(&self, area: Rect, h: Hit) {
+        if area.width > 0 && area.height > 0 {
+            self.hits.borrow_mut().push((area, h));
+        }
+    }
+
+    pub fn on_mouse(&mut self, m: MouseEvent) -> Vec<Cmd> {
+        let at = Position::new(m.column, m.row);
+        let find = |panel: bool| {
+            self.hits
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(r, h)| r.contains(at) && matches!(h, Hit::Panel(_)) == panel)
+                .map(|(_, h)| h.clone())
+        };
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.help {
+                    self.help = false;
+                    return vec![];
+                }
+                self.searching = false;
+                match find(false) {
+                    Some(h) => self.click(h),
+                    None => vec![],
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !self.help => {
+                if let Some(Hit::Panel(p)) = find(true) {
+                    self.wheel(p, m.kind == MouseEventKind::ScrollUp);
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    fn click(&mut self, h: Hit) -> Vec<Cmd> {
+        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        match h {
+            Hit::ItemRow(i) | Hit::ItemMark(i) => {
+                self.focus = Focus::Items;
+                self.cursor = i;
+                self.detail_scroll = 0;
+                self.clamp();
+                if matches!(h, Hit::ItemMark(_)) {
+                    let cmds = self.on_key(space);
+                    // Space moves on to the next row for the keyboard; a click stays put.
+                    self.cursor = i;
+                    self.clamp();
+                    return cmds;
+                }
+            }
+            Hit::BundleRow(i) | Hit::BundleMark(i) => {
+                self.focus = Focus::Bundles;
+                self.bundle_cursor = i.min(self.bundle_ids().len().saturating_sub(1));
+                if matches!(h, Hit::BundleMark(_)) {
+                    return self.on_key(space);
+                }
+            }
+            Hit::Filter(f) | Hit::Counter(f) => {
+                self.filter = f;
+                self.focus = Focus::Items;
+                self.cursor = 0;
+                self.clamp();
+            }
+            Hit::Detail(d) => {
+                self.detail = d;
+                self.detail_scroll = 0;
+            }
+            Hit::Unit(id) => {
+                if !self.rows().iter().any(|r| r.id == id) {
+                    self.filter = Filter::All;
+                    self.search.clear();
+                }
+                if let Some(i) = self.rows().iter().position(|r| r.id == id) {
+                    self.focus = Focus::Items;
+                    self.cursor = i;
+                    self.detail_scroll = 0;
+                }
+            }
+            Hit::Key(k) => return self.on_key(k),
+            Hit::PlanRow(i) => self.plan_cursor = i,
+            Hit::StepRow(i) => {
+                if let Some(run) = &mut self.run {
+                    run.follow = false;
+                    run.sel = i.min(run.units.len().saturating_sub(1));
+                    run.scroll = 0;
+                }
+            }
+            Hit::Panel(_) => {}
+        }
+        vec![]
+    }
+
+    /// Three rows per notch in the panel under the pointer, focused or not.
+    fn wheel(&mut self, p: Panel, up: bool) {
+        let step = |v: usize, max: usize| {
+            if up {
+                v.saturating_sub(3)
+            } else {
+                (v + 3).min(max.saturating_sub(1))
+            }
+        };
+        match p {
+            Panel::Items => self.cursor = step(self.cursor, self.rows().len()),
+            Panel::Bundles => {
+                self.bundle_cursor = step(self.bundle_cursor, self.bundle_ids().len())
+            }
+            Panel::Detail => self.detail_scroll = step(self.detail_scroll, usize::MAX),
+            Panel::Plan => {
+                let n = self.plan.as_ref().map_or(0, |(p, _)| p.units.len());
+                self.plan_cursor = step(self.plan_cursor, n);
+            }
+            Panel::Steps => {
+                if let Some(run) = &mut self.run {
+                    run.follow = false;
+                    run.sel = step(run.sel, run.units.len());
+                    run.scroll = 0;
+                }
+            }
+            // Like PgUp / PgDn: lines up from the bottom of the log.
+            Panel::Log => {
+                if let Some(run) = &mut self.run {
+                    run.scroll = if up {
+                        run.scroll + 3
+                    } else {
+                        run.scroll.saturating_sub(3)
+                    };
+                }
+            }
         }
     }
 

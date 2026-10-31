@@ -355,6 +355,20 @@ Scope display (user decision 2026-10-31, design canvas option A):
 - `envira status` prints the same via (with `→` for planned) and scope columns; `--scope` now also
   changes the planned routes it shows.
 
+Mouse (user decision 2026-10-31, design canvas page "Mouse"): single clicks and the wheel only;
+no double click, no drag, no hover. Reports are buttons + wheel (`?1000h` + SGR `?1006h`), no
+motion; `ENVIRA_MOUSE=0` turns it off; released on quit, panic and SIGTERM/SIGHUP, and around the
+sudo prompt.
+- Every frame records `(Rect, Hit)` targets; a click calls what the matching key does.
+- A click moves the cursor/focus or switches a view; a click on a mark (`[ ]`, `● ○`) selects or
+  keeps, like space (the cursor stays on the clicked row). Overview counters filter Items
+  (installed, attention, failed, outdated); names in To install jump to their row; the header's
+  `(S: …)` hint switches scope; filter and detail tabs switch.
+- Key-bar entries press their key, and the plan's `Run N steps: enter` runs it (that screen is the
+  confirmation). Cancel running and Stop after running stay keyboard only.
+- The wheel scrolls the panel under the pointer by 3, focused or not; the run log like PgUp/PgDn.
+- A click while help is open only closes it; a click while searching ends the search.
+
 Dashboard model (user decision 2026-10-31): the selection is the install set, and Enter installs it.
 - It starts as what the kept bundles miss (`envira install` without arguments), and is filled again
   after each run.

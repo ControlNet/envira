@@ -1,12 +1,13 @@
 //! Rendering (BC1: lazygit-style numbered panels with btop-style gauges).
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, Wrap};
 
-use super::app::{App, DetailTab, Filter, Focus, Screen, UnitState};
+use super::app::{App, DetailTab, Filter, Focus, Hit, Panel, Screen, UnitState, bar_key};
 use super::theme::Theme;
 use crate::commands::fmt_duration;
 use crate::exec::Outcome;
@@ -17,6 +18,7 @@ use crate::status::{ItemStatus, Label, Ownership};
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
+    app.hits.borrow_mut().clear();
     let area = f.area();
     match app.screen {
         Screen::Loading => loading(f, area, app, t),
@@ -92,22 +94,41 @@ fn label_color(t: &Theme, l: Label) -> Color {
     }
 }
 
-fn keybar(f: &mut Frame, area: Rect, t: &Theme, keys: &[(&str, &str)], right: Option<Span>) {
+/// Key hints; clicking one presses its key (see `bar_key`), and `right_key` is what clicking the
+/// right-hand text presses.
+fn keybar(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    t: &Theme,
+    keys: &[(&str, &str)],
+    right: Option<Span>,
+    right_key: Option<KeyEvent>,
+) {
     let mut spans = Vec::new();
+    let mut marks = Vec::new();
     for (i, (name, key)) in keys.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" | ", t.s(t.dim)));
+        }
+        if let Some(k) = bar_key(name, key) {
+            marks.push((spans.len(), Hit::Key(k)));
         }
         spans.push(Span::styled(format!("{name}: {key}"), t.s(t.cyan)));
     }
     let right = right.map(Line::from).unwrap_or_default();
     let rw = right.width() as u16;
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw)]).areas(area);
+    hit_spans(app, l, &spans, marks);
+    if let Some(k) = right_key {
+        app.hit(r, Hit::Key(k));
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), l);
     f.render_widget(Paragraph::new(right).alignment(Alignment::Right), r);
 }
 
-fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) {
+/// Returns the column where `what` starts.
+fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u16 {
     let mut left = vec![
         Span::styled(
             "envira",
@@ -118,6 +139,7 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) {
             t.s(t.dim),
         ),
     ];
+    let what_x = area.x + Line::from(left.clone()).width() as u16;
     left.extend(what);
     let right = if app.detecting {
         format!("{} detecting…", SPINNER[(app.tick % 10) as usize])
@@ -143,6 +165,33 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) {
         Paragraph::new(Span::styled(right, t.s(t.dim))).alignment(Alignment::Right),
         r,
     );
+    what_x
+}
+
+/// Records `marks` (span index, hit) for spans laid out in one line from the left of `area`.
+fn hit_spans(app: &App, area: Rect, spans: &[Span], marks: Vec<(usize, Hit)>) {
+    let mut x = area.x;
+    let mut starts = Vec::with_capacity(spans.len());
+    for s in spans {
+        starts.push(x);
+        x = x.saturating_add(s.width() as u16);
+    }
+    for (i, h) in marks {
+        let (Some(&sx), Some(s)) = (starts.get(i), spans.get(i)) else {
+            continue;
+        };
+        if sx < area.right() {
+            let w = (s.width() as u16).min(area.right() - sx);
+            app.hit(Rect::new(sx, area.y, w, 1), h);
+        }
+    }
+}
+
+/// Records hits for spans of a panel title (`pane` puts `title` and a space before `extra`).
+fn hit_title(app: &App, area: Rect, title: &str, extra: &[Span], marks: Vec<(usize, Hit)>) {
+    let x = area.x + 1 + Span::raw(format!("{title} ")).width() as u16;
+    let row = Rect::new(x, area.y, area.right().saturating_sub(x + 1), 1);
+    hit_spans(app, row, extra, marks);
 }
 
 fn toast_span<'a>(app: &'a App, t: &Theme) -> Option<Span<'a>> {
@@ -207,11 +256,17 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         what.push(Span::raw("user"));
     }
-    if app.facts.privilege.can_elevate() {
+    let hint = app.facts.privilege.can_elevate().then_some(what.len());
+    if hint.is_some() {
         let other = if app.prefer_system { "user" } else { "system" };
         what.push(Span::styled(format!(" (S: {other})"), t.s(t.dim)));
     }
-    header(f, h, app, t, what);
+    let x = header(f, h, app, t, what.clone());
+    if let Some(i) = hint {
+        let row = Rect::new(x, h.y, h.right().saturating_sub(x), 1);
+        let s = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE);
+        hit_spans(app, row, &what, vec![(i, Hit::Key(s))]);
+    }
     overview(f, ov, app, t);
     let left_w = if area.width >= 110 { 36 } else { 30 };
     let [left, right] =
@@ -246,7 +301,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Quit", "q"),
         ]
     };
-    keybar(f, keys, t, keyset, right_span);
+    keybar(f, keys, app, t, keyset, right_span, None);
 }
 
 fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
@@ -322,7 +377,14 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             bar(t, cols[3].width, &[(outdated, t.blue)], updatable.max(1)),
         ),
     ];
-    for (c, (a, b)) in cols.iter().zip(cells) {
+    let counters = [
+        Filter::Installed,
+        Filter::Attention,
+        Filter::Failed,
+        Filter::Outdated,
+    ];
+    for ((c, (a, b)), fl) in cols.iter().zip(cells).zip(counters) {
+        app.hit(*c, Hit::Counter(fl));
         f.render_widget(Paragraph::new(vec![a, b]), *c);
     }
 }
@@ -397,6 +459,15 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let skip = app
         .bundle_cursor
         .saturating_sub(inner.height.saturating_sub(1) as usize);
+    app.hit(inner, Hit::Panel(Panel::Bundles));
+    for (row, i) in (skip..lines.len()).take(inner.height as usize).enumerate() {
+        let y = inner.y + row as u16;
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::BundleRow(i));
+        app.hit(
+            Rect::new(inner.x, y, 2.min(inner.width), 1),
+            Hit::BundleMark(i),
+        );
+    }
     f.render_widget(Paragraph::new(lines).scroll((skip as u16, 0)), inner);
 }
 
@@ -445,7 +516,8 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         f.render_widget(Paragraph::new(lines), inner);
         return;
     };
-    let mut spans: Vec<Span> = Vec::new();
+    // (glyph, its color, id, id color) per entry; wrapped by hand so each name has a known place.
+    let mut entries: Vec<(&str, Color, &str, Color)> = Vec::new();
     for u in &plan.units {
         let (g, c) = match u.action {
             Action::Install => ("+", t.cyan),
@@ -453,29 +525,46 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             Action::Apply => ("◇", t.magenta),
             Action::Revert => ("↺", t.yellow),
         };
-        spans.push(Span::styled(format!("{g} "), t.s(c)));
-        spans.push(Span::styled(
-            format!("{}  ", u.id),
-            t.s(if u.scope == Scope::System {
-                t.orange
-            } else if app.selected.contains(&u.id) {
-                t.fg
-            } else {
-                t.dim
-            }),
-        ));
+        let ic = if u.scope == Scope::System {
+            t.orange
+        } else if app.selected.contains(&u.id) {
+            t.fg
+        } else {
+            t.dim
+        };
+        entries.push((g, c, &u.id, ic));
     }
     for (id, _) in plan.skipped.iter().filter(|(_, w)| w != "already present") {
-        spans.push(Span::styled(format!("– {id}  "), t.s(t.dim)));
+        entries.push(("–", t.dim, id, t.dim));
     }
-    f.render_widget(
-        Paragraph::new(Line::from(spans)).wrap(Wrap { trim: true }),
-        inner,
-    );
+    let mut lines: Vec<Line> = vec![Line::default()];
+    let (mut x, mut y) = (0u16, 0u16);
+    for (g, c, id, ic) in entries {
+        let w = Span::raw(format!("{g} {id}")).width() as u16;
+        if x > 0 && x + w > inner.width {
+            lines.push(Line::default());
+            (x, y) = (0, y + 1);
+        }
+        if y < inner.height {
+            let gw = Span::raw(format!("{g} ")).width() as u16;
+            let iw = w.saturating_sub(gw).min(inner.width.saturating_sub(x + gw));
+            app.hit(
+                Rect::new(inner.x + x + gw, inner.y + y, iw, 1),
+                Hit::Unit(id.to_string()),
+            );
+        }
+        let line = lines.last_mut().expect("one line");
+        line.push_span(Span::styled(format!("{g} "), t.s(c)));
+        line.push_span(Span::styled(id.to_string(), t.s(ic)));
+        line.push_span(Span::raw("  "));
+        x += w + 2;
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let mut tabs: Vec<Span> = Vec::new();
+    let mut marks = Vec::new();
     for (i, fl) in Filter::ALL.iter().enumerate() {
         if i > 0 {
             tabs.push(Span::styled(" - ", t.s(t.dim)));
@@ -485,8 +574,10 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         } else {
             t.s(t.dim)
         };
+        marks.push((tabs.len(), Hit::Filter(*fl)));
         tabs.push(Span::styled(fl.name(), st));
     }
+    hit_title(app, area, "Items", &tabs, marks);
     if !app.search.is_empty() || app.searching {
         tabs.push(Span::styled(format!("  /{}", app.search), t.s(t.yellow)));
         if app.searching {
@@ -503,6 +594,15 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         0
     };
+    app.hit(inner, Hit::Panel(Panel::Items));
+    for (row, i) in (offset..rows.len()).take(height).enumerate() {
+        let y = inner.y + 1 + row as u16;
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::ItemRow(i));
+        app.hit(
+            Rect::new(inner.x, y, 3.min(inner.width), 1),
+            Hit::ItemMark(i),
+        );
+    }
     let head = Row::new([
         "",
         "",
@@ -634,6 +734,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 
 fn detail(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let mut tabs: Vec<Span> = Vec::new();
+    let mut marks = Vec::new();
     for (i, (tab, name)) in [
         (DetailTab::Info, "Info"),
         (DetailTab::Commands, "Commands"),
@@ -650,15 +751,19 @@ fn detail(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         } else {
             t.s(t.dim)
         };
+        marks.push((tabs.len(), Hit::Detail(*tab)));
         tabs.push(Span::styled(*name, st));
     }
     tabs.push(Span::styled("  tab", t.s(t.dim)));
+    let row = Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1);
+    hit_spans(app, row, &tabs, marks);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(t.s(t.border))
         .title(Line::from([vec![], tabs].concat()));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    app.hit(inner, Hit::Panel(Panel::Detail));
     let Some(it) = app.current() else { return };
     let lines = match app.detail {
         DetailTab::Info => info_lines(app, it, t),
@@ -1014,6 +1119,11 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         0
     };
+    app.hit(inner, Hit::Panel(Panel::Plan));
+    for (row, i) in (offset..plan.units.len()).take(height).enumerate() {
+        let y = inner.y + 1 + row as u16;
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::PlanRow(i));
+    }
     let rows: Vec<Row> = plan
         .units
         .iter()
@@ -1125,17 +1235,24 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     };
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 
+    // The run label is clickable; a toast in its place is not.
+    let toast = toast_span(app, t);
+    let run_key = toast
+        .is_none()
+        .then(|| KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     keybar(
         f,
         keys,
+        app,
         t,
         &[("Step", "↑↓"), ("Save as script", "c"), ("Back", "esc")],
-        toast_span(app, t).or_else(|| {
+        toast.or_else(|| {
             Some(Span::styled(
                 format!("Run {n} steps: enter"),
                 Style::new().fg(t.magenta).add_modifier(Modifier::BOLD),
             ))
         }),
+        run_key,
     );
 }
 
@@ -1260,6 +1377,11 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     } else {
         0
     };
+    app.hit(inner, Hit::Panel(Panel::Steps));
+    for (row, i) in (offset..run.units.len()).take(height).enumerate() {
+        let y = inner.y + row as u16;
+        app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::StepRow(i));
+    }
     let rows: Vec<Row> = run
         .plan
         .units
@@ -1379,25 +1501,23 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 
     let unit = run.plan.units.get(run.sel);
-    let block = panel(
-        t,
-        4,
-        "Log",
-        true,
-        vec![
-            Span::styled(
-                format!("· {} ", unit.map(|u| u.id.as_str()).unwrap_or("")),
-                t.s(t.dim),
-            ),
-            if run.follow {
-                Span::styled("● follow", t.s(t.green))
-            } else {
-                Span::styled("○ follow", t.s(t.dim))
-            },
-        ],
-    );
+    let extra = vec![
+        Span::styled(
+            format!("· {} ", unit.map(|u| u.id.as_str()).unwrap_or("")),
+            t.s(t.dim),
+        ),
+        if run.follow {
+            Span::styled("● follow", t.s(t.green))
+        } else {
+            Span::styled("○ follow", t.s(t.dim))
+        },
+    ];
+    let f_key = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
+    hit_title(app, right, "[4] Log", &extra, vec![(1, Hit::Key(f_key))]);
+    let block = panel(t, 4, "Log", true, extra);
     let inner = block.inner(right);
     f.render_widget(block, right);
+    app.hit(inner, Hit::Panel(Panel::Log));
     let log = run.logs.get(run.sel).map(Vec::as_slice).unwrap_or(&[]);
     let height = inner.height as usize;
     let end = log.len().saturating_sub(run.scroll.min(log.len()));
@@ -1425,15 +1545,18 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Stop after running", "ctrl-c"),
         ]
     };
-    let right_span = toast_span(app, t).or_else(|| {
-        (run.finished.is_some() && failed + blocked + skipped > 0).then(|| {
+    let toast = toast_span(app, t);
+    let retry = toast.is_none() && run.finished.is_some() && failed + blocked + skipped > 0;
+    let right_span = toast.or_else(|| {
+        retry.then(|| {
             Span::styled(
                 format!("Retry unfinished ({}): r", failed + blocked + skipped),
                 Style::new().fg(t.magenta).add_modifier(Modifier::BOLD),
             )
         })
     });
-    keybar(f, keys, t, keyset, right_span);
+    let r_key = retry.then(|| KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    keybar(f, keys, app, t, keyset, right_span, r_key);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1541,7 +1664,8 @@ fn short_path(app: &App, path: &str) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::tests::app;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crate::tui::app::{Cmd, RunView};
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -1788,5 +1912,161 @@ mod tests {
         a.prefer_system = false;
         let s = render(&a, 180, 60);
         assert!(s.contains("new installs → user (S: system)"), "{s}");
+    }
+
+    fn area_of(a: &App, h: &Hit) -> Rect {
+        a.hits
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(_, x)| x == h)
+            .map(|(r, _)| *r)
+            .unwrap_or_else(|| panic!("no {h:?} on screen"))
+    }
+
+    fn mouse(a: &mut App, kind: MouseEventKind, r: Rect) -> Vec<Cmd> {
+        a.on_mouse(MouseEvent {
+            kind,
+            column: r.x + r.width / 2,
+            row: r.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn click(a: &mut App, h: Hit) -> Vec<Cmd> {
+        render(a, 140, 40);
+        let r = area_of(a, &h);
+        mouse(a, MouseEventKind::Down(MouseButton::Left), r)
+    }
+
+    fn key(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn a_row_click_moves_the_cursor_and_the_mark_selects() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Left));
+        let before = a.selected.clone();
+        click(&mut a, Hit::ItemRow(2));
+        assert_eq!((a.focus, a.cursor), (Focus::Items, 2));
+        assert_eq!(a.selected, before, "a row click only moves");
+        let id = a.rows()[3].id.clone();
+        click(&mut a, Hit::ItemMark(3));
+        assert_eq!(a.cursor, 3);
+        assert_ne!(a.selected.contains(&id), before.contains(&id));
+        click(&mut a, Hit::ItemMark(3));
+        assert_eq!(a.selected.contains(&id), before.contains(&id));
+    }
+
+    #[test]
+    fn a_bundle_mark_keeps_the_bundle() {
+        let mut a = app();
+        let i = a
+            .bundle_ids()
+            .iter()
+            .position(|b| !a.subscribed(b))
+            .unwrap();
+        let b = a.bundle_ids()[i].clone();
+        click(&mut a, Hit::BundleRow(i));
+        assert_eq!((a.focus, a.bundle_cursor), (Focus::Bundles, i));
+        assert!(!a.subscribed(&b));
+        let cmds = click(&mut a, Hit::BundleMark(i));
+        assert!(a.subscribed(&b));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+    }
+
+    #[test]
+    fn tabs_counters_and_the_scope_hint_click() {
+        let mut a = app();
+        click(&mut a, Hit::Filter(Filter::Failed));
+        assert_eq!(a.filter, Filter::Failed);
+        click(&mut a, Hit::Counter(Filter::Installed));
+        assert_eq!((a.filter, a.focus), (Filter::Installed, Focus::Items));
+        click(&mut a, Hit::Detail(DetailTab::Log));
+        assert_eq!(a.detail, DetailTab::Log);
+        click(&mut a, Hit::Key(key(KeyCode::Char('S'))));
+        assert!(!a.prefer_system);
+        // The hint sits where the header shows it.
+        render(&a, 140, 40);
+        let r = area_of(&a, &Hit::Key(key(KeyCode::Char('S'))));
+        let s = render(&a, 140, 40);
+        let row: String = s.lines().nth(r.y as usize).unwrap().chars().collect();
+        let text: String = row
+            .chars()
+            .skip(r.x as usize)
+            .take(r.width as usize)
+            .collect();
+        assert_eq!(text, " (S: system)");
+    }
+
+    #[test]
+    fn a_name_in_to_install_jumps_to_its_row() {
+        let mut a = app();
+        a.filter = Filter::Installed;
+        render(&a, 140, 40);
+        let unit = a
+            .hits
+            .borrow()
+            .iter()
+            .find_map(|(_, h)| match h {
+                Hit::Unit(id) if id == "codex" => Some(h.clone()),
+                _ => None,
+            })
+            .expect("codex in To install");
+        click(&mut a, unit);
+        assert_eq!(a.current().unwrap().id, "codex");
+        assert_eq!(a.focus, Focus::Items);
+    }
+
+    #[test]
+    fn key_bar_clicks_press_keys_and_the_plan_runs_from_its_label() {
+        let mut a = app();
+        click(&mut a, Hit::Key(key(KeyCode::Enter)));
+        assert_eq!(a.screen, Screen::Plan);
+        click(&mut a, Hit::PlanRow(1));
+        assert_eq!(a.plan_cursor, 1);
+        let cmds = click(&mut a, Hit::Key(key(KeyCode::Enter)));
+        assert!(matches!(&cmds[..], [Cmd::StartRun { .. }]), "{cmds:?}");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_panel_under_the_pointer() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Left));
+        render(&a, 140, 40);
+        let items = area_of(&a, &Hit::Panel(Panel::Items));
+        mouse(&mut a, MouseEventKind::ScrollDown, items);
+        assert_eq!((a.focus, a.cursor), (Focus::Bundles, 3));
+        mouse(&mut a, MouseEventKind::ScrollUp, items);
+        assert_eq!(a.cursor, 0);
+    }
+
+    #[test]
+    fn a_click_closes_help_and_does_nothing_else() {
+        let mut a = app();
+        a.help = true;
+        let cmds = click(&mut a, Hit::ItemMark(0));
+        assert!(cmds.is_empty() && !a.help);
+        assert_eq!(a.cursor, 0);
+    }
+
+    #[test]
+    fn steps_click_but_stopping_a_run_stays_on_the_keyboard() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Enter));
+        let plan = a.plan.take().unwrap().0;
+        a.run = Some(RunView::new(plan, "r1".into(), None));
+        a.screen = Screen::Run;
+        click(&mut a, Hit::StepRow(1));
+        let run = a.run.as_ref().unwrap();
+        assert_eq!((run.sel, run.follow), (1, false));
+        click(&mut a, Hit::Key(key(KeyCode::Char('f'))));
+        assert!(a.run.as_ref().unwrap().follow);
+        let keys: Vec<Hit> = a.hits.borrow().iter().map(|(_, h)| h.clone()).collect();
+        assert!(!keys.contains(&Hit::Key(key(KeyCode::Char('c')))));
+        assert_eq!(bar_key("Cancel running", "c"), None);
+        assert_eq!(bar_key("Select", "space"), Some(key(KeyCode::Char(' '))));
+        assert_eq!(bar_key("Panels", "← →"), None);
     }
 }

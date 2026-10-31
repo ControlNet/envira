@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind};
+use crossterm::event::{Event as TermEvent, EventStream, KeyEventKind, MouseEventKind};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use tokio::sync::{mpsc, watch};
@@ -58,16 +58,60 @@ fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
 
 pub async fn run(sess: Session) -> Result<i32> {
     let theme = Theme::detect();
-    let mut terminal = ratatui::init();
+    let mut terminal = init();
+    // ratatui's hook restores the screen on a panic; the mouse must be released too.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        mouse(false);
+        hook(info);
+    }));
     let res = event_loop(&mut terminal, sess, theme).await;
-    ratatui::restore();
+    restore();
     res
+}
+
+/// Clicks and the wheel are on unless `ENVIRA_MOUSE=0`.
+fn mouse_on() -> bool {
+    std::env::var("ENVIRA_MOUSE").map_or(true, |v| v != "0")
+}
+
+/// Button and wheel reports only (1000, SGR 1006): no motion events, so moving the pointer
+/// costs nothing, even over SSH.
+fn mouse(on: bool) {
+    use std::io::Write;
+    if !mouse_on() {
+        return;
+    }
+    let seq: &[u8] = if on {
+        b"\x1b[?1000h\x1b[?1006h"
+    } else {
+        b"\x1b[?1006l\x1b[?1000l"
+    };
+    let mut out = std::io::stdout();
+    let _ = out.write_all(seq);
+    let _ = out.flush();
+}
+
+fn init() -> DefaultTerminal {
+    let t = ratatui::init();
+    mouse(true);
+    t
+}
+
+fn restore() {
+    mouse(false);
+    ratatui::restore();
 }
 
 fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut events = EventStream::new();
         while let Some(Ok(ev)) = events.next().await {
+            if let TermEvent::Mouse(m) = &ev
+                && matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))
+            {
+                continue;
+            }
             if tx.send(AppEvent::Term(ev)).is_err() {
                 break;
             }
@@ -172,6 +216,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 AppEvent::Term(TermEvent::Key(k)) if k.kind == KeyEventKind::Press => {
                     cmds.extend(app.on_key(k))
                 }
+                AppEvent::Term(TermEvent::Mouse(m)) => cmds.extend(app.on_mouse(m)),
                 AppEvent::Term(_) => {}
                 AppEvent::Tick => app.tick += 1,
                 AppEvent::Snapshot(s, st) => app.on_snapshot(*s, st),
@@ -274,13 +319,13 @@ fn authorize_sudo(
     }
     // Stop reading keys so the password prompt gets them, then hand the terminal back.
     input.abort();
-    ratatui::restore();
+    restore();
     println!("envira: this plan needs sudo (asked once; kept alive during the run).");
     let ok = std::process::Command::new("sudo")
         .arg("-v")
         .status()
         .is_ok_and(|s| s.success());
-    *term = ratatui::init();
+    *term = init();
     term.clear()?;
     *input = spawn_input(tx.clone());
     Ok(ok)
