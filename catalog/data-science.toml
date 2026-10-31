@@ -6,7 +6,7 @@ desc = "Miniconda in ~/miniconda3"
 depends = ["curl"]
 bin = "conda"
 detect = { cmd = '"$HOME/miniconda3/bin/conda" --version', version = 'conda (\S+)' }
-install = [{ run = 'curl -fsSL -o miniconda.sh "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-{arch}.sh" && bash miniconda.sh -b -p "$HOME/miniconda3"', update = '"$HOME/miniconda3/bin/conda" update -y -n base conda' }]
+install = [{ run = 'o=$(uname -s | sed s/Darwin/MacOSX/) && curl -fsSL -o miniconda.sh "https://repo.anaconda.com/miniconda/Miniconda3-latest-$o-$(uname -m).sh" && bash miniconda.sh -b -p "$HOME/miniconda3"', update = '"$HOME/miniconda3/bin/conda" update -y -n base conda' }]
 # Instead of `conda init` (which edits rc files): only condabin on PATH plus the shell hook.
 shell = { path = ["~/miniconda3/condabin"], init = { zsh = 'eval "$("$HOME/miniconda3/bin/conda" shell.zsh hook)"', bash = 'eval "$("$HOME/miniconda3/bin/conda" shell.bash hook)"' } }
 

@@ -4,6 +4,7 @@
 [tools.btop]
 desc = "Resource monitor (top replacement)"
 install = [
+  { method = "brew", package = "btop", depends = ["homebrew"] },
   { method = "dnf", package = "btop" },
   # Arch's btop carries file capabilities, which exec refuses in a container without them.
   { method = "pacman", package = "btop", when = ["!container"] },
@@ -15,7 +16,10 @@ install = [
 [tools.bottom]
 desc = "Graphical process and system monitor"
 bin = "btm"
-install = [{ method = "cargo", package = "bottom", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "bottom", depends = ["homebrew"] },
+  { method = "cargo", package = "bottom", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.nvitop]
 desc = "Interactive NVIDIA GPU process viewer"
@@ -29,7 +33,10 @@ install = [{ method = "cargo", package = "nviwatch", depends = ["cargo-binstall"
 
 [tools.bandwhich]
 desc = "Bandwidth usage per process"
-install = [{ method = "cargo", package = "bandwhich", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "bandwhich", depends = ["homebrew"] },
+  { method = "cargo", package = "bandwhich", depends = ["cargo-binstall"], portable = true },
+]
 
 [bundles.monitoring]
 name = "Monitoring"

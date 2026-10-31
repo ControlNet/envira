@@ -51,6 +51,7 @@ steps = [
 ]
 
 [configs.default-shell]
+when = ["os:linux"]
 desc = "zsh as the login shell"
 scope = "system"
 depends = ["zsh"]

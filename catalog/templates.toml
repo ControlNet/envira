@@ -4,6 +4,9 @@
 # Templates are plain shell with `{param}` placeholders. Placeholders are filled with the
 # parameters of the item entry that uses the template (shell-quoted), plus these built-ins:
 #   {arch}     x86_64 | aarch64
+# A parameter given as a table picks its value by platform: the arch on Linux (`x86_64`,
+# `aarch64`) and `macos-<arch>` on macOS (`macos-aarch64`). An entry whose table has no value
+# for this machine is skipped, so a table of Linux assets never installs on a Mac.
 #   {home}     target user's home        {user}  target user's name
 #   {bin_dir}  [env.bin_dir] for the chosen scope
 #   {sudo}     `sudo -n` for system scope when not root, else nothing (unquoted)
@@ -36,6 +39,10 @@ path = [
   "~/.bun/bin",
   "~/.opencode/bin",
   "~/.nvim/bin",
+  # macOS: Homebrew on Apple Silicon and fnm's data directory there.
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "~/Library/Application Support/fnm/aliases/default/bin",
 ]
 # Always rendered into ~/.config/envira/env.sh (guarded by a directory check).
 shell_path = ["~/.local/bin"]
@@ -84,6 +91,18 @@ scope = "system"
 install = "{sudo} zypper --non-interactive install {package}"
 update = "{sudo} zypper --non-interactive update {package}"
 installed = { cmd = "rpm -q --qf '%{{VERSION}}\\n' {package}", regex = '^(\S+)' }
+
+[methods.brew]
+desc = "Homebrew formula (macOS)"
+when = ["os:macos"]
+expects = ["homebrew"]
+# Homebrew refuses to run as root; when envira runs with sudo, user-scope commands drop to SUDO_USER.
+scope = "user"
+install = "HOMEBREW_NO_ENV_HINTS=1 brew install {package}"
+update = "HOMEBREW_NO_ENV_HINTS=1 brew upgrade {package}"
+# The Cellar listing instead of `brew list --versions`, which starts Ruby for every tool.
+installed = { cmd = "ls \"$(brew --prefix)/Cellar/{package}\"", regex = '^([^_\s]+)' }
+latest = { http = "https://formulae.brew.sh/api/formula/{package}.json", json = "versions.stable" }
 
 [methods.cargo]
 desc = "Rust crate (prebuilt via cargo-binstall when available)"

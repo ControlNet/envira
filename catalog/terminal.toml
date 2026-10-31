@@ -8,6 +8,7 @@ desc = "cat with syntax highlighting"
 bins = ["bat", "batcat"]
 detect = { cmd = "bat --version 2>/dev/null || batcat --version", version = 'bat (\S+)' }
 install = [
+  { method = "brew", package = "bat", depends = ["homebrew"] },
   { method = "apt", package = "bat" },
   { method = "dnf", package = "bat" },
   { method = "pacman", package = "bat" },
@@ -25,12 +26,13 @@ steps = [{ use = "link", target = "/usr/bin/batcat", link = "/usr/local/bin/bat"
 [tools.ncdu]
 desc = "Disk usage analyzer"
 install = [
+  { method = "brew", package = "ncdu", depends = ["homebrew"] },
   { method = "apt", package = "ncdu" },
   { method = "dnf", package = "ncdu" },
   { method = "pacman", package = "ncdu" },
   { method = "zypper", package = "ncdu" },
   # Static build (run_user.sh); the download site has no "latest" link, so the version is pinned.
-  { run = "curl -fsSL https://dev.yorhel.nl/download/ncdu-2.9.1-linux-{arch}.tar.gz | tar -xz -C {bin_dir}", depends = ["curl"] },
+  { run = "curl -fsSL https://dev.yorhel.nl/download/ncdu-2.9.1-linux-{arch}.tar.gz | tar -xz -C {bin_dir}", when = ["os:linux"], depends = ["curl"] },
 ]
 
 [tools.fzf]
@@ -44,11 +46,17 @@ shell = { path = ["~/.fzf/bin"], init = { zsh = '[ -f "$HOME/.fzf.zsh" ] && . "$
 [tools.lazygit]
 desc = "Terminal UI for git"
 # Asset names were `Linux_…` up to 2026 and are `linux_…` now (run.sh still uses the old name).
-install = [{ method = "github-release", repo = "jesseduffield/lazygit", asset = { x86_64 = ["lazygit_*_linux_x86_64.tar.gz", "lazygit_*_Linux_x86_64.tar.gz"], aarch64 = ["lazygit_*_linux_arm64.tar.gz", "lazygit_*_Linux_arm64.tar.gz"] } }]
+install = [
+  { method = "brew", package = "lazygit", depends = ["homebrew"] },
+  { method = "github-release", repo = "jesseduffield/lazygit", asset = { x86_64 = ["lazygit_*_linux_x86_64.tar.gz", "lazygit_*_Linux_x86_64.tar.gz"], aarch64 = ["lazygit_*_linux_arm64.tar.gz", "lazygit_*_Linux_arm64.tar.gz"] } },
+]
 
 [tools.zellij]
 desc = "Terminal workspace (multiplexer)"
-install = [{ method = "cargo", package = "zellij", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "zellij", depends = ["homebrew"] },
+  { method = "cargo", package = "zellij", depends = ["cargo-binstall"], portable = true },
+]
 shell = { alias = { zel = "zellij" } }
 
 [configs.zellij-config]
@@ -66,25 +74,40 @@ install = [{ method = "script", url = "https://herdr.dev/install.sh", update = "
 
 [tools.lsd]
 desc = "ls with colours and icons"
-install = [{ method = "cargo", package = "lsd", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "lsd", depends = ["homebrew"] },
+  { method = "cargo", package = "lsd", depends = ["cargo-binstall"], portable = true },
+]
 shell = { alias = { ls = "lsd" } }
 
 [tools.delta]
 desc = "Syntax-highlighting pager for git diffs"
-install = [{ method = "cargo", package = "git-delta", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "git-delta", depends = ["homebrew"] },
+  { method = "cargo", package = "git-delta", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.duf]
 desc = "Disk usage overview (df replacement)"
-install = [{ method = "go", package = "github.com/muesli/duf", depends = ["go"], portable = true }]
+install = [
+  { method = "brew", package = "duf", depends = ["homebrew"] },
+  { method = "go", package = "github.com/muesli/duf", depends = ["go"], portable = true },
+]
 shell = { alias = { df = "duf" } }
 
 [tools.dust]
 desc = "Directory sizes (du replacement)"
-install = [{ method = "cargo", package = "du-dust", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "dust", depends = ["homebrew"] },
+  { method = "cargo", package = "du-dust", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.fd]
 desc = "Fast find alternative"
-install = [{ method = "cargo", package = "fd-find", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "fd", depends = ["homebrew"] },
+  { method = "cargo", package = "fd-find", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.ripgrep]
 desc = "Fast grep (with PCRE2)"
@@ -92,33 +115,52 @@ bin = "rg"
 detect = { cmd = "rg --version", version = 'ripgrep (\S+)' }
 # The release binaries are built with PCRE2 (`rg --version` lists +pcre2); the source build is the fallback.
 install = [
+  { method = "brew", package = "ripgrep", depends = ["homebrew"] },
   { method = "github-release", repo = "BurntSushi/ripgrep", asset = { x86_64 = "ripgrep-*-x86_64-unknown-linux-musl.tar.gz", aarch64 = "ripgrep-*-aarch64-unknown-linux-musl.tar.gz" } },
   { run = "cargo install --locked --force --features pcre2 ripgrep", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/ripgrep", json = "crate.max_stable_version" } },
 ]
 
 [tools.gping]
 desc = "ping with a graph"
-install = [{ method = "cargo", package = "gping", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "gping", depends = ["homebrew"] },
+  { method = "cargo", package = "gping", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.procs]
 desc = "Modern ps"
-install = [{ method = "cargo", package = "procs", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "procs", depends = ["homebrew"] },
+  { method = "cargo", package = "procs", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.xh]
 desc = "Friendly HTTP client"
-install = [{ method = "cargo", package = "xh", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "xh", depends = ["homebrew"] },
+  { method = "cargo", package = "xh", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.viu]
 desc = "Image viewer for the terminal"
-install = [{ method = "cargo", package = "viu", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "viu", depends = ["homebrew"] },
+  { method = "cargo", package = "viu", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.rustscan]
 desc = "Fast port scanner"
-install = [{ method = "cargo", package = "rustscan", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "rustscan", depends = ["homebrew"] },
+  { method = "cargo", package = "rustscan", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.scc]
 desc = "Code counter"
-install = [{ method = "go", package = "github.com/boyter/scc/v3", depends = ["go"], portable = true }]
+install = [
+  { method = "brew", package = "scc", depends = ["homebrew"] },
+  { method = "go", package = "github.com/boyter/scc/v3", depends = ["go"], portable = true },
+]
 
 [tools.gotify]
 desc = "Gotify push-notification CLI"
@@ -129,14 +171,20 @@ install = [{ run = 'go install github.com/gotify/cli@latest && mv "$(go env GOPA
 [tools.zoxide]
 desc = "Smarter cd"
 depends = ["curl"]
-install = [{ method = "script", url = "https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/ajeetdsouza/zoxide/releases/latest", json = "tag_name" } }]
+install = [
+  { method = "brew", package = "zoxide", depends = ["homebrew"] },
+  { method = "script", url = "https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/ajeetdsouza/zoxide/releases/latest", json = "tag_name" } },
+]
 shell = { init = { zsh = 'eval "$(zoxide init zsh)"', bash = 'eval "$(zoxide init bash)"' } }
 
 [tools.micro]
 desc = "Terminal text editor (nano replacement)"
 depends = ["curl"]
 # getmic.ro downloads into the current directory (a fresh temp dir per step).
-install = [{ run = "curl -fsSL https://getmic.ro | bash && install -D -m 755 micro {bin_dir}/micro", portable = true, latest = { http = "https://api.github.com/repos/zyedidia/micro/releases/latest", json = "tag_name" } }]
+install = [
+  { method = "brew", package = "micro", depends = ["homebrew"] },
+  { run = "curl -fsSL https://getmic.ro | bash && mkdir -p {bin_dir} && install -m 755 micro {bin_dir}/micro", portable = true, latest = { http = "https://api.github.com/repos/zyedidia/micro/releases/latest", json = "tag_name" } },
+]
 
 [tools.superfile]
 desc = "Terminal file manager"
@@ -145,6 +193,7 @@ bin = "spf"
 # The release first: install.sh asks the GitHub API for the version without a token, and on shared
 # runners an exhausted rate limit leaves it downloading `superfile v`.
 install = [
+  { method = "brew", package = "superfile", depends = ["homebrew"] },
   { method = "github-release", repo = "yorukot/superfile", asset = { x86_64 = "superfile-linux-v*-amd64.tar.gz", aarch64 = "superfile-linux-v*-arm64.tar.gz" } },
   { method = "script", url = "https://superfile.dev/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/yorukot/superfile/releases/latest", json = "tag_name" } },
 ]
@@ -163,9 +212,10 @@ bins = ["yazi", "ya"]
 # Old builds print `Yazi 25.5.31 (...)`, newer ones `Yazi` and `    Version: 26.9.1 (...)`.
 detect = { cmd = "yazi --version", version = 'Yazi\s+(?:Version:\s*)?(\d\S*)' }
 install = [
+  { method = "brew", package = "yazi", depends = ["homebrew"] },
   # The prebuilt release takes seconds; compiling yazi-build (run.sh) takes minutes and is the
   # fallback where no release asset fits.
-  { method = "github-release", repo = "sxyazi/yazi", asset = "yazi-{arch}-unknown-linux-musl.zip", bins = ["yazi", "ya"] },
+  { method = "github-release", repo = "sxyazi/yazi", asset = { x86_64 = "yazi-x86_64-unknown-linux-musl.zip", aarch64 = "yazi-aarch64-unknown-linux-musl.zip" }, bins = ["yazi", "ya"] },
   { run = "cargo install --force yazi-build", depends = ["rust-toolchain", "build-tools"], portable = true, latest = { http = "https://crates.io/api/v1/crates/yazi-build", json = "crate.max_stable_version" } },
 ]
 
@@ -200,7 +250,10 @@ install = [{ method = "pipx", package = "gdown", depends = ["pipx"] }]
 desc = "GitHub CLI"
 # Release download instead of webi (run.sh): webi edits shell rc files through envman.
 detect = { cmd = "gh --version", version = 'gh version (\S+)' }
-install = [{ method = "github-release", repo = "cli/cli", asset = { x86_64 = "gh_*_linux_amd64.tar.gz", aarch64 = "gh_*_linux_arm64.tar.gz" } }]
+install = [
+  { method = "brew", package = "gh", depends = ["homebrew"] },
+  { method = "github-release", repo = "cli/cli", asset = { x86_64 = "gh_*_linux_amd64.tar.gz", aarch64 = "gh_*_linux_arm64.tar.gz" } },
+]
 
 [bundles.terminal]
 name = "Terminal"

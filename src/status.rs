@@ -424,7 +424,7 @@ pub async fn snapshot(
                     // A system-wide install is only ours to update with sudo, and the entry's
                     // dependencies must be here (node from nvm is not fnm's to update).
                     .filter(|r| r.scope == Scope::User || facts.privilege.can_elevate())
-                    .filter(|r| deps_present(cat, id, r, &present));
+                    .filter(|r| deps_present(cat, facts, id, r, &present));
                 match r {
                     Some(r) => {
                         via = Some(r.via.clone());
@@ -484,13 +484,19 @@ pub async fn snapshot(
     }
 }
 
-fn deps_present(cat: &Catalog, id: &str, r: &Route, present: &BTreeSet<String>) -> bool {
+fn deps_present(
+    cat: &Catalog,
+    facts: &Facts,
+    id: &str,
+    r: &Route,
+    present: &BTreeSet<String>,
+) -> bool {
     let tool = &cat.tools[id];
     let entry = tool.install.get(r.entry).map(|e| &e.depends);
     tool.depends
         .iter()
         .chain(entry.into_iter().flatten())
-        .all(|d| present.contains(d))
+        .all(|d| present.contains(d) || !crate::plan::applies(cat, facts, d))
 }
 
 /// For present tools: the first install method whose `installed` query finds the tool (for
