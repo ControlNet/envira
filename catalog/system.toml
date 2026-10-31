@@ -4,7 +4,7 @@
 [configs.inotify-watches]
 desc = "Raise the inotify watch limit (editors, file watchers)"
 scope = "system"
-when = ["!container"]
+when = ["os:linux", "!container"]
 steps = [
   { use = "line", file = "/etc/sysctl.conf", match = '^fs\.inotify\.max_user_watches=', line = "fs.inotify.max_user_watches=524288" },
   # Also for the running kernel.

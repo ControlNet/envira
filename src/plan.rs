@@ -188,6 +188,17 @@ pub struct Route {
     pub scope: Scope,
 }
 
+/// Whether the item's own `when` holds here. A dependency that does not apply to this machine
+/// (libatomic on macOS) is not needed by its dependents here either.
+pub fn applies(cat: &Catalog, facts: &Facts, id: &str) -> bool {
+    let when = match (cat.tools.get(id), cat.configs.get(id)) {
+        (Some(t), _) => &t.when,
+        (None, Some(c)) => &c.when,
+        (None, None) => return true,
+    };
+    unmet(when, facts).is_none()
+}
+
 fn entry_name(e: &InstallEntry) -> &str {
     e.method.as_deref().unwrap_or("run")
 }
@@ -430,7 +441,7 @@ impl<'a> Planner<'a> {
     /// Checks that every dependency is present or can be installed.
     fn deps_ok(&mut self, deps: &[String]) -> Result<(), String> {
         for d in deps {
-            if self.present.contains(d) {
+            if self.present.contains(d) || !applies(self.cat, self.facts, d) {
                 continue;
             }
             if let Err(e) = self.choose(d) {
@@ -445,6 +456,9 @@ impl<'a> Planner<'a> {
         let tool = &cat.tools[id];
         if let Some(w) = unmet(&tool.when, facts) {
             return Err(format!("when {w} is not met"));
+        }
+        if let Some(m) = &tool.manual {
+            return Err(format!("install it yourself: {m}"));
         }
         let verify = vec![detect_cmd(cat, facts, id)];
         let mut notes: Vec<String> = Vec::new();
@@ -920,6 +934,85 @@ mod tests {
             "{cmd}"
         );
         assert!(plan.needs_sudo(&f));
+    }
+
+    fn mac() -> Facts {
+        let mut f = Facts::sample(Path::new("/Users/user"));
+        f.os = "macos".into();
+        f.distro_id = "macos".into();
+        f.distro_name = "macOS 15.1".into();
+        f.families = vec!["macos".into()];
+        f.arch = "aarch64".into();
+        f
+    }
+
+    #[test]
+    fn macos_prefers_homebrew_and_skips_linux_only_items() {
+        let c = cat();
+        let f = mac();
+        // Every Mac has curl and unzip; Homebrew is installed by hand.
+        let base = set(&["curl", "unzip", "homebrew"]);
+        let plan = Planner::new(&c, &f, &base).plan(&["bat".into(), "codex".into()], false);
+        let via: Vec<(&str, &str)> = plan
+            .units
+            .iter()
+            .map(|u| (u.id.as_str(), u.via.as_str()))
+            .collect();
+        assert_eq!(
+            via,
+            [
+                ("bat", "brew"),
+                ("fnm", "brew"),
+                ("nodejs", "run"),
+                ("npm-prefix", "config"),
+                ("codex", "npm")
+            ],
+            "{:?}",
+            plan.skipped
+        );
+        let bat = &plan.units[0];
+        assert_eq!(bat.scope, Scope::User, "brew runs as the user");
+        assert_eq!(
+            bat.steps[0].cmd.as_deref(),
+            Some("HOMEBREW_NO_ENV_HINTS=1 brew install bat")
+        );
+        // libatomic (Linux only) is not needed for nodejs on a Mac.
+        assert!(plan.units.iter().all(|u| u.id != "libatomic"));
+        assert!(!plan.needs_sudo(&f));
+
+        // Release tables without macos-* keys are not used on a Mac, and Linux-only items say so.
+        let mut p = Planner::new(&c, &f, &base);
+        assert_eq!(p.choose("lazygit").unwrap().via, "brew");
+        let docker = p.choose("docker").unwrap_err();
+        assert!(docker.contains("os:linux"), "{docker}");
+        assert!(p.choose("docker-group").is_err());
+        assert!(p.choose("default-shell").is_err());
+    }
+
+    #[test]
+    fn without_homebrew_macos_falls_back_or_explains() {
+        let c = cat();
+        let f = mac();
+        let base = set(&["curl", "unzip"]);
+        let mut p = Planner::new(&c, &f, &base);
+        // envira does not install Homebrew: it says where to get it.
+        let brew = p.choose("homebrew").unwrap_err();
+        assert!(brew.contains("https://brew.sh"), "{brew}");
+        // fnm falls back to its own install script; lazygit has no other route on a Mac.
+        assert_eq!(p.choose("fnm").unwrap().via, "script");
+        let lazygit = p.choose("lazygit").unwrap_err();
+        assert!(lazygit.contains("needs homebrew"), "{lazygit}");
+    }
+
+    #[test]
+    fn linux_never_picks_homebrew() {
+        let c = cat();
+        let f = Facts::sample(Path::new("/home/user"));
+        let none = set(&[]);
+        let mut p = Planner::new(&c, &f, &none);
+        assert_eq!(p.choose("lazygit").unwrap().via, "github-release");
+        assert_eq!(p.choose("bat").unwrap().via, "apt");
+        assert!(p.choose("homebrew").is_err());
     }
 
     #[test]

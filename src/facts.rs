@@ -25,6 +25,8 @@ impl Privilege {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Facts {
+    /// `linux` or `macos` (`std::env::consts::OS`).
+    pub os: String,
     pub distro_id: String,
     /// `PRETTY_NAME` or `NAME VERSION_ID`.
     pub distro_name: String,
@@ -48,8 +50,17 @@ pub struct Facts {
 
 impl Facts {
     pub fn probe() -> Facts {
-        let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
-        let (distro_id, distro_name, families) = parse_os_release(&os);
+        let os = std::env::consts::OS.to_string();
+        let (distro_id, distro_name, families) = if os == "macos" {
+            let v = Command::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            macos_release(&v)
+        } else {
+            parse_os_release(&std::fs::read_to_string("/etc/os-release").unwrap_or_default())
+        };
         let euid = unsafe { libc::geteuid() };
         let (user, home, uid, gid, drop_to) = target_user(euid);
         let privilege = match std::env::var("ENVIRA_PRIVILEGE").ok().as_deref() {
@@ -59,6 +70,7 @@ impl Facts {
             _ => probe_sudo(&user),
         };
         Facts {
+            os,
             distro_id,
             distro_name,
             families,
@@ -75,9 +87,7 @@ impl Facts {
                 .filter(|s| which(s))
                 .map(|s| s.to_string())
                 .collect(),
-            hostname: std::fs::read_to_string("/etc/hostname")
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "localhost".into()),
+            hostname: hostname(),
             user,
             home,
             uid,
@@ -132,6 +142,7 @@ impl Facts {
     #[cfg(test)]
     pub fn sample(home: &Path) -> Facts {
         Facts {
+            os: "linux".into(),
             distro_id: "ubuntu".into(),
             distro_name: "Ubuntu 24.04".into(),
             families: vec!["ubuntu".into(), "debian".into()],
@@ -178,6 +189,28 @@ pub fn parse_os_release(text: &str) -> (String, String, Vec<String>) {
     let mut families = vec![id.clone()];
     families.extend(like.into_iter().filter(|f| *f != id));
     (id, display, families)
+}
+
+/// `(distro_id, display name, families)` of macOS from `sw_vers -productVersion`.
+pub fn macos_release(version: &str) -> (String, String, Vec<String>) {
+    let v = version.trim();
+    let name = if v.is_empty() {
+        "macOS".to_string()
+    } else {
+        format!("macOS {v}")
+    };
+    ("macos".into(), name, vec!["macos".into()])
+}
+
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: gethostname writes at most `len` bytes into the buffer.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    match std::str::from_utf8(&buf[..end]) {
+        Ok(h) if ok && !h.is_empty() => h.to_string(),
+        _ => "localhost".into(),
+    }
 }
 
 fn target_user(euid: u32) -> (String, PathBuf, u32, u32, Option<String>) {
@@ -328,7 +361,18 @@ mod tests {
         assert_eq!(parse_passwd("x:x:uid:1:g:/h:/bin/sh"), None);
         // The current user resolves either way (libc here, getent in the static build).
         let uid = unsafe { libc::geteuid() };
+        assert!(passwd_by_uid(uid).is_some());
+        #[cfg(target_os = "linux")]
         assert_eq!(getent_passwd(&uid.to_string()).map(|p| p.1), Some(uid));
+    }
+
+    #[test]
+    fn macos_identity() {
+        assert_eq!(
+            macos_release("15.1\n"),
+            ("macos".into(), "macOS 15.1".into(), vec!["macos".into()])
+        );
+        assert_eq!(macos_release("").1, "macOS");
     }
 
     #[test]

@@ -17,13 +17,19 @@ shell = { path = ["~/.cargo/bin"] }
 desc = "Install prebuilt Rust binaries (used by the cargo method)"
 depends = ["rust-toolchain", "curl"]
 detect = { cmd = "cargo-binstall -V" }
-install = [{ run = "curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash", update = "cargo binstall -y --force cargo-binstall", latest = { http = "https://crates.io/api/v1/crates/cargo-binstall", json = "crate.max_stable_version" } }]
+install = [
+  { method = "brew", package = "cargo-binstall", depends = ["homebrew"] },
+  { run = "curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash", update = "cargo binstall -y --force cargo-binstall", latest = { http = "https://crates.io/api/v1/crates/cargo-binstall", json = "crate.max_stable_version" } },
+]
 shell = { env = { BINSTALL_DISABLE_TELEMETRY = "true", BINSTALL_NO_CONFIRM = "true" } }
 
 [tools.cargo-cache]
 desc = "Inspect and clean cargo's caches"
 detect = { cmd = "cargo-cache --version" }
-install = [{ method = "cargo", package = "cargo-cache", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "cargo-cache", depends = ["homebrew"] },
+  { method = "cargo", package = "cargo-cache", depends = ["cargo-binstall"], portable = true },
+]
 
 [tools.go]
 desc = "Go toolchain in ~/.go (GOPATH ~/go)"
@@ -32,7 +38,7 @@ bins = ["go", "gofmt"]
 detect = { cmd = "go version", version = 'go(\d\S*)' }
 # Same layout as ControlNet/golang-tools-install-script (GOROOT ~/.go), but always the newest
 # release and without rc-file edits; the environment comes from `shell`. Updating replaces ~/.go.
-install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | sed -n 1p) && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.linux-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go\" && mkdir -p \"$HOME/.go\" && tar -C \"$HOME/.go\" --strip-components=1 -xzf go.tar.gz", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
+install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | sed -n 1p) && o=$(uname -s | tr '[:upper:]' '[:lower:]') && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.$o-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go\" && mkdir -p \"$HOME/.go\" && tar -C \"$HOME/.go\" --strip-components=1 -xzf go.tar.gz", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
 shell = { path = ["~/.go/bin", "~/go/bin"], env = { GOROOT = "~/.go", GOPATH = "~/go" } }
 
 [tools.fnm]
@@ -40,11 +46,13 @@ desc = "Fast Node.js version manager"
 depends = ["unzip", "curl"]
 detect = { cmd = "fnm --version", version = 'fnm (\S+)' }
 install = [
+  { method = "brew", package = "fnm", depends = ["homebrew"] },
   { method = "script", url = "https://fnm.vercel.app/install", shell = "bash", args = ["--skip-shell"], latest = { http = "https://api.github.com/repos/Schniz/fnm/releases/latest", json = "tag_name" } },
 ]
 shell = { path = ["~/.local/share/fnm"], env = { FNM_PATH = "~/.local/share/fnm" }, init = { zsh = "eval \"$(fnm env --shell zsh)\"\neval \"$(fnm completions --shell zsh)\"", bash = 'eval "$(fnm env --shell bash)"' } }
 
 [tools.libatomic]
+when = ["os:linux"]
 desc = "GNU atomic operations library (Node.js 25+ links against it)"
 # A shared library, not an executable: detected through the linker cache.
 bins = []
@@ -79,6 +87,7 @@ install = [{ method = "npm", package = "pm2", depends = ["nodejs", "npm-prefix"]
 desc = "Install Python applications in isolated environments"
 detect = { cmd = "pipx --version", version = '(\S+)' }
 install = [
+  { method = "brew", package = "pipx", depends = ["homebrew"] },
   { method = "apt", package = "pipx" },
   { method = "dnf", package = "pipx" },
   { method = "pacman", package = "python-pipx" },
@@ -89,7 +98,10 @@ install = [
 [tools.uv]
 desc = "Fast Python package and project manager"
 bins = ["uv", "uvx"]
-install = [{ method = "pipx", package = "uv", depends = ["pipx"] }]
+install = [
+  { method = "brew", package = "uv", depends = ["homebrew"] },
+  { method = "pipx", package = "uv", depends = ["pipx"] },
+]
 
 [tools.pixi]
 desc = "Conda-based package and project manager"

@@ -54,6 +54,31 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  # Apple Silicon: lints and unit tests, then installs on the runner itself (no containers on
+  # macOS; each job gets a fresh VM).
+  macos:
+    name: macOS (aarch64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - name: Read-only commands
+        env:
+          ENVIRA_NO_REMOTE: '1'
+        run: |
+          e=target/release/envira
+          $e --version
+          $e doctor
+          $e catalog check
+          $e status | tail -n 3
+      - name: Install, adopt and shell integration
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tests/integration/macos.sh
+
   # The static release binaries and wheels (x86_64, aarch64).
   dist:
     uses: ./.github/workflows/build.yaml

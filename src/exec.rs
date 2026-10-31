@@ -145,7 +145,7 @@ pub fn lanes(cat: &Catalog, unit: &Unit) -> BTreeSet<&'static str> {
     for w in words {
         let lane = match w.rsplit('/').next().unwrap_or(w) {
             "apt" | "apt-get" | "dpkg" | "add-apt-repository" | "dnf" | "yum" | "rpm"
-            | "pacman" | "makepkg" | "zypper" | "snap" => "packages",
+            | "pacman" | "makepkg" | "zypper" | "snap" | "brew" => "packages",
             "pipx" | "pip" | "pip3" => "pipx",
             "npm" => "npm",
             "cargo" | "go" | "make" => "build",
@@ -1214,6 +1214,8 @@ mod tests {
             l(&unit("a", "/usr/bin/zypper install x", &[])),
             ["packages"]
         );
+        // Homebrew takes one global lock, like a distro package manager.
+        assert_eq!(l(&unit("a", "brew install bat", &[])), ["packages"]);
         assert_eq!(l(&unit("a", "pipx install --force tldr", &[])), ["pipx"]);
         assert_eq!(
             l(&unit("a", "python3 -m pip install --user pipx", &[])),

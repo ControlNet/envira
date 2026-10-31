@@ -155,6 +155,33 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   subcommand flag (such as `--install-with`) needs `min_envira` raised once a release exists, or
   older envira versions fail with a clap error.
 
+## macOS (2026-10-31)
+- `cargo check --target aarch64-apple-darwin` from Linux stops in aws-lc-sys's build script (it
+  needs Apple's C toolchain). The macos-15 runner is the compiler; its first run compiled cleanly.
+  Only two tests needed fixes.
+  - `/var` is a symlink to `/private/var`, and `TMPDIR` ends with `/`: compare canonical paths.
+  - /bin/bash is 3.2, whose `echo -e` and `printf` do not know `\e`: write `\033`.
+- Rust ignores SIGPIPE, so `println!` panics when stdout's reader exits (`envira doctor | head`).
+  This hits Linux too; the macOS test found it because it piped doctor into head. Read-only
+  commands now restore `SIG_DFL`. Network sockets are unaffected (MSG_NOSIGNAL / SO_NOSIGPIPE).
+- Release tables keyed by plain arch must not apply on a Mac. The variant key is `<os>-<arch>` off
+  Linux, so a missing `macos-*` key skips the entry instead of fetching a Linux binary.
+- A dependency only needed on Linux (libatomic for node) would have blocked nodejs on macOS.
+  Dependencies whose own `when` does not hold count as satisfied, both in the planner and in the
+  adoption check.
+- Homebrew-installed tools: `brew list --versions` starts Ruby for each call; listing
+  `$(brew --prefix)/Cellar/<formula>` is instant (`brew --prefix` with no argument is a shell fast
+  path). Formula versions carry a `_N` revision suffix, so the regex stops at `_`.
+- Homebrew is a `manual` tool (detected, never installed). Its installer needs an interactive sudo
+  password and pulls the Command Line Tools, which does not fit an unattended plan step.
+- fnm on macOS keeps its data in `~/Library/Application Support/fnm`, not `~/.local/share/fnm`.
+- A brew-installed go would break: the catalog's shell env exports `GOROOT=~/.go`. go keeps its
+  tarball route instead, with the OS from `uname -s`. fzf keeps its own installer for the same
+  reason (key bindings in `~/.fzf.*`).
+- Formula names were checked against `https://formulae.brew.sh/api/formula/<name>.json` (200 vs
+  404) from Linux. Not used: `gotify` and `herdr` (not clearly the same tools), `python3`/`python`
+  (404: aliases are not served).
+
 ## Crate versions (resolved 2026-10)
 - toml 1.x: `toml::Table` (Map) has no `values_mut`; use `iter_mut`. `toml::Value::try_into::<T>()` deserializes.
 - reqwest 0.13: TLS feature is `rustls` (not `rustls-tls`); `default-features = false, features = ["blocking", "json", "rustls"]`.

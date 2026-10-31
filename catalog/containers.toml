@@ -2,6 +2,7 @@
 # Containers.
 
 [tools.docker]
+when = ["os:linux"]
 desc = "Docker engine and CLI"
 depends = ["curl"]
 detect = { cmd = "docker --version", version = 'Docker version ([^,\s]+)' }
@@ -15,13 +16,14 @@ install = [
 [configs.docker-service]
 desc = "Start the docker daemon at boot (Arch, openSUSE; get.docker.com enables it elsewhere)"
 scope = "system"
-when = ["!family:debian", "!family:fedora", "!container"]
+when = ["os:linux", "!family:debian", "!family:fedora", "!container"]
 depends = ["docker"]
 check = "systemctl is-enabled --quiet docker"
 apply = "{sudo} systemctl enable --now docker"
 revert = "{sudo} systemctl disable --now docker"
 
 [configs.docker-group]
+when = ["os:linux"]
 desc = "Run docker without sudo (takes effect at next login)"
 scope = "system"
 depends = ["docker"]
@@ -30,11 +32,15 @@ steps = [{ use = "user-group", group = "docker" }]
 [tools.lazydocker]
 desc = "Terminal UI for docker"
 depends = ["curl"]
-install = [{ method = "script", url = "https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh", shell = "bash", latest = { http = "https://api.github.com/repos/jesseduffield/lazydocker/releases/latest", json = "tag_name" } }]
+install = [
+  { method = "brew", package = "lazydocker", depends = ["homebrew"] },
+  { method = "script", url = "https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh", when = ["os:linux"], shell = "bash", latest = { http = "https://api.github.com/repos/jesseduffield/lazydocker/releases/latest", json = "tag_name" } },
+]
 
 [tools.dive]
 desc = "Explore docker image layers"
 install = [
+  { method = "brew", package = "dive", depends = ["homebrew"] },
   { method = "github-release", repo = "wagoodman/dive", asset = { x86_64 = "dive_*_linux_amd64.tar.gz", aarch64 = "dive_*_linux_arm64.tar.gz" } },
   { method = "go", package = "github.com/wagoodman/dive", depends = ["go"], portable = true },
 ]
@@ -43,6 +49,7 @@ install = [
 desc = "top for containers"
 detect = { cmd = "ctop -v", version = 'version (\S+?),?\s' }
 install = [
+  { method = "brew", package = "ctop", depends = ["homebrew"] },
   { method = "pacman", package = "ctop" },
   { method = "github-release", repo = "bcicen/ctop", asset = { x86_64 = "ctop-*-linux-amd64", aarch64 = "ctop-*-linux-arm64" } },
 ]

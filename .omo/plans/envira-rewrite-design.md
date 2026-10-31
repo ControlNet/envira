@@ -29,6 +29,7 @@ Problems it must solve that the legacy scripts (`run.sh`, `run_user.sh`, `verify
 | Dependencies | Explicit: item-level and method-level `depends`; method `expects` is a lint, never injected |
 | Methods / actions | Data templates in `catalog/templates.toml`; Rust only provides generic primitives |
 | Install scope | `prefer_scope` system when sudo else user; no symlinking user installs by default |
+| macOS | Apple Silicon first (`feature/macos`, 2026-10-31): Homebrew is the first route on macOS, Linux-only items say `os:linux`; Docker stays Linux-only for now |
 | PyPI | Keep `envira` on PyPI as maturin `bindings = "bin"` wheels carrying the Rust binary, plus the curl bootstrap (`envira.sh`); crates.io not yet (see Open questions) |
 
 Lessons from the old branch, applied here:
@@ -436,7 +437,8 @@ there is none); the previous line is recorded under the key `RE` for `restore --
 **`[tools.<id>]`.** `desc`, `category`, `bin` (default: id), `bins` (default: `[bin]`; used for
 `command -v` and portable copies), `detect = { cmd, version }` (default `{bin} --version` and a
 generic version regex), `depends`, `when`, `shell = { path, env, alias, init = { zsh, bash } }`, and
-`install = [ … ]` in order of preference. An entry is either `{ method = "…", <params> }` or
+`install = [ … ]` in order of preference, or instead `manual = "where to get it"` for a tool the
+user installs by hand (Homebrew): it is never planned, and its text is the n/a reason. An entry is either `{ method = "…", <params> }` or
 `{ run = "…" }`, plus optional `depends` (needed only for this entry), `when`, `scope`, `portable`,
 `lanes` (shared resources an installer uses without naming them in the command, e.g. LunarVim's
 `npm install -g`: `packages`, `pipx`, `npm`, `build`).
@@ -450,11 +452,17 @@ Raw `apply` needs `check`, and a config without any check is rejected.
 whole; flattened in order without duplicates, cycles rejected).
 
 **`when` predicates** (all must hold; `!` negates): `gpu`, `container`, `wsl`, `sudo`, `root`,
-`distro:<ID>`, `family:<ID or ID_LIKE>`, `arch:<arch>`, `shell:<name>`.
+`os:<linux|macos>`, `distro:<ID>`, `family:<ID or ID_LIKE>`, `arch:<arch>`, `shell:<name>`. On macOS
+`distro` and `family` are `macos` (version from `sw_vers`).
+
+**Per-platform values.** A parameter given as a table is looked up by the arch on Linux
+(`{ x86_64 = …, aarch64 = … }`) and by `macos-<arch>` on macOS. A table of Linux release assets
+therefore has no value on a Mac: the entry is skipped, and no Linux binary is downloaded there.
 
 **Choosing a method** (per tool, first feasible entry wins): the entry's and the method's `when` hold;
 scope resolves (`any` → system when sudo is available, unless `--scope user`); system scope needs root
-or sudo; every dependency is present or itself plannable; the template expands (e.g. there is an asset
+or sudo; every dependency is present, itself plannable, or not applicable here (a dependency whose
+own `when` does not hold, such as `libatomic` on macOS, is not needed by its dependents there); the template expands (e.g. there is an asset
 for this arch). Otherwise the tool is "n/a" with the most specific reason. A `portable` entry with
 user scope on a sudo machine gets an extra step that copies its `bins` into the system bin dir.
 
@@ -618,6 +626,40 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
 
   The `bootstrap` CI job serves the fresh build locally, installs with the script, and checks that
   a tampered binary is refused.
+
+## macOS (phase 1, `feature/macos`, 2026-10-31)
+Apple Silicon first. The Rust changes are small; most of the work is catalog data.
+- Facts: `os` (`linux` | `macos`); on macOS `distro`/`family` are `macos` and the version comes from
+  `sw_vers`. The hostname comes from `gethostname`. Commands drop to `SUDO_USER` with `sudo -u`
+  (there is no `runuser`). The bash rc block goes into `~/.bash_profile`, because macOS terminals
+  start login shells.
+- Routes: `[methods.brew]` (user scope, because Homebrew refuses root; it shares the packages lane
+  because of brew's global lock).
+  - 45 tools have a brew entry listed first. On Linux it never applies.
+  - envira does not install Homebrew (user decision 2026-10-31): its installer needs an
+    interactive sudo and the Command Line Tools. `homebrew` is a `manual` tool. Without it, brew
+    entries are skipped with "needs homebrew (install it yourself: https://brew.sh …)", and the
+    next route is used: fnm and other vendor scripts, cargo, pipx, npm. Tools whose only Mac route
+    is brew show that reason as n/a.
+  - Release-asset tables have no `macos-*` keys yet, so on a Mac those entries are skipped rather
+    than downloading Linux binaries.
+- Linux-only items say `os:linux`: docker and its configs (Docker is Linux-only for now),
+  default-shell, inotify-watches, libatomic, libfuse2, meslo-font, and the Linux tarballs of
+  neovim, ncdu and lazydocker. go and miniconda pick their download with `uname -s`.
+- The detection PATH includes `/opt/homebrew/{bin,sbin}` and fnm's macOS data dir
+  (`~/Library/Application Support/fnm`). On a fresh Mac Homebrew is not on PATH yet, and without
+  these every brew install would fail its post-install check.
+- Testing: the `macos` job on `macos-15` runs clippy, the unit tests, and
+  `tests/integration/macos.sh`. That script runs on the runner itself, because macOS has no
+  containers, though every job gets a fresh VM. It uses a bare PATH and installs tools the image
+  lacks. It also checks the no-op second run, n/a Linux-only items, zsh and bash_profile
+  integration, adoption of a brew-installed tool, and config revert/apply.
+  - Not covered: a clean Mac without Homebrew (the image has it; Tart or UTM on Apple hardware).
+- Distribution: `build.yaml` builds `envira-aarch64-macos` (deployment target 11.0, only system
+  libraries) and a `macosx_11_0_arm64` wheel, and installs it with `envira.sh` on the same runner.
+  `envira.sh` maps Darwin to `macos` and refuses Intel Macs plainly.
+- Not yet: Intel Macs, casks (fonts, GUI apps), Docker (Desktop or colima), `macos-*` release
+  assets for the github-release tools, python3 from Homebrew (the command-line tools provide it).
 
 ## Crate layout
 ```

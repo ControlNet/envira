@@ -19,7 +19,8 @@ What tools will be installed:
 
 ### envira (new)
 
-`envira` is a single static binary (x86_64 and aarch64 Linux, no dependencies). It knows the
+`envira` is a single binary: static for x86_64 and aarch64 Linux (no dependencies), and for Apple
+Silicon Macs (experimental; Homebrew is the main route there). It knows the
 tools and configs from a catalog, shows what is installed, and installs, updates or reverts them.
 
 ```shell

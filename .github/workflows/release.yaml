@@ -104,6 +104,8 @@ jobs:
           files: |
             dist/envira-*-linux
             dist/envira-*-linux.sha256
+            dist/envira-*-macos
+            dist/envira-*-macos.sha256
             dist/catalog.toml
 
   release-web:

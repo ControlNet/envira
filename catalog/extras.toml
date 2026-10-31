@@ -33,6 +33,7 @@ install = [
 ]
 
 [tools.meslo-font]
+when = ["os:linux"]
 desc = "Meslo Nerd Font in ~/.local/share/fonts"
 bins = []
 depends = ["unzip", "fontconfig", "curl"]
@@ -43,6 +44,7 @@ install = [{ run = 'curl -fsSL -o Meslo.zip https://github.com/ryanoasis/nerd-fo
 desc = "System information with ASCII art"
 detect = { cmd = "screenfetch -V" }
 install = [
+  { method = "brew", package = "screenfetch", depends = ["homebrew"] },
   { method = "apt", package = "screenfetch" },
   { method = "dnf", package = "screenfetch" },
   { method = "pacman", package = "screenfetch" },
@@ -63,6 +65,7 @@ install = [
 [tools.fastfetch]
 desc = "System information (neofetch successor)"
 install = [
+  { method = "brew", package = "fastfetch", depends = ["homebrew"] },
   # add-apt-repository refreshes the package lists itself.
   { run = "{sudo} add-apt-repository -y ppa:zhangsongcui3371/fastfetch && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y fastfetch", scope = "system", when = ["family:ubuntu"], depends = ["apt-tools"] },
   { method = "dnf", package = "fastfetch" },
@@ -78,7 +81,10 @@ install = [{ method = "pipx", package = "archey4", depends = ["pipx", "python3",
 
 [tools.genact]
 desc = "Nonsense activity generator"
-install = [{ method = "cargo", package = "genact", depends = ["cargo-binstall"], portable = true }]
+install = [
+  { method = "brew", package = "genact", depends = ["homebrew"] },
+  { method = "cargo", package = "genact", depends = ["cargo-binstall"], portable = true },
+]
 
 [bundles.extras]
 name = "Extras"

@@ -2,9 +2,20 @@
 # Distribution packages from the package-manager lines of run.sh. Each item lists the packages
 # run.sh installs for it per family; a family run.sh does not cover has no entry.
 
+[tools.homebrew]
+desc = "Homebrew, the package manager the macOS routes use"
+when = ["os:macos"]
+bin = "brew"
+detect = { cmd = "brew --version", version = 'Homebrew (\S+)' }
+# Its installer needs an interactive sudo and the Command Line Tools; envira leaves it to the user.
+# Without it, brew entries are skipped and the next route (if any) is used.
+manual = "https://brew.sh (then open a new terminal)"
+shell = { path = ["/opt/homebrew/bin", "/opt/homebrew/sbin"] }
+
 [tools.git]
 desc = "Version control"
 install = [
+  { method = "brew", package = "git", depends = ["homebrew"] },
   { method = "apt", package = "git" },
   { method = "dnf", package = "git" },
   { method = "pacman", package = "git" },
@@ -15,6 +26,7 @@ install = [
 desc = "Large file support for git"
 detect = { cmd = "git-lfs --version", version = 'git-lfs/(\S+)' }
 install = [
+  { method = "brew", package = "git-lfs", depends = ["homebrew"] },
   { method = "apt", package = "git-lfs" },
   { method = "dnf", package = "git-lfs" },
   { method = "pacman", package = "git-lfs" },
@@ -33,6 +45,7 @@ install = [
 [tools.wget]
 desc = "HTTP/FTP downloader"
 install = [
+  { method = "brew", package = "wget", depends = ["homebrew"] },
   { method = "apt", package = "wget" },
   { method = "dnf", package = "wget" },
   { method = "pacman", package = "wget" },
@@ -62,6 +75,7 @@ install = [
 desc = "Terminal multiplexer"
 detect = { cmd = "tmux -V", version = 'tmux (\S+)' }
 install = [
+  { method = "brew", package = "tmux", depends = ["homebrew"] },
   { method = "apt", package = "tmux" },
   { method = "dnf", package = "tmux" },
   { method = "pacman", package = "tmux" },
@@ -118,6 +132,7 @@ desc = "7-Zip archiver"
 bin = "7z"
 detect = { cmd = "7z i 2>&1 | grep '7-Zip'" }
 install = [
+  { method = "brew", package = "p7zip", depends = ["homebrew"] },
   { method = "apt", package = "p7zip-full" },
   # Fedora, Arch and openSUSE replaced p7zip with 7zip, which also ships `7z`.
   { method = "dnf", package = "7zip" },
@@ -138,6 +153,7 @@ install = [
 [tools.mosh]
 desc = "Mobile shell (roaming SSH)"
 install = [
+  { method = "brew", package = "mosh", depends = ["homebrew"] },
   { method = "apt", package = "mosh" },
   { method = "dnf", package = "mosh" },
   { method = "pacman", package = "mosh" },
@@ -147,6 +163,7 @@ install = [
 [tools.nmap]
 desc = "Network scanner"
 install = [
+  { method = "brew", package = "nmap", depends = ["homebrew"] },
   { method = "apt", package = "nmap" },
   { method = "dnf", package = "nmap" },
   { method = "pacman", package = "nmap" },
@@ -156,6 +173,7 @@ install = [
 [tools.iperf3]
 desc = "Network bandwidth measurement"
 install = [
+  { method = "brew", package = "iperf3", depends = ["homebrew"] },
   { method = "dnf", package = "iperf3" },
   { method = "pacman", package = "iperf3" },
   { method = "zypper", package = "iperf" },
@@ -208,6 +226,7 @@ install = [
 ]
 
 [tools.libfuse2]
+when = ["os:linux"]
 desc = "FUSE 2 library (AppImages)"
 bins = []
 detect = { cmd = "PATH=\"$PATH:/sbin:/usr/sbin\" ldconfig -p | grep -F libfuse.so.2 >/dev/null" }
@@ -249,7 +268,7 @@ install = [
 name = "Base"
 desc = "Distribution packages every machine gets"
 items = [
-  "git", "git-lfs", "curl", "wget", "zsh", "vim", "tmux", "screen", "build-tools", "python3",
+  "homebrew", "git", "git-lfs", "curl", "wget", "zsh", "vim", "tmux", "screen", "build-tools", "python3",
   "unzip", "p7zip", "xsel", "mosh", "nmap", "iperf3", "iputils-ping", "net-tools", "pciutils",
   "openssh-server", "libfuse2", "fontconfig", "apt-tools", "yay",
 ]

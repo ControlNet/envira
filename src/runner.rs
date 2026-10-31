@@ -117,7 +117,12 @@ impl RealRunner {
         let e = &self.env;
         let mut c = match &e.drop_to {
             Some(user) => {
-                let mut c = Command::new("runuser");
+                // util-linux's runuser is Linux-only; root's `sudo -u` needs no password.
+                let mut c = Command::new(if cfg!(target_os = "macos") {
+                    "sudo"
+                } else {
+                    "runuser"
+                });
                 c.args(["-u", user, "--", "env"])
                     .arg(format!("HOME={}", e.home.display()))
                     .arg(format!("USER={}", e.user))
@@ -491,8 +496,10 @@ mod tests {
     #[tokio::test]
     async fn capture_runs_in_home() {
         let r = runner();
-        let p = r.capture("pwd", Duration::from_secs(5)).await;
-        assert_eq!(p.output.trim(), r.env.home.display().to_string());
+        let p = r.capture("pwd -P", Duration::from_secs(5)).await;
+        // macOS: the temp dir is under /var, a symlink to /private/var.
+        let home = std::fs::canonicalize(&r.env.home).unwrap();
+        assert_eq!(p.output.trim(), home.display().to_string());
     }
 
     #[tokio::test]
@@ -511,7 +518,12 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (_ctx, crx) = watch::channel(false);
         let end = r
-            .stream("echo a; echo -e '\\e[31mb\\e[0m'", dir.path(), tx, crx)
+            .stream(
+                "echo a; printf '\\033[31mb\\033[0m\\n'",
+                dir.path(),
+                tx,
+                crx,
+            )
             .await;
         assert_eq!(end, StreamEnd::Exit(0));
         assert_eq!(rx.recv().await.unwrap(), "a");
