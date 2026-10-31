@@ -219,7 +219,8 @@ Ownership:
   so; the next start begins fresh. Writes are fsync'd before the atomic rename.
 - Desired set = expand(bundles) + include - exclude, filtered by `when` / feasibility.
 - First run on a machine without state (including legacy-provisioned ones): detect everything,
-  ask for bundles (TUI picker or `envira install <bundle>`), mark the whole catalog as seen.
+  ask for bundles (the TUI dashboard's Bundles panel or `envira install <bundle>`), mark the whole
+  catalog as seen.
 
 ## Reconcile and execution
 1. Load catalog (remote -> cache -> embedded), probe facts, read state.
@@ -337,9 +338,9 @@ Screens:
 3. **Run**: left = queue with per-unit state and elapsed time; right = live log of the focused unit
    (follow mode, scrollback); cancel current unit (kills process group); summary with `r` = retry failed.
 4. **History / logs**: previous runs and per-tool logs.
-5. **First-run picker**: choose bundles for this machine. Bundles that are mostly present start
-   ticked; enter keeps the ticked ones and plans their install, esc skips (keeps none, and the
-   picker does not come back; bundles can be kept later in the Bundles panel).
+5. **First run**: no separate picker since 2026-10-31. The dashboard opens with nothing kept or
+   selected and the cursor on Bundles; the state exists in memory with the whole catalog seen and
+   is saved by the first bundle kept or the first run.
 
 Dashboard model (user decision 2026-10-31): the selection is the install set, and Enter installs it.
 - It starts as what the kept bundles miss (`envira install` without arguments), and is filled again
@@ -731,7 +732,7 @@ tests/integration/ (Docker: run.sh, check.sh, full.sh, Dockerfile.{ubuntu,fedora
    `catalog check`; port ~12 representative items covering every method and action template.
 2. **M2 execute** (done): plan + exec + state + logs; `sync`, `install`, `retry`; configs apply / revert;
    `envira fs` primitives; shellenv + rc block.
-3. **M3 TUI** (done): dashboard, plan review, run view with live logs, first-run picker. History screen
+3. **M3 TUI** (done): dashboard, plan review, run view with live logs, first-run picker (folded into the dashboard on 2026-10-31). History screen
    deferred; `envira log` covers it.
 4. **M4 updates** (done): `latest` queries per method and entry with a cache, `update` in place along
    routes, `adopt`, outdated label / filter / `u` key in the TUI, background check on start.

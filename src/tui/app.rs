@@ -18,7 +18,6 @@ use crate::status::{ItemStatus, Label, Snapshot};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Loading,
-    Picker,
     Dashboard,
     Plan,
     Run,
@@ -202,8 +201,6 @@ pub struct App {
     pub bundle_cursor: usize,
     pub detail: DetailTab,
     pub detail_scroll: usize,
-    pub picker: BTreeSet<String>,
-    pub picker_cursor: usize,
     pub plan: Option<(Plan, String)>,
     pub plan_cursor: usize,
     pub run: Option<RunView>,
@@ -245,8 +242,6 @@ impl App {
             bundle_cursor: 0,
             detail: DetailTab::Info,
             detail_scroll: 0,
-            picker: BTreeSet::new(),
-            picker_cursor: 0,
             plan: None,
             plan_cursor: 0,
             run: None,
@@ -272,29 +267,20 @@ impl App {
     /// New detection results.
     pub fn on_snapshot(&mut self, snap: Snapshot, state: Option<State>) {
         let first = self.screen == Screen::Loading;
-        self.state = state;
+        // Before anything is saved, keep the in-memory state of a first run.
+        self.state = state.or(self.state.take());
         self.detecting = false;
         self.selected.retain(|id| snap.get(id).is_some());
         if first {
+            self.screen = Screen::Dashboard;
             if snap.first_run {
-                // Preselect bundles whose items are mostly present already.
-                self.picker = self
-                    .catalog
-                    .bundles
-                    .keys()
-                    .filter(|id| {
-                        let items = self.catalog.bundle_items(id);
-                        let have = items
-                            .iter()
-                            .filter(|i| snap.get(i).is_some_and(|s| s.present))
-                            .count();
-                        !items.is_empty() && have * 2 >= items.len()
-                    })
-                    .cloned()
-                    .collect();
-                self.screen = Screen::Picker;
+                // Nothing kept yet: start on Bundles. The whole catalog counts as seen, so
+                // nothing shows as new after the first bundle is kept or the first run.
+                let mut st = State::default();
+                st.mark_all_seen(&self.catalog);
+                self.state = Some(st);
+                self.focus = Focus::Bundles;
             } else {
-                self.screen = Screen::Dashboard;
                 self.load_last_run();
             }
         }
@@ -458,85 +444,10 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Esc => vec![Cmd::Quit],
                 _ => vec![],
             },
-            Screen::Picker => self.picker_key(k),
             Screen::Dashboard => self.dashboard_key(k),
             Screen::Plan => self.plan_key(k),
             Screen::Run => self.run_key(k),
         }
-    }
-
-    fn picker_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        let ids = self.bundle_ids();
-        match k.code {
-            KeyCode::Char('q') => return vec![Cmd::Quit],
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.picker_cursor = self.picker_cursor.saturating_sub(1)
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.picker_cursor = (self.picker_cursor + 1).min(ids.len().saturating_sub(1))
-            }
-            KeyCode::Char(' ') => {
-                if let Some(id) = ids.get(self.picker_cursor)
-                    && !self.picker.remove(id)
-                {
-                    self.picker.insert(id.clone());
-                }
-            }
-            KeyCode::Char('a') => self.picker = ids.into_iter().collect(),
-            KeyCode::Char('n') => self.picker.clear(),
-            KeyCode::Char('?') => self.help = true,
-            // Enter keeps the ticked bundles and plans their install; Esc skips: no bundles are
-            // kept (pick them later in [2]), and the picker does not come back.
-            KeyCode::Enter | KeyCode::Esc => {
-                let mut st = self.state.clone().unwrap_or_default();
-                if k.code == KeyCode::Enter {
-                    st.bundles = self
-                        .bundle_ids()
-                        .into_iter()
-                        .filter(|b| self.picker.contains(b))
-                        .collect();
-                }
-                st.mark_all_seen(&self.catalog);
-                self.state = Some(st);
-                self.screen = Screen::Dashboard;
-                self.reseed = true;
-                let cmds = vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
-                if k.code == KeyCode::Enter {
-                    let targets = self.picker_targets();
-                    let plan = self.make_plan(&targets);
-                    if !plan.is_empty() {
-                        self.open_plan(plan, format!("install · {} bundles", self.picker.len()));
-                    }
-                }
-                return cmds;
-            }
-            _ => {}
-        }
-        vec![]
-    }
-
-    /// Absent, installable items of the bundles chosen in the picker.
-    pub fn picker_targets(&self) -> Vec<String> {
-        let Some(snap) = &self.snap else {
-            return vec![];
-        };
-        let mut out: Vec<String> = Vec::new();
-        for b in self
-            .bundle_ids()
-            .iter()
-            .filter(|b| self.picker.contains(*b))
-        {
-            for i in &self.catalog.bundle_items(b) {
-                if let Some(s) = snap.get(i)
-                    && !s.present
-                    && s.label != Label::NotApplicable
-                    && !out.contains(i)
-                {
-                    out.push(i.clone());
-                }
-            }
-        }
-        out
     }
 
     fn dashboard_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -1253,47 +1164,39 @@ pub mod tests {
         assert!(a.subscribed(&first));
     }
 
+    /// First run (no state yet): straight to the dashboard, nothing kept or selected, the
+    /// cursor on Bundles. The state exists in memory with the catalog seen, and is saved by the
+    /// first bundle kept.
     #[test]
-    fn picker_on_first_run() {
+    fn first_run_opens_the_dashboard_on_bundles() {
         let mut a = app();
         let mut snap = a.snap.clone().unwrap();
         snap.first_run = true;
-        a.screen = Screen::Loading;
-        a.on_snapshot(snap, None);
-        assert_eq!(a.screen, Screen::Picker);
-        a.on_key(key(KeyCode::Char('n')));
-        a.picker.insert("ai-agents".into());
-        let targets = a.picker_targets();
-        assert_eq!(&targets[..2], ["codex", "codex-sandbox-network"]);
-        assert!(
-            targets
-                .iter()
-                .all(|t| a.catalog.bundle_items("ai-agents").contains(t))
-        );
-        let cmds = a.on_key(key(KeyCode::Enter));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
-        assert_eq!(a.state.as_ref().unwrap().bundles, vec!["ai-agents"]);
-        assert_eq!(a.screen, Screen::Plan);
-    }
-
-    /// Esc skips the picker: whatever was ticked is not kept, and the picker does not come back.
-    #[test]
-    fn picker_skip_keeps_no_bundles() {
-        let mut a = app();
-        let mut snap = a.snap.clone().unwrap();
-        snap.first_run = true;
+        for i in &mut snap.items {
+            i.desired = false;
+        }
         a.screen = Screen::Loading;
         a.state = None;
-        a.on_snapshot(snap, None);
-        assert_eq!(a.screen, Screen::Picker);
-        // Bundles that are mostly present start ticked.
-        a.picker.insert("ai-agents".into());
-        let cmds = a.on_key(key(KeyCode::Esc));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
-        let st = a.state.as_ref().unwrap();
-        assert!(st.bundles.is_empty(), "{:?}", st.bundles);
-        assert!(!st.seen.is_empty());
+        a.reseed = true;
+        a.on_snapshot(snap.clone(), None);
         assert_eq!(a.screen, Screen::Dashboard);
+        assert_eq!(a.focus, Focus::Bundles);
+        assert!(a.selected.is_empty(), "{:?}", a.selected);
+        let st = a.state.as_ref().unwrap();
+        assert!(st.bundles.is_empty());
+        assert!(st.seen.contains("codex"));
+        // A refresh before anything was saved keeps it.
+        a.on_snapshot(snap, None);
+        assert!(a.state.as_ref().unwrap().seen.contains("codex"));
+        // Keeping a bundle saves it.
+        a.bundle_cursor = a
+            .bundle_ids()
+            .iter()
+            .position(|b| b == "ai-agents")
+            .unwrap();
+        let cmds = a.on_key(key(KeyCode::Char(' ')));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(a.selected.contains("codex"));
     }
 
     // Dashboard: Bundles on the left, Items on the right; the selection is what Enter installs.

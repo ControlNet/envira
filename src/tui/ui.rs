@@ -19,7 +19,6 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
     let area = f.area();
     match app.screen {
         Screen::Loading => loading(f, area, app, t),
-        Screen::Picker => picker(f, area, app, t),
         Screen::Dashboard => dashboard(f, area, app, t),
         Screen::Plan => plan_view(f, area, app, t),
         Screen::Run => run_view(f, area, app, t),
@@ -847,197 +846,6 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 // ------------------------------------------------------------------------------------------------
-// First-run picker
-// ------------------------------------------------------------------------------------------------
-
-fn picker(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
-    let [h, scan, main, keys] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(4),
-        Constraint::Min(8),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    header(
-        f,
-        h,
-        app,
-        t,
-        vec![
-            Span::raw(app.facts.summary()),
-            Span::styled(" · first run on this machine", t.s(t.yellow)),
-        ],
-    );
-    let Some(snap) = &app.snap else { return };
-
-    let block = panel(t, 1, "Scan", false, vec![]);
-    let inner = block.inner(scan);
-    f.render_widget(block, scan);
-    let total = snap.items.len();
-    let present = snap.count(|i| i.present);
-    let adoptable = snap.count(|i| i.ownership == Some(crate::status::Ownership::Adoptable));
-    let todo = app.picker_targets().len();
-    let cols = columns(inner, 3);
-    f.render_widget(
-        Paragraph::new(vec![
-            stat(t, present, t.green, format!("/ {total} already present")),
-            bar(t, cols[0].width, &[(present, t.green)], total),
-        ]),
-        cols[0],
-    );
-    f.render_widget(
-        Paragraph::new(vec![
-            stat(
-                t,
-                todo,
-                t.cyan,
-                format!("to install for {} bundles", app.picker.len()),
-            ),
-            bar(t, cols[1].width, &[(todo, t.cyan)], total),
-        ]),
-        cols[1],
-    );
-    f.render_widget(
-        Paragraph::new(vec![
-            stat(t, adoptable, t.yellow, "adoptable".into()),
-            Line::styled("legacy scripts, packages, manual installs", t.s(t.dim)),
-        ]),
-        cols[2],
-    );
-
-    let [left, right] =
-        Layout::horizontal([Constraint::Min(40), Constraint::Length(50)]).areas(main);
-    let block = panel(t, 2, "Bundles to keep on this machine", true, vec![]);
-    let inner = block.inner(left);
-    f.render_widget(block, left);
-    let mut lines = vec![Line::styled(
-        format!("    {:<14}{:<20}{}", "bundle", "present", "will install"),
-        t.s(t.dim),
-    )];
-    for (i, b) in app.bundle_ids().iter().enumerate() {
-        let on = app.picker.contains(b);
-        let (have, n) = bundle_counts(app, b);
-        let mut spans = vec![
-            Span::styled(
-                if on { "[x] " } else { "[ ] " },
-                t.s(if on { t.green } else { t.dim }),
-            ),
-            Span::styled(
-                format!("{:<14}", truncate(app.catalog.bundle_name(b), 13)),
-                t.s(if on { t.fg } else { t.dim }),
-            ),
-        ];
-        spans.extend(
-            bar(
-                t,
-                12,
-                &[(have, if have == n { t.green } else { t.blue })],
-                n,
-            )
-            .spans,
-        );
-        spans.push(Span::styled(format!(" {have:>2}/{n:<3}  "), t.s(t.dim)));
-        if on && have < n {
-            spans.push(Span::styled(format!("+{}", n - have), t.s(t.cyan)));
-        }
-        let line = Line::from(spans);
-        lines.push(if i == app.picker_cursor {
-            line.style(t.cursor())
-        } else {
-            line
-        });
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "nothing runs until you confirm the plan",
-        t.s(t.dim),
-    ));
-    f.render_widget(Paragraph::new(lines), inner);
-
-    let [m, s] = Layout::vertical([Constraint::Length(9), Constraint::Min(4)]).areas(right);
-    let fa = &app.facts;
-    let block = panel(t, 3, "Machine", false, vec![]);
-    let inner = block.inner(m);
-    f.render_widget(block, m);
-    let kv = |k: &str, v: String| {
-        Line::from(vec![
-            Span::styled(format!("{k:<10}"), t.s(t.dim)),
-            Span::raw(v),
-        ])
-    };
-    let privilege = match fa.privilege {
-        crate::facts::Privilege::Root => "root".to_string(),
-        crate::facts::Privilege::Sudo { passwordless: true } => {
-            "sudo · no password needed now".into()
-        }
-        crate::facts::Privilege::Sudo {
-            passwordless: false,
-        } => "sudo · password once per run".into(),
-        crate::facts::Privilege::None => "no sudo · user-scope installs only".into(),
-    };
-    f.render_widget(
-        Paragraph::new(vec![
-            kv("distro", format!("{} · {}", fa.distro_name, fa.arch)),
-            kv("user", format!("{} · {}", fa.user, fa.home.display())),
-            kv("privilege", privilege),
-            kv(
-                "gpu",
-                if fa.gpu {
-                    "nvidia".into()
-                } else {
-                    "none".into()
-                },
-            ),
-            kv(
-                "container",
-                format!(
-                    "{}   wsl {}",
-                    if fa.container { "yes" } else { "no" },
-                    if fa.wsl { "yes" } else { "no" }
-                ),
-            ),
-            kv("shells", fa.shells.join(", ")),
-            kv("catalog", app.loaded_layers.join(" + ")),
-        ]),
-        inner,
-    );
-    let block = panel(t, 4, "Shell integration", false, vec![]);
-    let inner = block.inner(s);
-    f.render_widget(block, s);
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::styled("PATH, env and aliases go to ~/.config/envira/", t.s(t.dim)),
-            Line::styled("~/.zshrc and ~/.bashrc get one block:", t.s(t.dim)),
-            Line::styled("# >>> envira >>>", t.s(t.magenta)),
-            Line::raw(". ~/.config/envira/init.zsh"),
-            Line::styled("# <<< envira <<<", t.s(t.magenta)),
-            Line::styled(
-                "existing rc lines are left alone; `envira doctor` lists duplicates",
-                t.s(t.dim),
-            ),
-        ])
-        .wrap(Wrap { trim: true }),
-        inner,
-    );
-    keybar(
-        f,
-        keys,
-        t,
-        &[
-            ("Toggle", "space"),
-            ("All", "a"),
-            ("None", "n"),
-            ("Skip", "esc"),
-            ("Quit", "q"),
-        ],
-        Some(Span::styled(
-            "Review plan: enter",
-            Style::new().fg(t.magenta).add_modifier(Modifier::BOLD),
-        )),
-    );
-}
-
-// ------------------------------------------------------------------------------------------------
 // Plan review
 // ------------------------------------------------------------------------------------------------
 
@@ -1586,14 +1394,7 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
 /// Keys of the current screen.
 fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
     match screen {
-        Screen::Picker | Screen::Loading => &[
-            ("↑↓ j k", "move"),
-            ("space", "pick or drop a bundle"),
-            ("a  n", "pick all · pick none"),
-            ("enter", "save and plan the install"),
-            ("esc", "skip: keep no bundles (pick them later in [2])"),
-            ("q", "quit"),
-        ],
+        Screen::Loading => &[("q  esc", "quit")],
         Screen::Plan => &[
             ("↑↓ j k", "move"),
             ("enter", "run the plan"),
@@ -1827,17 +1628,22 @@ mod tests {
     }
 
     #[test]
-    fn picker_renders() {
+    fn first_run_renders_the_dashboard() {
         let mut a = app();
         let mut snap = a.snap.clone().unwrap();
         snap.first_run = true;
+        for i in &mut snap.items {
+            i.desired = false;
+        }
         a.screen = Screen::Loading;
+        a.state = None;
+        a.selected.clear();
         a.on_snapshot(snap, None);
         let s = render(&a, 140, 40);
         assert!(
-            s.contains("Bundles to keep on this machine")
-                && s.contains("[3] Machine")
-                && s.contains("Review plan: enter"),
+            s.contains("Bundles")
+                && s.contains("Nothing selected.")
+                && s.contains("Install: enter"),
             "{s}"
         );
         render(&a, 70, 20);
