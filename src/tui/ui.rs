@@ -455,10 +455,9 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             }
         })
         .collect();
-    // Keep the cursor visible when there are more bundles than rows.
     let skip = app
-        .bundle_cursor
-        .saturating_sub(inner.height.saturating_sub(1) as usize);
+        .bundles_view
+        .top(app.bundle_cursor, lines.len(), inner.height as usize);
     app.hit(inner, Hit::Panel(Panel::Bundles));
     for (row, i) in (skip..lines.len()).take(inner.height as usize).enumerate() {
         let y = inner.y + row as u16;
@@ -589,11 +588,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(block, area);
     let rows = app.rows();
     let height = inner.height.saturating_sub(1) as usize;
-    let offset = if app.cursor >= height {
-        app.cursor + 1 - height
-    } else {
-        0
-    };
+    let offset = app.items_view.top(app.cursor, rows.len(), height);
     app.hit(inner, Hit::Panel(Panel::Items));
     for (row, i) in (offset..rows.len()).take(height).enumerate() {
         let y = inner.y + 1 + row as u16;
@@ -1114,11 +1109,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(block, steps);
     let head = Row::new(["#", "action", "item", "via", "scope", "why"]).style(t.s(t.dim));
     let height = inner.height.saturating_sub(1) as usize;
-    let offset = if app.plan_cursor >= height {
-        app.plan_cursor + 1 - height
-    } else {
-        0
-    };
+    let offset = app.plan_view.top(app.plan_cursor, plan.units.len(), height);
     app.hit(inner, Hit::Panel(Panel::Plan));
     for (row, i) in (offset..plan.units.len()).take(height).enumerate() {
         let y = inner.y + 1 + row as u16;
@@ -1372,11 +1363,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let inner = block.inner(steps);
     f.render_widget(block, steps);
     let height = inner.height as usize;
-    let offset = if run.sel >= height {
-        run.sel + 1 - height
-    } else {
-        0
-    };
+    let offset = app.steps_view.top(run.sel, run.units.len(), height);
     app.hit(inner, Hit::Panel(Panel::Steps));
     for (row, i) in (offset..run.units.len()).take(height).enumerate() {
         let y = inner.y + row as u16;
@@ -2031,15 +2018,41 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_scrolls_the_panel_under_the_pointer() {
+    fn the_wheel_scrolls_the_view_not_the_cursor() {
         let mut a = app();
         a.on_key(key(KeyCode::Left));
-        render(&a, 140, 40);
+        let first_row = |a: &App| {
+            render(a, 140, 40);
+            let r = area_of(a, &Hit::Panel(Panel::Items));
+            a.hits
+                .borrow()
+                .iter()
+                .find_map(|(x, h)| match h {
+                    Hit::ItemRow(i) if x.y == r.y + 1 => Some(*i),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(first_row(&a), 0);
         let items = area_of(&a, &Hit::Panel(Panel::Items));
         mouse(&mut a, MouseEventKind::ScrollDown, items);
-        assert_eq!((a.focus, a.cursor), (Focus::Bundles, 3));
+        mouse(&mut a, MouseEventKind::ScrollDown, items);
+        // The panel under the pointer scrolls; focus, cursor and selection stay.
+        assert_eq!(first_row(&a), 6);
+        assert_eq!((a.focus, a.cursor), (Focus::Bundles, 0));
         mouse(&mut a, MouseEventKind::ScrollUp, items);
-        assert_eq!(a.cursor, 0);
+        assert_eq!(first_row(&a), 3);
+        // Moving the cursor brings it back into view.
+        a.on_key(key(KeyCode::Right));
+        a.on_key(key(KeyCode::Down));
+        assert_eq!(first_row(&a), 1);
+        // A row click after scrolling selects the row that was clicked.
+        mouse(&mut a, MouseEventKind::ScrollDown, items);
+        mouse(&mut a, MouseEventKind::ScrollDown, items);
+        let r = first_row(&a);
+        click(&mut a, Hit::ItemRow(r + 2));
+        assert_eq!(a.cursor, r + 2);
+        assert_eq!(first_row(&a), r, "clicking a visible row does not scroll");
     }
 
     #[test]

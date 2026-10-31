@@ -1,6 +1,6 @@
 //! TUI state and key handling. Pure logic: side effects are returned as `Cmd`s for the runtime.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -87,6 +87,38 @@ pub enum DetailTab {
     Info,
     Commands,
     Log,
+}
+
+/// The first visible row of a list. It follows the cursor when the cursor or the list changes;
+/// the mouse wheel moves it alone, so scrolling never moves the selection.
+#[derive(Debug, Default)]
+pub struct View {
+    top: Cell<usize>,
+    /// `(cursor, rows)` at the last draw.
+    seen: Cell<Option<(usize, usize)>>,
+}
+
+impl View {
+    pub fn scroll(&self, up: bool) {
+        let t = self.top.get();
+        self.top.set(if up { t.saturating_sub(3) } else { t + 3 });
+    }
+
+    /// The top row for `height` visible rows out of `len`, called while drawing.
+    pub fn top(&self, cursor: usize, len: usize, height: usize) -> usize {
+        let mut top = self.top.get();
+        if self.seen.get() != Some((cursor, len)) {
+            self.seen.set(Some((cursor, len)));
+            if cursor < top {
+                top = cursor;
+            } else if height > 0 && cursor >= top + height {
+                top = cursor + 1 - height;
+            }
+        }
+        top = top.min(len.saturating_sub(height));
+        self.top.set(top);
+        top
+    }
 }
 
 /// A panel the mouse wheel scrolls.
@@ -271,6 +303,10 @@ pub struct App {
     pub last_run: Option<(String, Vec<String>, bool)>,
     /// Mouse targets of the last frame; drawing fills it, later entries lie on top.
     pub hits: RefCell<Vec<(Rect, Hit)>>,
+    pub items_view: View,
+    pub bundles_view: View,
+    pub plan_view: View,
+    pub steps_view: View,
 }
 
 impl App {
@@ -311,6 +347,10 @@ impl App {
             quitting: false,
             last_run: None,
             hits: RefCell::new(Vec::new()),
+            items_view: View::default(),
+            bundles_view: View::default(),
+            plan_view: View::default(),
+            steps_view: View::default(),
         }
     }
 
@@ -482,6 +522,7 @@ impl App {
         }
         self.plan = Some((plan, title));
         self.plan_cursor = 0;
+        self.plan_view = View::default();
         self.screen = Screen::Plan;
     }
 
@@ -608,30 +649,19 @@ impl App {
         vec![]
     }
 
-    /// Three rows per notch in the panel under the pointer, focused or not.
+    /// Scrolls the view of the panel under the pointer by three rows, focused or not; the
+    /// cursor and the selection stay where they are.
     fn wheel(&mut self, p: Panel, up: bool) {
-        let step = |v: usize, max: usize| {
-            if up {
-                v.saturating_sub(3)
-            } else {
-                (v + 3).min(max.saturating_sub(1))
-            }
-        };
         match p {
-            Panel::Items => self.cursor = step(self.cursor, self.rows().len()),
-            Panel::Bundles => {
-                self.bundle_cursor = step(self.bundle_cursor, self.bundle_ids().len())
-            }
-            Panel::Detail => self.detail_scroll = step(self.detail_scroll, usize::MAX),
-            Panel::Plan => {
-                let n = self.plan.as_ref().map_or(0, |(p, _)| p.units.len());
-                self.plan_cursor = step(self.plan_cursor, n);
-            }
-            Panel::Steps => {
-                if let Some(run) = &mut self.run {
-                    run.follow = false;
-                    run.sel = step(run.sel, run.units.len());
-                    run.scroll = 0;
+            Panel::Items => self.items_view.scroll(up),
+            Panel::Bundles => self.bundles_view.scroll(up),
+            Panel::Plan => self.plan_view.scroll(up),
+            Panel::Steps => self.steps_view.scroll(up),
+            Panel::Detail => {
+                self.detail_scroll = if up {
+                    self.detail_scroll.saturating_sub(3)
+                } else {
+                    self.detail_scroll + 3
                 }
             }
             // Like PgUp / PgDn: lines up from the bottom of the log.
@@ -1066,6 +1096,7 @@ impl App {
     pub fn start_run(&mut self, plan: Plan, run_id: String, ctl: Option<watch::Sender<Control>>) {
         self.last_run = None;
         self.run = Some(RunView::new(plan, run_id, ctl));
+        self.steps_view = View::default();
         self.screen = Screen::Run;
     }
 

@@ -366,7 +366,9 @@ sudo prompt.
   `(S: …)` hint switches scope; filter and detail tabs switch.
 - Key-bar entries press their key, and the plan's `Run N steps: enter` runs it (that screen is the
   confirmation). Cancel running and Stop after running stay keyboard only.
-- The wheel scrolls the panel under the pointer by 3, focused or not; the run log like PgUp/PgDn.
+- The wheel scrolls the view of the panel under the pointer by 3, focused or not; the cursor and
+  the selection stay (the cursor may leave the view). Moving the cursor brings the view back to it.
+  The run log scrolls like PgUp/PgDn.
 - A click while help is open only closes it; a click while searching ends the search.
 
 Dashboard model (user decision 2026-10-31): the selection is the install set, and Enter installs it.
