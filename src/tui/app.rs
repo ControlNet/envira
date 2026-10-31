@@ -24,6 +24,13 @@ pub enum Screen {
     Run,
 }
 
+/// The dashboard's two panels: Bundles on the left, Items on the right (← →).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Bundles,
+    Items,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
     All,
@@ -183,9 +190,12 @@ pub struct App {
     /// A latest-version check is running in the background.
     pub checking_latest: bool,
     pub screen: Screen,
-    pub focus: usize,
+    pub focus: Focus,
     pub cursor: usize,
+    /// What Enter installs: the missing items of the kept bundles plus the user's changes.
     pub selected: BTreeSet<String>,
+    /// Fill `selected` from the kept bundles on the next snapshot (on entry and after a run).
+    reseed: bool,
     pub filter: Filter,
     pub search: String,
     pub searching: bool,
@@ -225,9 +235,10 @@ impl App {
             detecting: true,
             checking_latest: false,
             screen: Screen::Loading,
-            focus: 4,
+            focus: Focus::Items,
             cursor: 0,
             selected: BTreeSet::new(),
+            reseed: true,
             filter: Filter::All,
             search: String::new(),
             searching: false,
@@ -288,6 +299,14 @@ impl App {
             }
         }
         self.snap = Some(snap);
+        if self.reseed {
+            self.reseed = false;
+            self.selected = self
+                .snap
+                .as_ref()
+                .map(|s| s.to_install().into_iter().collect())
+                .unwrap_or_default();
+        }
         self.clamp();
     }
 
@@ -340,12 +359,18 @@ impl App {
 
     /// Update targets: the selected tools (explicit), else every outdated tool; plus why
     /// selected ones were left out, and a plan title.
+    /// `u`: the selected tools that are installed, else every outdated tool.
     fn update_targets(&self) -> (Vec<UpdateTarget>, Vec<(String, String)>, String) {
         let Some(snap) = &self.snap else {
             return (vec![], vec![], String::new());
         };
         let (mut targets, mut skipped) = (Vec::new(), Vec::new());
-        if self.selected.is_empty() {
+        let chosen: Vec<String> = self
+            .selected_ids()
+            .into_iter()
+            .filter(|id| snap.get(id).is_some_and(|i| i.present))
+            .collect();
+        if chosen.is_empty() {
             for id in snap.outdated() {
                 if let Some(Ok(t)) = snap.get(&id).map(|i| i.update_target(false)) {
                     targets.push(t);
@@ -354,14 +379,14 @@ impl App {
             let n = targets.len();
             return (targets, skipped, format!("update · {n} outdated"));
         }
-        for id in self.targets() {
-            match snap.get(&id).map(|i| i.update_target(true)) {
+        for id in &chosen {
+            match snap.get(id).map(|i| i.update_target(true)) {
                 Some(Ok(t)) => targets.push(t),
-                Some(Err(why)) => skipped.push((id, why)),
+                Some(Err(why)) => skipped.push((id.clone(), why)),
                 None => {}
             }
         }
-        let n = self.selected.len();
+        let n = chosen.len();
         (targets, skipped, format!("update · from {n} selected"))
     }
 
@@ -396,20 +421,6 @@ impl App {
         self.state
             .as_ref()
             .is_some_and(|s| s.bundles.iter().any(|b| b == bundle))
-    }
-
-    /// Items to act on: the selection, else the item under the cursor.
-    fn targets(&self) -> Vec<String> {
-        if !self.selected.is_empty() {
-            let order = self.catalog.item_ids();
-            return order
-                .into_iter()
-                .filter(|id| self.selected.contains(id))
-                .collect();
-        }
-        self.current()
-            .map(|i| vec![i.id.clone()])
-            .unwrap_or_default()
     }
 
     fn open_plan(&mut self, plan: Plan, title: String) {
@@ -488,6 +499,7 @@ impl App {
                 st.mark_all_seen(&self.catalog);
                 self.state = Some(st);
                 self.screen = Screen::Dashboard;
+                self.reseed = true;
                 let cmds = vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
                 if k.code == KeyCode::Enter {
                     let targets = self.picker_targets();
@@ -547,20 +559,31 @@ impl App {
         }
         match k.code {
             KeyCode::Char('q') => return vec![Cmd::Quit],
+            KeyCode::Char('?') => self.help = true,
+            // Esc only clears the search: the selection is the install set.
             KeyCode::Esc => {
-                if !self.search.is_empty() {
-                    self.search.clear();
-                } else {
-                    self.selected.clear();
-                }
+                self.search.clear();
                 self.clamp();
             }
-            KeyCode::Char(c @ '1'..='5') => self.focus = c as usize - '0' as usize,
-            KeyCode::Tab => self.focus = if self.focus >= 5 { 1 } else { self.focus + 1 },
-            KeyCode::BackTab => self.focus = if self.focus <= 1 { 5 } else { self.focus - 1 },
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Bundles,
+            KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Items,
+            KeyCode::Enter => self.install_selection(),
+            KeyCode::Char('n') => self.selected.clear(),
+            KeyCode::Tab | KeyCode::BackTab => {
+                let tabs = [DetailTab::Info, DetailTab::Commands, DetailTab::Log];
+                let i = tabs.iter().position(|d| *d == self.detail).unwrap_or(0);
+                let step = if k.code == KeyCode::Tab {
+                    1
+                } else {
+                    tabs.len() - 1
+                };
+                self.detail = tabs[(i + step) % tabs.len()];
+                self.detail_scroll = 0;
+            }
+            KeyCode::Char('J') => self.detail_scroll += 1,
+            KeyCode::Char('K') => self.detail_scroll = self.detail_scroll.saturating_sub(1),
             KeyCode::Char('/') => {
-                self.focus = 4;
+                self.focus = Focus::Items;
                 self.searching = true;
                 self.search.clear();
             }
@@ -577,6 +600,10 @@ impl App {
                 self.detecting = true;
                 self.checking_latest = true;
                 return vec![Cmd::Refresh(Fetch::Force)];
+            }
+            KeyCode::Char('r') => {
+                self.detecting = true;
+                return vec![Cmd::Reload];
             }
             KeyCode::Char('u') => {
                 let (targets, skipped, what) = self.update_targets();
@@ -598,45 +625,20 @@ impl App {
                     self.open_plan(plan, what);
                 }
             }
-            KeyCode::Char('r') => {
-                self.detecting = true;
-                return vec![Cmd::Reload];
-            }
-            // Like `envira install`: the selection, else whatever the kept bundles miss.
-            KeyCode::Char('i') => {
-                if !self.selected.is_empty() {
-                    let t = self.targets();
-                    let n = t.len();
-                    self.open_plan(self.make_plan(&t), format!("install · from {n} selected"));
-                    return vec![];
-                }
-                let targets = self
-                    .snap
-                    .as_ref()
-                    .map(|s| s.to_install())
-                    .unwrap_or_default();
-                if targets.is_empty() {
-                    self.notify(
-                        if self.state.as_ref().is_none_or(|s| s.bundles.is_empty()) {
-                            "Nothing selected: space selects items, or keep bundles in [2]"
-                        } else {
-                            "Everything in your bundles is present"
-                        },
-                    );
-                } else {
-                    let n = targets.len();
-                    self.open_plan(
-                        self.make_plan(&targets),
-                        format!("install · {n} missing in your bundles"),
-                    );
-                }
-            }
             KeyCode::Char('x') => {
-                let t: Vec<String> = self
-                    .targets()
+                let present = self.present();
+                let mut t: Vec<String> = self
+                    .selected_ids()
                     .into_iter()
-                    .filter(|id| self.catalog.configs.contains_key(id))
+                    .filter(|id| present.contains(id))
                     .collect();
+                if t.is_empty() {
+                    t = self
+                        .current()
+                        .map(|i| vec![i.id.clone()])
+                        .unwrap_or_default();
+                }
+                t.retain(|id| self.catalog.configs.contains_key(id));
                 if t.is_empty() {
                     self.notify("Only configs can be reverted");
                 } else {
@@ -654,18 +656,35 @@ impl App {
                 }
                 None => self.notify("The last run left nothing to retry"),
             },
-            KeyCode::Char('l') => {
-                self.focus = 5;
-                self.detail = DetailTab::Log;
-                self.detail_scroll = 0;
-            }
             _ => match self.focus {
-                2 => return self.bundles_key(k),
-                5 => self.detail_key(k),
-                _ => self.table_key(k),
+                Focus::Bundles => return self.bundles_key(k),
+                Focus::Items => self.table_key(k),
             },
         }
         vec![]
+    }
+
+    /// The selection in catalog order.
+    fn selected_ids(&self) -> Vec<String> {
+        self.catalog
+            .item_ids()
+            .into_iter()
+            .filter(|id| self.selected.contains(id))
+            .collect()
+    }
+
+    /// Enter on the dashboard: plan the install of everything selected.
+    fn install_selection(&mut self) {
+        let t = self.selected_ids();
+        if t.is_empty() {
+            self.notify("Nothing selected: space selects bundles (left) and items (right)");
+            return;
+        }
+        let n = t.len();
+        self.open_plan(
+            self.make_plan(&t),
+            format!("install · {n} {}", super::ui::plural(n, "item", "items")),
+        );
     }
 
     fn table_key(&mut self, k: KeyEvent) {
@@ -696,13 +715,24 @@ impl App {
                     .collect();
                 self.selected.extend(ids);
             }
-            KeyCode::Enter => {
-                self.focus = 5;
-                self.detail = DetailTab::Info;
-            }
             _ => {}
         }
         self.detail_scroll = 0;
+    }
+
+    /// Items of a bundle that are not installed and can be.
+    fn missing_items(&self, bundle: &str) -> Vec<String> {
+        let Some(snap) = &self.snap else {
+            return vec![];
+        };
+        self.catalog
+            .bundle_items(bundle)
+            .into_iter()
+            .filter(|i| {
+                snap.get(i)
+                    .is_some_and(|s| !s.present && s.label != Label::NotApplicable)
+            })
+            .collect()
     }
 
     fn bundles_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -714,61 +744,46 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.bundle_cursor = (self.bundle_cursor + 1).min(ids.len().saturating_sub(1))
             }
+            // Keeps the bundle on this machine (like `envira install <bundle>`) and selects
+            // what it misses; dropping it unselects its items unless another kept bundle has them.
             KeyCode::Char(' ') => {
-                if let Some(b) = ids.get(self.bundle_cursor) {
-                    let st = self.state.get_or_insert_with(State::default);
-                    if let Some(pos) = st.bundles.iter().position(|x| x == b) {
-                        st.bundles.remove(pos);
-                        self.notify(format!("{} is no longer kept", self.catalog.bundle_name(b)));
-                    } else {
-                        st.bundles.push(b.clone());
-                        self.notify(format!(
-                            "{} kept: i installs what it misses",
-                            self.catalog.bundle_name(b)
-                        ));
+                let Some(b) = ids.get(self.bundle_cursor).cloned() else {
+                    return vec![];
+                };
+                let name = self.catalog.bundle_name(&b).to_string();
+                let mut kept = self
+                    .state
+                    .as_ref()
+                    .map(|s| s.bundles.clone())
+                    .unwrap_or_default();
+                if let Some(pos) = kept.iter().position(|x| *x == b) {
+                    kept.remove(pos);
+                    let others: BTreeSet<String> = kept
+                        .iter()
+                        .flat_map(|o| self.catalog.bundle_items(o))
+                        .collect();
+                    for i in self.catalog.bundle_items(&b) {
+                        if !others.contains(&i) {
+                            self.selected.remove(&i);
+                        }
                     }
-                    return vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(b) = ids.get(self.bundle_cursor) {
-                    self.selected = self.catalog.bundle_items(b).into_iter().collect();
-                    self.focus = 4;
+                    self.notify(format!("{name} is no longer kept"));
+                } else {
+                    kept.push(b.clone());
+                    let missing = self.missing_items(&b);
+                    let n = missing.len();
+                    self.selected.extend(missing);
                     self.notify(format!(
-                        "Selected the items of {}: i installs them",
-                        self.catalog.bundle_name(b)
+                        "{name} kept: {n} {} to install",
+                        super::ui::plural(n, "item", "items")
                     ));
                 }
+                self.state.get_or_insert_with(State::default).bundles = kept;
+                return vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
             }
             _ => {}
         }
         vec![]
-    }
-
-    fn detail_key(&mut self, k: KeyEvent) {
-        match k.code {
-            KeyCode::Left | KeyCode::Char('h') => {
-                self.detail = match self.detail {
-                    DetailTab::Info => DetailTab::Log,
-                    DetailTab::Commands => DetailTab::Info,
-                    DetailTab::Log => DetailTab::Commands,
-                };
-                self.detail_scroll = 0;
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                self.detail = match self.detail {
-                    DetailTab::Info => DetailTab::Commands,
-                    DetailTab::Commands => DetailTab::Log,
-                    DetailTab::Log => DetailTab::Info,
-                };
-                self.detail_scroll = 0;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.detail_scroll = self.detail_scroll.saturating_sub(1)
-            }
-            KeyCode::Down | KeyCode::Char('j') => self.detail_scroll += 1,
-            _ => {}
-        }
     }
 
     fn plan_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -863,6 +878,7 @@ impl App {
             KeyCode::Enter | KeyCode::Esc if finished => {
                 self.run = None;
                 self.screen = Screen::Dashboard;
+                self.reseed = true;
                 self.detecting = true;
                 return vec![Cmd::Refresh(Fetch::IfStale)];
             }
@@ -1083,13 +1099,14 @@ pub mod tests {
     #[test]
     fn select_and_install_opens_plan_then_run() {
         let mut a = app();
+        a.on_key(key(KeyCode::Char('n')));
         a.on_key(key(KeyCode::Char('/')));
         chars(&mut a, "codex");
         a.on_key(key(KeyCode::Enter));
         // codex and codex-sandbox-network match; select the tool.
         a.on_key(key(KeyCode::Char(' ')));
         assert!(a.selected.contains("codex"));
-        a.on_key(key(KeyCode::Char('i')));
+        a.on_key(key(KeyCode::Enter));
         assert_eq!(a.screen, Screen::Plan);
         let (plan, _) = a.plan.as_ref().unwrap();
         let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
@@ -1129,15 +1146,17 @@ pub mod tests {
     }
 
     #[test]
-    fn u_on_a_selection_explains_skips() {
+    fn u_updates_selected_installed_tools_else_all_outdated() {
+        // Selected but missing items (the seeded install set) are not update targets.
         let mut a = app();
-        a.selected.insert("codex".into());
         a.on_key(key(KeyCode::Char('u')));
         assert_eq!(a.screen, Screen::Dashboard);
-        assert_eq!(
-            a.toast_text(),
-            Some("codex: not installed (use `envira install`)")
-        );
+        assert_eq!(a.toast_text(), Some("Nothing is outdated (R checks again)"));
+        // An installed tool that is selected is.
+        a.selected.insert("bat".into());
+        a.on_key(key(KeyCode::Char('u')));
+        assert_eq!(a.screen, Screen::Plan);
+        assert_eq!(a.plan.as_ref().unwrap().1, "update · from 1 selected");
     }
 
     #[test]
@@ -1227,7 +1246,7 @@ pub mod tests {
     #[test]
     fn bundle_toggle_saves_state() {
         let mut a = app();
-        a.on_key(key(KeyCode::Char('2')));
+        a.on_key(key(KeyCode::Left));
         let first = a.bundle_ids()[0].clone();
         let cmds = a.on_key(key(KeyCode::Char(' ')));
         assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
@@ -1275,5 +1294,186 @@ pub mod tests {
         assert!(st.bundles.is_empty(), "{:?}", st.bundles);
         assert!(!st.seen.is_empty());
         assert_eq!(a.screen, Screen::Dashboard);
+    }
+
+    // Dashboard: Bundles on the left, Items on the right; the selection is what Enter installs.
+
+    fn ids(set: &BTreeSet<String>) -> Vec<&str> {
+        set.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn dashboard_starts_with_what_the_kept_bundles_miss() {
+        let a = app();
+        assert_eq!(ids(&a.selected), vec!["codex", "fnm"]);
+        assert_eq!(a.focus, Focus::Items);
+    }
+
+    #[test]
+    fn arrows_switch_between_bundles_and_items() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Left));
+        assert_eq!(a.focus, Focus::Bundles);
+        a.on_key(key(KeyCode::Right));
+        assert_eq!(a.focus, Focus::Items);
+        a.on_key(key(KeyCode::Char('h')));
+        assert_eq!(a.focus, Focus::Bundles);
+        a.on_key(key(KeyCode::Char('l')));
+        assert_eq!(a.focus, Focus::Items);
+        // Panel numbers no longer jump.
+        a.on_key(key(KeyCode::Char('2')));
+        assert_eq!(a.focus, Focus::Items);
+    }
+
+    #[test]
+    fn a_bundle_selects_its_missing_items_and_is_kept() {
+        let mut a = app();
+        a.selected.clear();
+        a.on_key(key(KeyCode::Left));
+        a.bundle_cursor = a
+            .bundle_ids()
+            .iter()
+            .position(|b| b == "ai-agents")
+            .unwrap();
+        let cmds = a.on_key(key(KeyCode::Char(' ')));
+        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(
+            a.state
+                .as_ref()
+                .unwrap()
+                .bundles
+                .contains(&"ai-agents".to_string())
+        );
+        let missing: Vec<String> = a
+            .catalog
+            .bundle_items("ai-agents")
+            .into_iter()
+            .filter(|i| {
+                a.snap
+                    .as_ref()
+                    .unwrap()
+                    .get(i)
+                    .is_some_and(|s| !s.present && s.label != Label::NotApplicable)
+            })
+            .collect();
+        assert!(!missing.is_empty());
+        assert!(
+            missing.iter().all(|i| a.selected.contains(i)),
+            "{:?}",
+            a.selected
+        );
+
+        // The refresh that follows keeps manual changes.
+        a.selected.remove("codex");
+        let snap = a.snap.clone().unwrap();
+        let state = a.state.clone();
+        a.on_snapshot(snap, state);
+        assert!(!a.selected.contains("codex"));
+
+        // Dropping the bundle drops its items, except those another kept bundle has.
+        a.on_key(key(KeyCode::Char(' ')));
+        assert!(
+            !a.state
+                .as_ref()
+                .unwrap()
+                .bundles
+                .contains(&"ai-agents".to_string())
+        );
+        let terminal = a.catalog.bundle_items("terminal");
+        assert!(
+            a.selected.iter().all(|i| terminal.contains(i)),
+            "{:?}",
+            a.selected
+        );
+    }
+
+    #[test]
+    fn space_in_items_adds_and_removes() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        chars(&mut a, "codex");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.current().unwrap().id, "codex");
+        a.on_key(key(KeyCode::Char(' ')));
+        assert!(!a.selected.contains("codex"));
+        a.cursor = 0;
+        a.on_key(key(KeyCode::Char(' ')));
+        assert!(a.selected.contains("codex"));
+    }
+
+    #[test]
+    fn enter_installs_the_selection() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Plan);
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert!(title.starts_with("install · "), "{title}");
+        let units: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
+        assert!(
+            units.contains(&"codex") && units.contains(&"fnm"),
+            "{units:?}"
+        );
+        let cmds = a.on_key(key(KeyCode::Enter));
+        assert!(matches!(&cmds[..], [Cmd::StartRun { command, .. }] if command == "install"));
+        // From Bundles too.
+        let mut a = app();
+        a.on_key(key(KeyCode::Left));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Plan);
+    }
+
+    #[test]
+    fn enter_with_nothing_selected_explains() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('n')));
+        assert!(a.selected.is_empty());
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Dashboard);
+        assert!(
+            a.toast_text().unwrap().contains("space"),
+            "{:?}",
+            a.toast_text()
+        );
+    }
+
+    #[test]
+    fn esc_clears_the_search_but_keeps_the_selection() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('/')));
+        chars(&mut a, "co");
+        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.search.is_empty());
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(ids(&a.selected), vec!["codex", "fnm"]);
+    }
+
+    #[test]
+    fn the_selection_is_seeded_again_after_a_run() {
+        let mut a = app();
+        a.on_key(key(KeyCode::Enter));
+        let plan = a.plan.clone().unwrap().0;
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.selected.is_empty());
+        a.start_run(plan, "20261031-070000".into(), None);
+        a.on_exec(Event::Finished(RunRecord::default()));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Dashboard);
+        let snap = a.snap.clone().unwrap();
+        let state = a.state.clone();
+        a.on_snapshot(snap, state);
+        assert_eq!(ids(&a.selected), vec!["codex", "fnm"]);
+    }
+
+    #[test]
+    fn tab_cycles_the_detail_tabs() {
+        let mut a = app();
+        assert_eq!(a.detail, DetailTab::Info);
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(a.detail, DetailTab::Commands);
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(a.detail, DetailTab::Log);
+        a.on_key(key(KeyCode::BackTab));
+        assert_eq!(a.detail, DetailTab::Commands);
     }
 }

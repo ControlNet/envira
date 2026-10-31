@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, Wrap};
 
-use super::app::{App, DetailTab, Filter, Screen, UnitState};
+use super::app::{App, DetailTab, Filter, Focus, Screen, UnitState};
 use super::theme::Theme;
 use crate::commands::fmt_duration;
 use crate::exec::Outcome;
@@ -34,6 +34,11 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
 // ------------------------------------------------------------------------------------------------
 
 fn panel<'a>(t: &Theme, n: usize, title: &str, focused: bool, extra: Vec<Span<'a>>) -> Block<'a> {
+    pane(t, &format!("[{n}] {title}"), focused, extra)
+}
+
+/// A rounded panel with a plain title (the dashboard's panels are not numbered).
+fn pane<'a>(t: &Theme, title: &str, focused: bool, extra: Vec<Span<'a>>) -> Block<'a> {
     let (border, title_style) = if focused {
         (
             t.s(t.focus),
@@ -42,7 +47,7 @@ fn panel<'a>(t: &Theme, n: usize, title: &str, focused: bool, extra: Vec<Span<'a
     } else {
         (t.s(t.border), t.s(t.dim))
     };
-    let mut spans = vec![Span::styled(format!("[{n}] {title}"), title_style)];
+    let mut spans = vec![Span::styled(title.to_string(), title_style)];
     if !extra.is_empty() {
         spans.push(Span::raw(" "));
         spans.extend(extra);
@@ -218,11 +223,12 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         &[("Filter", "type"), ("Keep", "enter"), ("Clear", "esc")]
     } else {
         &[
-            ("Update", "u"),
-            ("Install", "i"),
+            ("Panels", "← →"),
             ("Select", "space"),
-            ("Filter", "/ f"),
-            ("Panels", "1-5"),
+            ("Install", "enter"),
+            ("Update", "u"),
+            ("Search", "/"),
+            ("Filter", "f"),
             ("Help", "?"),
             ("Quit", "q"),
         ]
@@ -231,7 +237,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 }
 
 fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
-    let block = panel(t, 1, "Overview", app.focus == 1, vec![]);
+    let block = pane(t, "Overview", false, vec![]);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(snap) = &app.snap else { return };
@@ -317,7 +323,12 @@ fn bundle_counts(app: &App, b: &str) -> (usize, usize) {
 }
 
 fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
-    let block = panel(t, 2, "Bundles", app.focus == 2, vec![]);
+    let block = pane(
+        t,
+        "Bundles",
+        app.focus == Focus::Bundles,
+        vec![Span::styled("space keeps", t.s(t.dim))],
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
     let name_w = 13usize;
@@ -356,7 +367,7 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             spans.extend(bar(t, bar_w, &[(have, color)], total).spans);
             spans.push(Span::styled(format!(" {have:>3}/{total:<3}"), t.s(t.dim)));
             let line = Line::from(spans);
-            if app.focus == 2 && i == app.bundle_cursor {
+            if app.focus == Focus::Bundles && i == app.bundle_cursor {
                 line.style(t.cursor())
             } else {
                 line
@@ -403,17 +414,14 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         }
         None => vec![],
     };
-    let block = panel(t, 3, "Selection", app.focus == 3, extra);
+    let block = pane(t, "To install", false, extra);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(plan) = plan else {
-        let n = app.snap.as_ref().map(|s| s.to_install().len()).unwrap_or(0);
         let lines = vec![
-            Line::styled("space selects items", t.s(t.dim)),
-            Line::styled(
-                format!("i installs what your bundles miss: {n}"),
-                t.s(t.dim),
-            ),
+            Line::styled("Nothing selected.", t.s(t.dim)),
+            Line::styled("space: select bundles, items", t.s(t.dim)),
+            Line::styled("enter: install them", t.s(t.dim)),
         ];
         f.render_widget(Paragraph::new(lines), inner);
         return;
@@ -464,7 +472,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             tabs.push(Span::styled("▏", t.s(t.yellow)));
         }
     }
-    let block = panel(t, 4, "Items", app.focus == 4, tabs);
+    let block = pane(t, "Items", app.focus == Focus::Items, tabs);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let rows = app.rows();
@@ -548,7 +556,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 )),
                 Cell::from(Span::styled(note, t.s(note_color))),
             ]);
-            if i == app.cursor && app.focus == 4 {
+            if i == app.cursor && app.focus == Focus::Items {
                 row.style(t.cursor())
             } else {
                 row
@@ -600,20 +608,11 @@ fn detail(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         };
         tabs.push(Span::styled(*name, st));
     }
-    let focused = app.focus == 5;
+    tabs.push(Span::styled("  tab", t.s(t.dim)));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(t.s(if focused { t.focus } else { t.border }))
-        .title(Line::from(
-            [
-                vec![Span::styled(
-                    "[5] ",
-                    t.s(if focused { t.focus } else { t.dim }),
-                )],
-                tabs,
-            ]
-            .concat(),
-        ));
+        .border_style(t.s(t.border))
+        .title(Line::from([vec![], tabs].concat()));
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(it) = app.current() else { return };
@@ -1568,19 +1567,19 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 // ------------------------------------------------------------------------------------------------
 
 const DASHBOARD_KEYS: &[(&str, &str)] = &[
-    ("1-5 tab", "focus panel"),
-    ("↑↓ j k", "move"),
-    ("space", "select item · subscribe bundle in [2]"),
-    ("a", "select everything missing in view"),
-    ("u", "update the selection, else all outdated"),
-    ("i", "install the selection, else what your bundles miss"),
-    ("x", "revert selected configs"),
+    ("← →  h l", "Bundles · Items"),
+    ("↑↓  j k", "move"),
+    ("space", "bundle: keep it and select what it misses"),
+    ("space", "item: select or unselect it"),
+    ("a  n", "select everything missing in view · nothing"),
+    ("enter", "install the selection"),
+    ("u", "update selected tools, else all outdated"),
     ("/  f", "search · cycle status filter"),
-    ("← →", "detail tabs in [5]"),
-    ("l", "log of the item"),
+    ("tab  J K", "Info / Commands / Log · scroll it"),
+    ("x", "revert selected configs"),
     ("t", "retry what the last run left unfinished"),
     ("R  r", "re-detect + check updates · reload catalog"),
-    ("esc", "clear search / selection"),
+    ("esc", "clear the search"),
     ("q", "quit"),
 ];
 
@@ -1677,15 +1676,17 @@ mod tests {
         // Tall enough to show every catalog item.
         let s = render(&a, 140, 160);
         for needle in [
-            "[1] Overview",
-            "[2] Bundles",
-            "[3] Selection",
-            "[4] Items",
-            "[5] Info",
+            "Overview",
+            "Bundles",
+            "To install",
+            "Items",
+            "Info - Commands - Log",
             "● Terminal",
             "◆",
             "herdr",
-            "Install: i",
+            "Panels: ← →",
+            "Install: enter",
+            "Update: u",
         ] {
             assert!(s.contains(needle), "missing {needle:?} in\n{s}");
         }
@@ -1698,7 +1699,7 @@ mod tests {
     #[test]
     fn bundle_list_scrolls_to_the_cursor() {
         let mut a = app();
-        a.focus = 2;
+        a.focus = Focus::Bundles;
         a.bundle_cursor = a.bundle_ids().len() - 1;
         let last = a
             .catalog
@@ -1731,8 +1732,8 @@ mod tests {
     #[test]
     fn plan_and_run_screens_render() {
         let mut a = app();
-        // Nothing selected: i plans what the kept bundles miss.
-        a.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // Enter installs the selection, seeded with what the kept bundles miss.
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = render(&a, 140, 40);
         assert!(
             s.contains("[2] Steps") && s.contains("codex") && s.contains("Run 4 steps: enter"),

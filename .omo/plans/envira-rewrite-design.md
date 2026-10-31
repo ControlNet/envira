@@ -320,10 +320,10 @@ installs what the kept bundles miss. `sync` was removed without an alias (user d
 
 ## TUI
 Visual direction (chosen 2026-10-29, design "BC1"; mockups live in a private design canvas, not in the
-repo): lazygit-style numbered panels (`[1]`..`[5]`, digits jump focus, focused panel border
-green) combined with btop-style gauges: an `[1] Overview` strip of counts + line gauges on top, per-bundle
-progress bars in the bundles panel, a selection panel that previews the plan, lazygit-style key hint bar
-at the bottom. Default palette Tokyo Night; theme is a config key, with automatic Catppuccin Latte on light
+repo): lazygit-style panels (focused panel border green) combined with btop-style gauges: an
+Overview strip of counts + line gauges on top, per-bundle progress bars in the bundles panel, a
+"To install" panel that previews the plan, lazygit-style key hint bar at the bottom. The dashboard's
+panels are not numbered (2026-10-31): only Bundles and Items take keys, and ← → move between them. Default palette Tokyo Night; theme is a config key, with automatic Catppuccin Latte on light
 terminals and ANSI-16 fallback without truecolor. Status always carries a glyph (✓ ↑ ✗ ◆ ! ⊘ –), never color alone.
 
 Architecture: tokio runtime; one `mpsc<AppEvent>` fed by crossterm `EventStream`, executor output,
@@ -339,11 +339,21 @@ Screens:
 4. **History / logs**: previous runs and per-tool logs.
 5. **First-run picker**: choose bundles for this machine. Bundles that are mostly present start
    ticked; enter keeps the ticked ones and plans their install, esc skips (keeps none, and the
-   picker does not come back; bundles can be kept later in [2]).
+   picker does not come back; bundles can be kept later in the Bundles panel).
 
-Keys (dashboard): `space` toggle, `i` install selected (else what the kept bundles miss, like
-`envira install`), `u` update selected/outdated,
-`/` filter, `tab` switch pane, `l` logs, `R` refresh/check updates, `?` help, `q` quit.
+Dashboard model (user decision 2026-10-31): the selection is the install set, and Enter installs it.
+- It starts as what the kept bundles miss (`envira install` without arguments), and is filled again
+  after each run.
+- `space` on a bundle keeps it (saved at once, like `envira install <bundle>`) and selects its
+  missing items; dropping it unselects its items unless another kept bundle has them.
+- `space` on an item adds or removes it. Unticking an item of a kept bundle only leaves it out of
+  this install; it is not recorded (no `exclude`), so it is selected again next time.
+
+Keys (dashboard): `← →` (`h l`) Bundles / Items, `↑↓` (`j k`) move, `space` select, `enter`
+install the selection, `u` update (selected installed tools, else all outdated), `a` / `n` select all
+missing in view / none, `/` search, `f` status filter, `tab` Info / Commands / Log with `J K` to
+scroll it, `x` revert configs, `t` retry the last run, `R` re-detect + check updates, `r` reload
+the catalog, `esc` clear the search (never the selection), `?` help, `q` quit.
 
 ## Data-driven catalog
 Principle: **the binary contains no per-tool knowledge.** Tools are nouns in TOML data; Rust only
