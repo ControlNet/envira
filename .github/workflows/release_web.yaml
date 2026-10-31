@@ -21,37 +21,25 @@ jobs:
         mkdir -p ~/dist/envira
         mv files ~/dist/files
 
-    # Only the catalog comes from this run's build (the x86_64 dist artifact).
-    - name: Download the catalog
+    - name: Download the dist build
       uses: actions/download-artifact@v4
       with:
-        name: dist-x86_64
+        pattern: dist-*
+        merge-multiple: true
         path: ~/artifacts
 
-    # files/envira-<arch>-<os>(.sha256): mirrors of a release's binaries, this tag's or, on other
-    # pushes, the latest release's, so a push to main never publishes an unreleased build.
-    # files/envira: the x86_64 Linux binary under the name the first envira.sh downloaded.
-    - name: Release binaries
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        tag=""
-        case "$GITHUB_REF" in refs/tags/v*) tag="$GITHUB_REF_NAME" ;; esac
-        # $tag unquoted: empty means the latest release.
-        if gh release download $tag --repo "$GITHUB_REPOSITORY" --pattern 'envira-*' --dir ~/release; then
-          mv ~/release/envira-* ~/dist/files/
-          cp ~/dist/files/envira-x86_64-linux ~/dist/files/envira
-        else
-          echo "::warning::no GitHub release ${tag:-yet}; files/ has no envira binaries"
-        fi
-
-    # envira/catalog.toml: the catalog every envira fetches.
+    # files/envira-<arch>-linux(.sha256): mirrors of the release binaries; files/envira: the
+    # x86_64 binary under the name the first envira.sh downloaded; envira/catalog.toml: the
+    # catalog every envira fetches.
     - name: Clean files
       run: |
         mv run.sh ~/dist/index.html
         mv run_user.sh ~/dist/user/index.html
         mv verify.sh ~/dist/verify.html
         mv envira.sh ~/dist/envira/index.html
+        mv ~/artifacts/envira-*-linux ~/artifacts/envira-*-linux.sha256 ~/dist/files/
+        mv ~/artifacts/envira-*-macos ~/artifacts/envira-*-macos.sha256 ~/dist/files/
+        cp ~/dist/files/envira-x86_64-linux ~/dist/files/envira
         mv ~/artifacts/catalog.toml ~/dist/envira/catalog.toml
         echo "boot.controlnet.space" > ~/dist/CNAME
         ls -lR ~/dist/files ~/dist/envira

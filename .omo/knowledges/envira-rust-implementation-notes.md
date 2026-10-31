@@ -232,8 +232,3 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   one log dir until `new_run_id` added `-02`, `-03` suffixes.
 - Safe manual TUI runs on a real machine: `ENVIRA_STATE_DIR=<tmp>/state ENVIRA_CONFIG_DIR=<tmp>/config envira`
   keeps state writes out of `~/.local/state`. Do not confirm plans on the host.
-- The site's `files/` mirror holds release binaries only: `release_web.yaml` takes them with
-  `gh release download` (the tag's release, or the latest one on main pushes; no release → a
-  warning and no binaries). Pushing main and a tag together starts two runs; the tag run's deploy
-  waits for its `release` job and `concurrency: release-web` serialises deploys, so whichever
-  deploy runs last mirrors the new release.
