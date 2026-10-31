@@ -19,9 +19,9 @@ What tools will be installed:
 
 ### envira (new)
 
-`envira` is a single binary: static for x86_64 and aarch64 Linux (no dependencies), and for Apple
-Silicon Macs (experimental; Homebrew is the main route there). It knows the
-tools and configs from a catalog, shows what is installed, and installs, updates or reverts them.
+`envira` is a single binary for Linux (x86_64 and aarch64, static, no dependencies) and Apple Silicon
+Macs. It knows the tools and configs from a catalog, shows what is installed, and installs, updates
+or reverts them.
 
 ```shell
 # install the binary into ~/.local/bin (checks its SHA-256)
@@ -44,6 +44,10 @@ envira doctor              # machine facts, catalog layers, PATH, shell integrat
 
 - With sudo, packages go system-wide; without it, envira picks user-scope routes
   (`--scope user` forces that).
+- macOS: install [Homebrew](https://brew.sh) first; envira uses it for most tools and does not
+  install it itself. Without it, only tools with another route (cargo, pipx, npm, vendor scripts)
+  are available. Linux-only items (Docker, the default-shell and sysctl configs) show as n/a.
+  Intel Macs are not supported yet.
 - envira uses the catalog published at `boot.controlnet.space/envira/catalog.toml`, so new tools
   arrive without a new release. It is cached for an hour, and it falls back to the cache and
   then to the catalog built into the binary. `--no-remote` uses only the built-in one.

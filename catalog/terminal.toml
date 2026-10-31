@@ -173,6 +173,8 @@ desc = "Smarter cd"
 depends = ["curl"]
 install = [
   { method = "brew", package = "zoxide", depends = ["homebrew"] },
+  # Before the vendor script: it asks GitHub's API without a token (rate-limited on shared IPs).
+  { method = "github-release", repo = "ajeetdsouza/zoxide", asset = { x86_64 = "zoxide-*-x86_64-unknown-linux-musl.tar.gz", aarch64 = "zoxide-*-aarch64-unknown-linux-musl.tar.gz" } },
   { method = "script", url = "https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh", shell = "bash", latest = { http = "https://api.github.com/repos/ajeetdsouza/zoxide/releases/latest", json = "tag_name" } },
 ]
 shell = { init = { zsh = 'eval "$(zoxide init zsh)"', bash = 'eval "$(zoxide init bash)"' } }

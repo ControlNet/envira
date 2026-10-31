@@ -34,6 +34,8 @@ desc = "Terminal UI for docker"
 depends = ["curl"]
 install = [
   { method = "brew", package = "lazydocker", depends = ["homebrew"] },
+  # Before the vendor script: it asks GitHub's API without a token (rate-limited on shared IPs).
+  { method = "github-release", repo = "jesseduffield/lazydocker", asset = { x86_64 = ["lazydocker_*_Linux_x86_64.tar.gz", "lazydocker_*_linux_x86_64.tar.gz"], aarch64 = ["lazydocker_*_Linux_arm64.tar.gz", "lazydocker_*_linux_arm64.tar.gz"] } },
   { method = "script", url = "https://raw.githubusercontent.com/jesseduffield/lazydocker/master/scripts/install_update_linux.sh", when = ["os:linux"], shell = "bash", latest = { http = "https://api.github.com/repos/jesseduffield/lazydocker/releases/latest", json = "tag_name" } },
 ]
 

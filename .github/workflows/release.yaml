@@ -1,8 +1,8 @@
 name: Release to PyPI
 
 # A push to main deploys boot.controlnet.space (scripts, catalog.toml, binaries). A `v*` tag also
-# publishes the wheels to PyPI and creates the GitHub release that envira.sh installs from; its
-# version must match Cargo.toml. The workflow file name and the `pypi` / `testpypi` environments
+# publishes the wheels (Linux x86_64 / aarch64, macOS arm64) to PyPI and creates the GitHub release
+# that envira.sh installs from; its version must match Cargo.toml. The workflow file name and the `pypi` / `testpypi` environments
 # are what PyPI trusted publishing is bound to.
 on:
   push:
@@ -118,7 +118,11 @@ jobs:
   verify:
     if: ${{ !cancelled() && !failure() && github.event.inputs.test_pypi != 'true' && startsWith(github.ref, 'refs/tags/v') }}
     needs: publish
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Wait for PyPI to update
         run: sleep 60

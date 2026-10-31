@@ -20,7 +20,7 @@ Problems it must solve that the legacy scripts (`run.sh`, `run_user.sh`, `verify
 | Topic | Decision |
 |---|---|
 | Stack | Rust, ratatui + crossterm, tokio, clap, serde/toml, reqwest (rustls), semver |
-| Distribution | musl static binaries for `x86_64` and `aarch64`, built natively in Alpine (one runner per arch) |
+| Distribution | Linux: musl static binaries for `x86_64` and `aarch64`, built natively in Alpine (one runner per arch). macOS: `aarch64` binary built on `macos-15` (system libraries only) |
 | Catalog delivery | Fetched from the published site at runtime, cached; embedded copy as offline fallback |
 | Legacy scripts | Kept and hand-maintained in parallel long term; a CI parity check flags drift |
 | v1 scope | Tools (install / update / sync / retry), configs (apply / revert) + managed shell environment (PATH, env, alias, init) |
@@ -605,15 +605,16 @@ The old branch broke releases by deleting `release.yaml` without a replacement. 
   - `rust.yaml` calls it on every push.
 - Static musl has no NSS: users from LDAP/SSSD are not visible to `getpwnam`. `facts.rs` falls back
   to the system's `getent passwd`, then `$USER`.
-- `release.yaml` runs `test`, the legacy test and `rust` (lints, unit, integration on 4 distros,
-  dist).
+- `release.yaml` runs `test`, the legacy test and `rust` (lints, unit, integration on 4 distros and
+  macOS, dist for Linux x86_64 / aarch64 and macOS arm64).
   - On a `v*` tag:
     1. `version` checks that the tag equals the `Cargo.toml` version;
     2. `publish` uploads the wheels to PyPI by trusted publishing (`pypi` / `testpypi`
        environments, bound to the file name `release.yaml`);
     3. `release` creates the GitHub release with the binaries, checksums and `catalog.toml`;
-    4. `verify` installs `envira==<version>` from PyPI and runs it.
-  - On a push to main, `release-web` deploys the site.
+    4. `verify` installs `envira==<version>` from PyPI and runs it on Linux x86_64, Linux aarch64
+       and macOS.
+  - On a push to main (and on a tag push), `release-web` deploys the site.
   - As on main before, the legacy test matrix runs but does not gate publishing.
 - `release_web.yaml` puts the binaries and checksums in `files/`, plus `files/envira`, the x86_64
   binary under its old name. `catalog.toml` goes in `envira/`. The legacy scripts' paths are unchanged.
