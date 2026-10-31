@@ -238,3 +238,13 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   structs use `deny_unknown_fields`, so a new field is caught. The latest release is looked up with
   `gh release list` (empty only when none exists), so a failed download fails the deploy instead of
   skipping the check.
+
+## CI lessons (2026-10-31)
+
+- In a caller workflow, `if: !cancelled() && !failure()` on a job whose `needs` were cancelled by a
+  concurrency group still runs: the needed job's result is `cancelled`, which is neither. Gate deploys
+  on `needs.<job>.result == 'success'` instead.
+- A called (reusable) workflow's own `concurrency` and the caller's must use different group names,
+  or the call can deadlock. Path filters of a reusable workflow do not apply when it is called.
+- Node 26 (fnm `--lts` since late 2026) needs `libatomic.so.1`; Fedora's gcc does not pull it in
+  (Ubuntu's and Arch's do). Symptom: every npm step after it silently does nothing.
