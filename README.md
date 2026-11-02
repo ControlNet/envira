@@ -13,7 +13,7 @@ commands for scripts and Dockerfiles.
 - macOS on Apple Silicon, with Homebrew.
 - With or without sudo: without it, envira picks user-scope routes.
 
-![theme](https://raw.githubusercontent.com/ControlNet/envira/main/assets/theme_preview.jpg)
+![envira dashboard: bundles, tools with installed and latest versions, and what is selected](https://raw.githubusercontent.com/ControlNet/envira/main/assets/tui-dashboard.webp)
 
 ## Install
 
@@ -44,6 +44,15 @@ envira retry               # retry what failed or was blocked in the last run
 envira log / explain <id>  # logs of the last run; why an item has its status
 envira doctor              # machine facts, catalog layers, PATH, shell integration
 ```
+
+Before anything runs, the plan lists each step, why it is there, and the exact commands:
+
+![envira plan review: ordered steps with their dependencies and commands](https://raw.githubusercontent.com/ControlNet/envira/main/assets/tui-plan.webp)
+
+A failed step only blocks what depends on it. Network failures are retried, and `r` (or
+`envira retry`) runs what is left once the cause is fixed:
+
+![envira run with one failed step and its blocked dependents](https://raw.githubusercontent.com/ControlNet/envira/main/assets/tui-failed-run.webp)
 
 Bundles (`envira install <bundle>`):
 
@@ -77,6 +86,10 @@ Bundles (`envira install <bundle>`):
   format, and `envira catalog check` validates it.
 - Variables for the install script: `ENVIRA_VERSION=v0.2.0` pins a release,
   `ENVIRA_INSTALL_DIR` changes where it puts the binary, and `ENVIRA_NO_LAUNCH=1` only installs.
+
+The prompt that `shell` sets up (the mzz-ys theme):
+
+![theme](https://raw.githubusercontent.com/ControlNet/envira/main/assets/theme_preview.jpg)
 
 ## Docker
 
