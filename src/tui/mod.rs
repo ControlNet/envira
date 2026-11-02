@@ -255,8 +255,11 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 Cmd::Reload => match sess.reload() {
                     Ok(()) => {
                         app.catalog = sess.catalog.clone();
-                        app.loaded_layers = sess.loaded.layers.clone();
-                        app.notify("Catalog reloaded");
+                        app.catalog_warnings = sess.loaded.warnings.clone();
+                        match app::catalog_warning(&app.catalog_warnings) {
+                            Some(w) => app.warn(w),
+                            None => app.notify("Catalog reloaded"),
+                        }
                         spawn_detect(&sess, tx.clone(), Fetch::CacheOnly, app.prefer_system);
                     }
                     Err(e) => {

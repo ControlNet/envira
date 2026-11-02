@@ -144,7 +144,7 @@ kill "$web"
 rm -rf /tmp/cache
 start=$(date +%s)
 remote http://127.0.0.1:9/catalog.toml | tee /tmp/remote.txt
-grep -q "^warning: could not fetch http://127.0.0.1:9/catalog.toml" /tmp/remote.txt
+grep -q "^warning: using the embedded catalog: could not fetch http://127.0.0.1:9/catalog.toml" /tmp/remote.txt
 grep -q "^embedded" /tmp/remote.txt
 [ $(( $(date +%s) - start )) -le 5 ]
 

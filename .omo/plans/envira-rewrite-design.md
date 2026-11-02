@@ -346,6 +346,10 @@ Scope display (user decision 2026-10-31, design canvas option A):
 - Header: privilege (`root`, `sudo ✓`, `sudo (password)`, `no sudo`) and `new installs → system|user`
   with `(S: other)` when sudo is available. `S` flips the TUI's scope for `any` methods for this
   session (like `--scope`); entries that are system-only stay system.
+- The header no longer shows the catalog source (user decision 2026-11-02): it is in
+  `envira doctor`. Load warnings (remote unreachable, cache unusable) show as a warning toast when
+  the dashboard opens; the update-count toast does not cover a warning. Toasts wider than the key
+  bar are cut with `…` (before, they were not drawn at all).
 - Items: own `scope` column; installed system tools in orange. Missing items show the route an
   install would take as `→ via` with its scope, dimmed. External tools show no via (envira does not
   know how they got there); their scope comes from the binary's path (under `$HOME` = user) and the

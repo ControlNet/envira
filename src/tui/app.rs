@@ -267,9 +267,19 @@ impl RunView {
     }
 }
 
+/// One toast line for catalog load warnings; the rest are in `envira doctor`.
+pub fn catalog_warning(warnings: &[String]) -> Option<String> {
+    let first = warnings.first()?;
+    Some(match warnings.len() {
+        1 => format!("Catalog: {first}"),
+        n => format!("Catalog: {first} (+{} more: envira doctor)", n - 1),
+    })
+}
+
 pub struct App {
     pub catalog: Arc<Catalog>,
-    pub loaded_layers: Vec<String>,
+    /// Catalog load warnings (remote unreachable, cache unusable), shown once the dashboard opens.
+    pub catalog_warnings: Vec<String>,
     pub facts: Arc<Facts>,
     pub paths: Paths,
     pub prefer_system: bool,
@@ -295,6 +305,8 @@ pub struct App {
     pub plan_cursor: usize,
     pub run: Option<RunView>,
     pub toast: Option<(String, Instant)>,
+    /// The toast is a warning that routine notices (the update count) must not cover.
+    pub toast_warns: bool,
     pub help: bool,
     pub tick: u64,
     /// SIGTERM/SIGHUP arrived during a run: quit once it has wound down.
@@ -319,7 +331,7 @@ impl App {
     ) -> App {
         App {
             catalog,
-            loaded_layers: loaded.layers.clone(),
+            catalog_warnings: loaded.warnings.clone(),
             facts,
             paths,
             prefer_system,
@@ -342,6 +354,7 @@ impl App {
             plan_cursor: 0,
             run: None,
             toast: None,
+            toast_warns: false,
             help: false,
             tick: 0,
             quitting: false,
@@ -356,6 +369,12 @@ impl App {
 
     pub fn notify(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+        self.toast_warns = false;
+    }
+
+    pub fn warn(&mut self, msg: impl Into<String>) {
+        self.notify(msg);
+        self.toast_warns = true;
     }
 
     pub fn toast_text(&self) -> Option<&str> {
@@ -383,6 +402,10 @@ impl App {
                 self.focus = Focus::Bundles;
             } else {
                 self.load_last_run();
+            }
+            // After the last-run toast: the overview already shows what that run left.
+            if let Some(w) = catalog_warning(&self.catalog_warnings) {
+                self.warn(w);
             }
         }
         self.snap = Some(snap);
@@ -483,7 +506,8 @@ impl App {
         if let Some(snap) = &mut self.snap {
             snap.apply_latest(&answers);
             let n = snap.outdated().len();
-            if n > 0 {
+            // The overview shows the count too: never cover a warning still on screen.
+            if n > 0 && !(self.toast_warns && self.toast_text().is_some()) {
                 self.notify(format!(
                     "{n} {} · u updates",
                     super::ui::plural(n, "update", "updates")

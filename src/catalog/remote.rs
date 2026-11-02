@@ -83,7 +83,10 @@ pub fn remote_layer(
             };
             (
                 l,
-                Some(w.unwrap_or(format!("could not fetch {}: {e}; using {fell_back}", r.url))),
+                Some(w.unwrap_or(format!(
+                    "using {fell_back}: could not fetch {} ({e})",
+                    r.url
+                ))),
             )
         }
     }
@@ -110,7 +113,7 @@ fn from_cache(r: &Remote, how: &str) -> (Option<Layer>, Option<String>) {
         Err(e) => (
             None,
             Some(format!(
-                "the cached catalog was not used: {e}; using the embedded catalog"
+                "using the embedded catalog: the cached catalog was not used ({e})"
             )),
         ),
     }
@@ -195,7 +198,7 @@ pub fn http_fetch(url: &str, etag: Option<&str>) -> Result<Fetched, String> {
         if let Some(e) = &etag {
             req = req.header(reqwest::header::IF_NONE_MATCH, e);
         }
-        let resp = req.send().map_err(|e| e.to_string())?;
+        let resp = req.send().map_err(describe)?;
         match resp.status().as_u16() {
             304 => Ok(Fetched::NotModified),
             200 => {
@@ -212,6 +215,22 @@ pub fn http_fetch(url: &str, etag: Option<&str>) -> Result<Fetched, String> {
     })
     .join()
     .unwrap_or_else(|_| Err("the download thread panicked".into()))
+}
+
+/// A request error without the URL (the caller names it) and with its root cause, e.g.
+/// `error sending request: Connection refused (os error 111)`.
+fn describe(e: reqwest::Error) -> String {
+    let mut root: &dyn std::error::Error = &e;
+    while let Some(next) = root.source() {
+        root = next;
+    }
+    let root = root.to_string();
+    let top = e.without_url().to_string();
+    if root == top {
+        top
+    } else {
+        format!("{top}: {root}")
+    }
 }
 
 #[cfg(test)]

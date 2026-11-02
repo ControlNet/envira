@@ -116,7 +116,17 @@ fn keybar(
         }
         spans.push(Span::styled(format!("{name}: {key}"), t.s(t.cyan)));
     }
-    let right = right.map(Line::from).unwrap_or_default();
+    // A right side wider than the bar would not be drawn at all: cut it to fit instead.
+    let right = right
+        .map(|s| {
+            let max = area.width as usize;
+            match s.width() > max {
+                true => Span::styled(truncate(&s.content, max), s.style),
+                false => s,
+            }
+        })
+        .map(Line::from)
+        .unwrap_or_default();
     let rw = right.width() as u16;
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw)]).areas(area);
     hit_spans(app, l, &spans, marks);
@@ -141,19 +151,11 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u
     ];
     let what_x = area.x + Line::from(left.clone()).width() as u16;
     left.extend(what);
+    // Where the catalog came from is in `envira doctor`; load warnings show as a toast.
     let right = if app.detecting {
         format!("{} detecting…", SPINNER[(app.tick % 10) as usize])
     } else {
-        format!("catalog {}", app.loaded_layers.join(" + "))
-    };
-    // Long catalog paths keep their end and never push out the left side.
-    let max = (area.width / 2) as usize;
-    let n = right.chars().count();
-    let right = if n + 1 > max && max > 1 {
-        let tail: String = right.chars().skip(n + 2 - max).collect();
-        format!("…{tail}")
-    } else {
-        right
+        String::new()
     };
     let [l, r] = Layout::horizontal([
         Constraint::Min(0),
@@ -1797,19 +1799,50 @@ mod tests {
     }
 
     #[test]
-    fn long_catalog_names_do_not_hide_the_header() {
-        let mut a = app();
-        a.loaded_layers = vec![format!(
-            "explicit /{} (1 files)",
-            "very/long/path".repeat(20)
-        )];
+    fn the_header_leaves_out_the_catalog_source() {
+        let a = app();
         let s = render(&a, 100, 30);
         let first = s.lines().next().unwrap();
         let start = format!("envira {} · workstation · ", env!("CARGO_PKG_VERSION"));
         assert!(first.starts_with(&start), "{first}");
-        assert!(
-            first.contains("…") && first.ends_with("(1 files)"),
-            "{first}"
+        assert!(!first.contains("catalog"), "{first}");
+    }
+
+    #[test]
+    fn toasts_wider_than_the_key_bar_are_cut_not_dropped() {
+        let mut a = app();
+        a.notify(format!(
+            "Catalog: using the embedded catalog: {}",
+            "x".repeat(200)
+        ));
+        let s = render(&a, 100, 30);
+        let last = s.lines().last().unwrap();
+        assert!(last.starts_with("Catalog: using the embedded"), "{last}");
+        assert!(last.trim_end().ends_with('…'), "{last}");
+    }
+
+    #[test]
+    fn catalog_warnings_show_once_the_dashboard_opens() {
+        let mut a = app();
+        a.screen = Screen::Loading;
+        a.toast = None;
+        a.catalog_warnings = vec!["could not fetch x: timed out; using the cache".into()];
+        let snap = a.snap.take().unwrap();
+        a.on_snapshot(snap, None);
+        assert_eq!(
+            a.toast_text(),
+            Some("Catalog: could not fetch x: timed out; using the cache")
+        );
+        // The update count arriving later does not cover it.
+        a.on_latest(std::collections::BTreeMap::from([(
+            "bat".to_string(),
+            crate::latest::Latest::Version("99.0".into()),
+        )]));
+        assert!(a.toast_text().unwrap().starts_with("Catalog:"));
+        a.catalog_warnings.push("second".into());
+        assert_eq!(
+            crate::tui::app::catalog_warning(&a.catalog_warnings).as_deref(),
+            Some("Catalog: could not fetch x: timed out; using the cache (+1 more: envira doctor)")
         );
     }
 
