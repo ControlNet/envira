@@ -1605,9 +1605,28 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
 }
 
 fn help(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    const KEY: usize = 12;
     let rows = help_rows(app.screen);
-    let w = 58.min(area.width);
-    let h = (rows.len() as u16 + 4).min(area.height);
+    let widest = rows
+        .iter()
+        .map(|(_, v)| v.chars().count())
+        .max()
+        .unwrap_or(0);
+    // As wide as the longest line plus a space; on a narrow terminal the descriptions wrap.
+    let w = ((KEY + widest + 3) as u16).min(area.width);
+    let text = (w as usize).saturating_sub(KEY + 3).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for (k, v) in rows {
+        for (i, part) in wrap_words(v, text).into_iter().enumerate() {
+            let key = if i == 0 { *k } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{key:>10}  "), t.s(t.cyan)),
+                Span::raw(part),
+            ]));
+        }
+    }
+    lines.extend([Line::raw(""), Line::styled("any key closes", t.s(t.dim))]);
+    let h = (lines.len() as u16 + 2).min(area.height);
     let r = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -1622,17 +1641,22 @@ fn help(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             " Keys ",
             Style::new().fg(t.focus).add_modifier(Modifier::BOLD),
         ));
-    let lines: Vec<Line> = rows
-        .iter()
-        .map(|(k, v)| {
-            Line::from(vec![
-                Span::styled(format!("{k:>10}  "), t.s(t.cyan)),
-                Span::raw(*v),
-            ])
-        })
-        .chain([Line::raw(""), Line::styled("any key closes", t.s(t.dim))])
-        .collect();
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// Splits `s` at spaces into lines of at most `n` characters (a longer word gets its own line).
+fn wrap_words(s: &str, n: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in s.split(' ') {
+        match out.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= n => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => out.push(word.to_string()),
+        }
+    }
+    out
 }
 
 /// A system-scope tool envira manages, on a machine where this user cannot use sudo.
@@ -1681,6 +1705,25 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn help_lines_are_whole_at_any_width() {
+        let mut a = app();
+        a.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        for w in [140, 80, 50] {
+            let s = render(&a, w, 40);
+            // Wrapped lines join back with the key column's indent in between.
+            let text = s
+                .lines()
+                .map(|l| l.trim_matches(|c: char| c == '│' || c == ' '))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            for (_, desc) in DASHBOARD_KEYS {
+                assert!(text.contains(desc), "{w} cols: {desc:?} is cut\n{s}");
+            }
+        }
     }
 
     #[test]
