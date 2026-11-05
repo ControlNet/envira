@@ -668,11 +668,21 @@ fn version_of(exe: &Path) -> Result<String, String> {
         }
     };
     let mut out = child.stdout.take().expect("piped");
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = (&mut out).take(4096).read_to_end(&mut buf);
-        buf
-    });
+    // What it printed so far (at most 4 KiB), and a signal once its stdout closed.
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (closed_tx, closed) = std::sync::mpsc::channel::<()>();
+    {
+        let got = got.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 512];
+            while let Ok(n @ 1..) = out.read(&mut chunk) {
+                let mut g = got.lock().unwrap();
+                let room = 4096usize.saturating_sub(g.len());
+                g.extend_from_slice(&chunk[..n.min(room)]);
+            }
+            let _ = closed_tx.send(());
+        });
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let status = loop {
         match child.try_wait() {
@@ -688,7 +698,10 @@ fn version_of(exe: &Path) -> Result<String, String> {
             Err(e) => return Err(e.to_string()),
         }
     };
-    let text = String::from_utf8_lossy(&reader.join().unwrap_or_default())
+    // It has exited, so what it printed is in the pipe already. A process it left behind may
+    // keep the pipe open: give the reader a moment, never wait for that process.
+    let _ = closed.recv_timeout(Duration::from_secs(1));
+    let text = String::from_utf8_lossy(&got.lock().unwrap())
         .trim()
         .to_string();
     if !status.success() {
@@ -703,6 +716,24 @@ fn version_of(exe: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new binary that answers and exits but leaves a process holding its stdout (test
+    /// fixture: a shell script standing in for the binary).
+    #[test]
+    fn the_version_probe_does_not_wait_for_what_the_binary_left_behind() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let exe = d.path().join("envira");
+        std::fs::write(&exe, "#!/bin/sh\necho envira 9.9.9\nsleep 30 &\nexit 0\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(version_of(&exe).unwrap(), "9.9.9");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 
     fn none(_: &Path) -> bool {
         false
