@@ -79,10 +79,14 @@ impl RetryTargets {
             if r.action != "revert" || !self.revert.contains(&r.id) {
                 continue;
             }
+            // A unit that did not start has no progress file; its record has what it inherited.
             let done = match run_dir {
-                Some(dir) if r.outcome == "pending" => crate::state::read_progress(dir, &r.id),
-                _ => r.done_steps.clone(),
-            };
+                Some(dir) if r.outcome == "pending" => {
+                    Some(crate::state::read_progress(dir, &r.id)).filter(|d| !d.is_empty())
+                }
+                _ => None,
+            }
+            .unwrap_or_else(|| r.done_steps.clone());
             if !done.is_empty() {
                 self.revert_done.insert(r.id.clone(), done);
             }
@@ -1441,6 +1445,15 @@ mod tests {
                 outcome: "pending".into(),
                 ..Default::default()
             },
+            // envira died before it started: no progress file, the record has what it
+            // inherited from an earlier run.
+            UnitRecord {
+                id: "waiting".into(),
+                action: "revert".into(),
+                outcome: "pending".into(),
+                done_steps: vec!["x".into()],
+                ..Default::default()
+            },
         ];
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1448,9 +1461,15 @@ mod tests {
             "\"a\"\n\"b\\nc\"\n",
         )
         .unwrap();
-        let t = RetryTargets::new([("cfg", "revert"), ("bat", "install"), ("died", "revert")])
-            .progress(&records, Some(dir.path()));
-        assert_eq!(t.revert_done.len(), 2);
+        let t = RetryTargets::new([
+            ("cfg", "revert"),
+            ("bat", "install"),
+            ("died", "revert"),
+            ("waiting", "revert"),
+        ])
+        .progress(&records, Some(dir.path()));
+        assert_eq!(t.revert_done.len(), 3);
+        assert_eq!(t.revert_done["waiting"], ["x"]);
         assert_eq!(t.revert_done["cfg"], ["a"]);
         assert_eq!(t.revert_done["died"], ["a", "b\nc"]);
     }

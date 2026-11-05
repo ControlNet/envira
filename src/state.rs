@@ -365,6 +365,8 @@ impl RunRecord {
                     action: u.action.as_str().into(),
                     via: u.via.clone(),
                     outcome: "pending".into(),
+                    // What an earlier run got through: still known if this one dies first.
+                    done_steps: u.resumed.clone(),
                     ..Default::default()
                 })
                 .collect(),

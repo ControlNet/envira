@@ -291,18 +291,35 @@ pub async fn execute(
     ctl: watch::Receiver<Control>,
 ) -> (RunRecord, State) {
     let run_dir = ctx.paths.run_dir(&ctx.run_id);
-    let _ = state::create_dir_all_owned(&run_dir, &ctx.facts);
+    let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
+    record.machine = ctx.facts.summary();
+    // Nothing changes the machine before the run is on disk, with state pointing at it: a run
+    // that dies midway must be one `retry` can resume.
+    let recorded = state::create_dir_all_owned(&run_dir, &ctx.facts)
+        .and_then(|_| record.save(&ctx.paths, &ctx.facts))
+        .and_then(|_| {
+            let mut next = state.clone();
+            next.last_run = Some(ctx.run_id.clone());
+            next.save_run(&ctx.paths, &ctx.facts)?;
+            state = next;
+            Ok(())
+        });
+    if let Err(e) = recorded {
+        let why = format!("not started: the run cannot be recorded ({e:#})");
+        tx.send(Event::Notice(why.clone()));
+        for u in &mut record.units {
+            u.outcome = "failed".into();
+            u.detail = Some(why.clone());
+        }
+        record.finished = Some(state::now_rfc3339());
+        tx.send(Event::Finished(record.clone()));
+        return (record, state);
+    }
     // Logs can hold whatever installers print; keep them private to the user.
     let _ = std::fs::set_permissions(
         ctx.paths.logs_dir(),
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     );
-    let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
-    record.machine = ctx.facts.summary();
-    let _ = record.save(&ctx.paths, &ctx.facts);
-    // Point state at this run now: if envira dies midway, `retry` resumes this run.
-    state.last_run = Some(ctx.run_id.clone());
-    let _ = state.save_run(&ctx.paths, &ctx.facts);
     let mut ok: BTreeSet<String> = BTreeSet::new();
     let mut bad: BTreeSet<String> = BTreeSet::new();
     let unit_lanes: Vec<_> = plan.units.iter().map(|u| lanes(&ctx.catalog, u)).collect();
@@ -1046,6 +1063,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nothing_runs_without_a_run_record() {
+        let s = setup();
+        s.runner.rule("herdr.dev", 0, "installed");
+        // The logs dir cannot be made: a run there could not be retried.
+        let logs = s.ctx.paths.logs_dir();
+        std::fs::create_dir_all(logs.parent().unwrap()).unwrap();
+        std::fs::write(&logs, "not a directory").unwrap();
+        let p = plan(&s.ctx, &["herdr"]);
+        let (rec, st, events) = run(&s, p).await;
+        assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
+        assert_eq!(outcomes(&rec), vec![("herdr", "failed")]);
+        assert_eq!(st.last_run, None);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Notice(n) if n.contains("the run cannot be recorded")))
+        );
+    }
+
+    #[tokio::test]
     async fn failure_blocks_only_dependents() {
         let s = setup();
         s.runner
@@ -1663,6 +1700,11 @@ mod tests {
             .insert(0, ("undo-b".into(), 1, String::new()));
         let mut plan = revert(steps.clone());
         plan.units[0].resumed = resumed.clone();
+        // The record written before anything runs already has them.
+        assert_eq!(
+            RunRecord::planned(&plan, "r", "retry").units[0].done_steps,
+            resumed
+        );
         let (rec, _, _) = run(&s, plan).await;
         assert_eq!(rec.units[0].done_steps, ["a"]);
         // Then it goes through.
