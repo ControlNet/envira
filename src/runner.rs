@@ -5,7 +5,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
@@ -317,6 +317,31 @@ fn kill_group(pid: Option<u32>, sig: i32) {
 const MAX_LINE: usize = 64 * 1024;
 
 /// Sends each line of `r` (lossy UTF-8, at most `MAX_LINE` bytes) until EOF or a read error.
+/// Output of a probe kept per stream. Probes print a version or a path; a broken tool can
+/// print without end, and the rest is read and dropped so it does not block on its pipe.
+const CAPTURE_BYTES: usize = 1 << 20;
+
+async fn read_capped<R: AsyncRead + Unpin>(r: Option<R>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let Some(mut r) = r else { return buf };
+    let mut chunk = [0u8; 8192];
+    let mut cut = false;
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = CAPTURE_BYTES - buf.len();
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+                cut |= n > room;
+            }
+        }
+    }
+    if cut {
+        buf.extend_from_slice(b"\n[envira] output cut at 1 MiB\n");
+    }
+    buf
+}
+
 async fn pump<R: AsyncRead + Unpin>(r: R, tx: mpsc::Sender<String>) {
     let mut r = BufReader::new(r);
     let mut line = Vec::new();
@@ -408,7 +433,7 @@ impl Runner for RealRunner {
                 .current_dir(&e.home)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            let child = match c.spawn() {
+            let mut child = match c.spawn() {
                 Ok(ch) => ch,
                 Err(e) => {
                     return Probe {
@@ -418,16 +443,21 @@ impl Runner for RealRunner {
                 }
             };
             let pid = child.id();
-            match tokio::time::timeout(timeout, child.wait_with_output()).await {
-                Ok(Ok(out)) => {
-                    let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
-                    output.push_str(&String::from_utf8_lossy(&out.stderr));
+            let (out, err) = (child.stdout.take(), child.stderr.take());
+            let work = async {
+                let (out, err) = tokio::join!(read_capped(out), read_capped(err));
+                (out, err, child.wait().await)
+            };
+            match tokio::time::timeout(timeout, work).await {
+                Ok((out, err, Ok(status))) => {
+                    let mut output = String::from_utf8_lossy(&out).into_owned();
+                    output.push_str(&String::from_utf8_lossy(&err));
                     Probe {
-                        code: out.status.code().unwrap_or(-1),
+                        code: status.code().unwrap_or(-1),
                         output,
                     }
                 }
-                Ok(Err(e)) => Probe {
+                Ok((_, _, Err(e))) => Probe {
                     code: -1,
                     output: e.to_string(),
                 },
@@ -845,6 +875,21 @@ mod tests {
             .capture("echo \"$RUSTUP_IO_THREADS\"", Duration::from_secs(5))
             .await;
         assert_eq!(p.output.trim(), "1");
+    }
+
+    #[tokio::test]
+    async fn noisy_probes_keep_a_bounded_output() {
+        // 8 MiB on stdout and a line on stderr: the first MiB, a note, and stderr; exit 3.
+        let p = runner()
+            .capture(
+                "head -c 8388608 /dev/zero | tr '\\0' x; echo err >&2; exit 3",
+                Duration::from_secs(20),
+            )
+            .await;
+        assert_eq!(p.code, 3);
+        assert!(p.output.len() < CAPTURE_BYTES + 100, "{}", p.output.len());
+        assert!(p.output.starts_with("xxxx"));
+        assert!(p.output.ends_with("[envira] output cut at 1 MiB\nerr\n"));
     }
 
     #[tokio::test]
