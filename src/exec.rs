@@ -292,6 +292,7 @@ pub async fn execute(
     ctl: watch::Receiver<Control>,
 ) -> (RunRecord, State) {
     let run_dir = ctx.paths.run_dir(&ctx.run_id);
+    let start_seq = ctl.borrow().cancel_seq;
     let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
     record.machine = ctx.facts.summary();
     // Nothing changes the machine before the run is on disk, with state pointing at it: a run
@@ -427,8 +428,18 @@ pub async fn execute(
     drop(running);
 
     if ctx.shell_env {
-        let r = regenerate_shell_env(&ctx).await;
-        tx.send(Event::ShellEnv(r));
+        // Not after the run was cancelled, nor on until a cancel during it (its detection
+        // probes run first; the files are written at once at the end).
+        let mut ctl = ctl.clone();
+        let base = ctl.borrow().cancel_seq;
+        let r = if ctl.borrow().stop && base != start_seq {
+            None
+        } else {
+            unless_cancelled(regenerate_shell_env(&ctx), &mut ctl, base).await
+        };
+        tx.send(Event::ShellEnv(r.unwrap_or_else(|| {
+            Err("not updated: the run was cancelled; `envira env` updates it".into())
+        })));
     }
     state.mark_all_seen(&ctx.catalog);
     state.last_run = Some(ctx.run_id.clone());
@@ -773,8 +784,11 @@ where
     match (unit.kind, unit.action) {
         (_, Action::Revert) => Outcome::Ok { version: None },
         (Kind::Tool, _) => {
-            let (present, version) =
-                probe_tool(&ctx.catalog, &ctx.facts, &unit.id, ctx.runner.as_ref()).await;
+            let probe = probe_tool(&ctx.catalog, &ctx.facts, &unit.id, ctx.runner.as_ref());
+            let Some((present, version)) = unless_cancelled(probe, ctl, base_seq).await else {
+                emit("[envira] cancelled".into());
+                return Outcome::Cancelled;
+            };
             if present {
                 emit(format!(
                     "[envira] verified {}{}",
@@ -800,15 +814,18 @@ where
             }
         }
         (Kind::Config, _) => {
-            if probe_config(
+            let probe = probe_config(
                 &ctx.catalog,
                 &ctx.facts,
                 &unit.id,
                 ctx.runner.as_ref(),
                 ctx.facts.privilege.can_elevate(),
-            )
-            .await
-            {
+            );
+            let Some(applied) = unless_cancelled(probe, ctl, base_seq).await else {
+                emit("[envira] cancelled".into());
+                return Outcome::Cancelled;
+            };
+            if applied {
                 emit(format!("[envira] verified {}", unit.id));
                 Outcome::Ok { version: None }
             } else {
@@ -1768,6 +1785,38 @@ mod tests {
             "{detail}"
         );
         assert_eq!(s.runner.ran(), ["undo-a"]);
+    }
+
+    #[tokio::test]
+    async fn cancelling_reaches_the_check_after_the_steps() {
+        let s = setup();
+        s.runner.rule("herdr.dev", 0, "installed");
+        s.runner
+            .capture_hangs
+            .lock()
+            .unwrap()
+            .push("herdr --version".into());
+        let plan = plan(&s.ctx, &["herdr"]);
+        let (tx, mut rx) = events();
+        let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let handle = tokio::spawn(execute(plan, ctx_of(&s), State::default(), tx, ctl_rx));
+        // The install step ran; detection afterwards hangs.
+        loop {
+            match rx.recv().await.unwrap() {
+                Event::Line(_, l) if l.contains("herdr.dev") => break,
+                _ => {}
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ctl_tx.send_modify(|c| {
+            c.stop = true;
+            c.cancel_seq += 1;
+        });
+        let (rec, _) = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the cancel did not reach the check")
+            .unwrap();
+        assert_eq!(outcomes(&rec), vec![("herdr", "cancelled")]);
     }
 
     #[tokio::test]
