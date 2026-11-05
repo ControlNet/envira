@@ -16,6 +16,20 @@ use crate::runner::{CmdEnv, RealRunner, Runner};
 use crate::state::{Paths, State};
 use crate::status::{self, Snapshot};
 
+/// Runs commands with the PATH the catalog's tools need.
+fn real_runner(cat: &Catalog, facts: &Facts, paths: &Paths) -> Arc<dyn Runner> {
+    Arc::new(RealRunner {
+        env: CmdEnv {
+            path: status::effective_path(cat, facts),
+            home: facts.home.clone(),
+            user: facts.user.clone(),
+            drop_to: facts.drop_to.clone(),
+            root_home: crate::facts::home_of(0).unwrap_or_else(|| "/root".into()),
+            state_dir: paths.state_dir.clone(),
+        },
+    })
+}
+
 pub struct Session {
     pub global: Global,
     pub loaded: Loaded,
@@ -30,17 +44,7 @@ impl Session {
         let facts = Facts::probe();
         let paths = Paths::new(&facts);
         let loaded = load_valid(global, &paths, &facts)?;
-        let path = status::effective_path(&loaded.catalog, &facts);
-        let runner: Arc<dyn Runner> = Arc::new(RealRunner {
-            env: CmdEnv {
-                path,
-                home: facts.home.clone(),
-                user: facts.user.clone(),
-                drop_to: facts.drop_to.clone(),
-                root_home: crate::facts::home_of(0).unwrap_or_else(|| "/root".into()),
-                state_dir: paths.state_dir.clone(),
-            },
-        });
+        let runner = real_runner(&loaded.catalog, &facts, &paths);
         Ok(Session {
             global: global.clone(),
             catalog: Arc::new(loaded.catalog.clone()),
@@ -51,9 +55,11 @@ impl Session {
         })
     }
 
-    /// Re-reads every catalog layer (TUI `r`).
+    /// Re-reads every catalog layer (TUI `r`). Commands get the PATH of the new catalog (its
+    /// tools' bin dirs); a run going on keeps the runner it started with.
     pub fn reload(&mut self) -> Result<()> {
         let loaded = load_valid(&self.global, &self.paths, &self.facts)?;
+        self.runner = real_runner(&loaded.catalog, &self.facts, &self.paths);
         self.catalog = Arc::new(loaded.catalog.clone());
         self.loaded = loaded;
         Ok(())
