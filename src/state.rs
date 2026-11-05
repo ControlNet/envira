@@ -285,6 +285,33 @@ pub fn create_dir_all_owned(dir: &Path, facts: &Facts) -> Result<()> {
     Ok(())
 }
 
+/// Opens a file of a run dir (a unit's log, a progress file) to write: an existing regular file
+/// is appended to or emptied, while a link, FIFO or anything else already at that name is an
+/// error, not followed or waited on. Under `sudo envira` the file belongs to the user.
+pub fn open_run_file(path: &Path, append: bool, facts: &Facts) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true)
+        .create(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    if append {
+        o.append(true);
+    } else {
+        o.truncate(true);
+    }
+    let f = o.open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    if facts.drop_to.is_some() {
+        std::os::unix::fs::fchown(&f, Some(facts.uid), Some(facts.gid))?;
+    }
+    Ok(f)
+}
+
 pub fn chown_to_target(path: &Path, facts: &Facts) {
     if facts.drop_to.is_none() {
         return;
@@ -463,6 +490,36 @@ pub fn new_run_id(paths: &Paths) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_files_are_not_opened_through_what_is_already_there() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let facts = Facts::sample(dir.path());
+        let other = dir.path().join("other");
+        std::fs::write(&other, "keep").unwrap();
+        let link = dir.path().join("u.log");
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        assert!(open_run_file(&link, false, &facts).is_err());
+        assert!(open_run_file(&link, true, &facts).is_err());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "keep");
+        // A FIFO nobody reads: an error at once, not a wait.
+        let fifo = dir.path().join("f.steps");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: plain syscall on a valid C string.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(open_run_file(&fifo, true, &facts).is_err());
+        // A regular file: emptied for a log, appended to for progress.
+        let f = dir.path().join("x.log");
+        std::fs::write(&f, "old\n").unwrap();
+        open_run_file(&f, true, &facts)
+            .unwrap()
+            .write_all(b"more\n")
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "old\nmore\n");
+        drop(open_run_file(&f, false, &facts).unwrap());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "");
+    }
 
     #[test]
     fn tails_read_only_the_end() {

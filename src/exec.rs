@@ -445,14 +445,7 @@ impl Progress {
     fn new(unit: &Unit, run_dir: &std::path::Path, facts: &Facts) -> Progress {
         let file = (unit.action == Action::Revert)
             .then(|| {
-                let path = state::progress_file(run_dir, &unit.id);
-                let f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .ok()?;
-                state::chown_to_target(&path, facts);
-                Some(f)
+                state::open_run_file(&state::progress_file(run_dir, &unit.id), true, facts).ok()
             })
             .flatten();
         let mut p = Progress {
@@ -534,10 +527,7 @@ async fn run_unit(
     run_dir: &std::path::Path,
 ) -> (Outcome, Trail) {
     let log_path = run_dir.join(format!("{}.log", unit.id));
-    let log = std::fs::File::create(&log_path).ok();
-    if log.is_some() {
-        state::chown_to_target(&log_path, &ctx.facts);
-    }
+    let log = state::open_run_file(&log_path, false, &ctx.facts).ok();
     let log = Arc::new(std::sync::Mutex::new(log));
     // The last diagnosis hint, kept for the run record.
     let hint: Arc<std::sync::Mutex<Option<String>>> = Default::default();
