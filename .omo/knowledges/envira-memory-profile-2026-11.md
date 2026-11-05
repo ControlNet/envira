@@ -40,13 +40,17 @@ envira's runner now sets `RUSTUP_IO_THREADS=1` for every step unless the user se
   download sit there until the step ends (`tempfile` honours `TMPDIR`). That is about half the
   old peak, freed with the temp dir, and swappable.
 
+## Done after the profile (2026-11-05)
+
+- tokio had one worker per core: 61 threads and ~4 GB VIRT on a glibc build (per-thread malloc
+  arenas). `main.rs` now uses at most 4 workers: the TUI has 7 threads and ~490 MB VIRT.
+- `cargo install` built with one job per core. Steps now get `CARGO_BUILD_JOBS` = one per GiB
+  available (`MemAvailable`, or the cgroup v2 limit minus usage when lower), unless that is
+  every core or the user set it. Measured on a 60-core host: 1 GB container -> 1, 6 GB -> 5,
+  no limit -> unset. Only one cargo build runs at a time (the `build` lane).
+
 ## Not changed (recommendations)
 
-- tokio's multi-thread runtime has one worker per core: 61 threads and ~4 GB VIRT on a glibc
-  build (per-thread malloc arenas), 136-194 MB VIRT on the musl release. RSS is unaffected;
-  `worker_threads(2..4)` would do.
-- `cargo install` builds with one job per core; `CARGO_BUILD_JOBS` from available memory
-  (~1 GiB per job) would keep small VMs alive.
 - Detection runs 8 commands at once; node-based `--version`/`npm ls -g` cost 110-150 MiB each.
   `npm ls -g --depth=0` (all packages, one call shared by every npm tool) would replace one call
   per npm tool.

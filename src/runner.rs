@@ -149,6 +149,15 @@ impl RealRunner {
         if std::env::var_os("RUSTUP_IO_THREADS").is_none() {
             c.env("RUSTUP_IO_THREADS", "1");
         }
+        // cargo compiles one crate per core, and one rustc can take ~0.5 GiB: a small VM with
+        // many cores runs out of memory. About one job per GiB available; a value the user set
+        // is kept.
+        if std::env::var_os("CARGO_BUILD_JOBS").is_none() {
+            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+            if let Some(jobs) = build_jobs(available_memory(), cores) {
+                c.env("CARGO_BUILD_JOBS", jobs.to_string());
+            }
+        }
         // New session without a controlling terminal: tools that open /dev/tty (even for
         // `--version`) cannot block on the TUI's terminal, and the session id doubles as the
         // process group that cancellation kills.
@@ -161,6 +170,40 @@ impl RealRunner {
         }
         c
     }
+}
+
+const GIB: u64 = 1 << 30;
+
+/// Build jobs that fit in `available` bytes (one per GiB, at least one), or `None` when every
+/// core fits (cargo's own default) or the memory is unknown.
+fn build_jobs(available: Option<u64>, cores: usize) -> Option<usize> {
+    let jobs = (available? / GIB).max(1) as usize;
+    (jobs < cores).then_some(jobs)
+}
+
+/// Memory this machine can still give, in bytes: `MemAvailable`, or less when a cgroup (a
+/// container) limits it. `None` where there is no /proc (macOS).
+fn available_memory() -> Option<u64> {
+    let read = |p: &str| std::fs::read_to_string(p).ok();
+    let host = mem_available(&read("/proc/meminfo")?)?;
+    let cgroup = read("/sys/fs/cgroup/memory.max")
+        .zip(read("/sys/fs/cgroup/memory.current"))
+        .and_then(|(max, cur)| cgroup_free(&max, &cur));
+    Some(cgroup.map_or(host, |c| c.min(host)))
+}
+
+/// `MemAvailable` of /proc/meminfo, in bytes.
+fn mem_available(meminfo: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// What a cgroup v2 limit leaves (`memory.max` minus `memory.current`); `None` without a limit.
+fn cgroup_free(max: &str, current: &str) -> Option<u64> {
+    let max: u64 = max.trim().parse().ok()?;
+    let current: u64 = current.trim().parse().ok()?;
+    Some(max.saturating_sub(current))
 }
 
 fn kill_group(pid: Option<u32>, sig: i32) {
@@ -509,6 +552,21 @@ mod tests {
         // macOS: the temp dir is under /var, a symlink to /private/var.
         let home = std::fs::canonicalize(&r.env.home).unwrap();
         assert_eq!(p.output.trim(), home.display().to_string());
+    }
+
+    #[test]
+    fn cargo_builds_fit_in_memory() {
+        let meminfo = "MemTotal:       16303580 kB\nMemFree:  1 kB\nMemAvailable:    3670016 kB\n";
+        assert_eq!(mem_available(meminfo), Some(3670016 * 1024));
+        assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+        assert_eq!(cgroup_free("max\n", "123\n"), None);
+        assert_eq!(cgroup_free("1073741824\n", "268435456\n"), Some(805306368));
+        assert_eq!(cgroup_free("100\n", "200\n"), Some(0));
+        // 3.5 GiB on 16 cores: 3 jobs; under 1 GiB: still one; plenty: cargo's default.
+        assert_eq!(build_jobs(Some(3670016 * 1024), 16), Some(3));
+        assert_eq!(build_jobs(Some(GIB / 2), 4), Some(1));
+        assert_eq!(build_jobs(Some(64 * GIB), 16), None);
+        assert_eq!(build_jobs(None, 16), None);
     }
 
     #[tokio::test]

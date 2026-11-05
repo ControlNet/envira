@@ -115,7 +115,13 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 | Command::Adopt { .. }
         )
     );
-    let rt = tokio::runtime::Runtime::new()?;
+    // The work is waiting on processes and sockets: a few workers do, where one per core made
+    // ~60 threads (and a 4 GB VIRT from their malloc arenas) on big machines.
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().min(4));
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()?;
     rt.block_on(async {
         let sess = app::Session::open(&cli.global)?;
         let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
