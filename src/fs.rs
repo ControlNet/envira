@@ -172,15 +172,33 @@ impl Backups {
 /// else (`~/.bashrc -> /etc/shadow`, `~/.config -> /etc`); that is refused, the link left as it
 /// is. (A user who swaps a link between this check and the write still wins that race: under
 /// `sudo envira` that user can run anything as root through their catalog anyway.)
+///
+/// The path keeps the form it was given, only links at its end replaced: backups stay keyed by
+/// it, and a system link on the way (macOS's `/var -> /private/var`) does not show up.
 pub fn edit_target(path: &Path, writing: bool) -> Result<PathBuf> {
     // SAFETY: geteuid has no preconditions.
-    resolve(path, writing && unsafe { libc::geteuid() } == 0)
+    if writing && unsafe { libc::geteuid() } == 0 {
+        // Every link on the way, in a directory as well as at the end.
+        resolve(path, true)?;
+    }
+    let mut cur = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(m) = std::fs::symlink_metadata(&cur) else {
+            return Ok(cur);
+        };
+        if !m.file_type().is_symlink() {
+            return Ok(cur);
+        }
+        let to = std::fs::read_link(&cur).with_context(|| format!("reading {}", cur.display()))?;
+        cur = cur.parent().unwrap_or(Path::new("/")).join(to);
+    }
+    bail!("{}: too many levels of links", path.display())
 }
 
-/// Resolves `path` one component at a time, as the kernel does: every link on the way is
-/// followed, in a directory as well as at the end, and `..` goes up from where a link led. With
-/// `guard`, each link root did not make must point at something its owner owns (for a new file,
-/// the closest directory that exists).
+/// Resolves `path` one component at a time, as the kernel does (`edit_target` checks with it):
+/// every link on the way is followed, in a directory as well as at the end, and `..` goes up
+/// from where a link led. With `guard`, each link root did not make must point at something its
+/// owner owns (for a new file, the closest directory that exists).
 fn resolve(path: &Path, guard: bool) -> Result<PathBuf> {
     use std::ffi::OsString;
     use std::path::Component;
@@ -968,6 +986,8 @@ mod tests {
         ln("real/new", "dangling");
         ln("/etc/envira-no-such-dir/file", "elsewhere");
         let p = |s: &str| d.path().join(s);
+        // Physical paths: the temp dir itself may sit behind a link (macOS /var).
+        let real = real.canonicalize().unwrap();
         // Links the user made into their own files: followed, in directories too, and `..`
         // goes up from where a link led.
         for guard in [false, true] {
@@ -983,9 +1003,16 @@ mod tests {
             );
         }
         // Into root's files: only without the guard (edits as the user, which the kernel stops).
+        let etc = Path::new("/etc").canonicalize().unwrap();
+        assert_eq!(resolve(&p("etc/hosts"), false).unwrap(), etc.join("hosts"));
+        // An edit keeps the path as given, only a link at its end replaced.
         assert_eq!(
-            resolve(&p("etc/hosts"), false).unwrap(),
-            Path::new("/etc/hosts")
+            edit_target(&p("dir/config"), false).unwrap(),
+            p("dir/config")
+        );
+        assert_eq!(
+            edit_target(&p("dangling"), false).unwrap(),
+            d.path().join("real/new")
         );
         // SAFETY: geteuid has no preconditions.
         if unsafe { libc::geteuid() } != 0 {
