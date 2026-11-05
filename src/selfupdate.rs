@@ -406,11 +406,11 @@ pub fn run(o: &Opts) -> Result<Outcome> {
             exe.display()
         );
     }
-    let binstall = Command::new("cargo-binstall")
-        .arg("-V")
-        .output()
-        .is_ok_and(|o| o.status.success())
-        || cargo_bin(&facts).join("cargo-binstall").exists();
+    // Only cargo installs use it; looked up, not run (a probe with no deadline could hold the
+    // update before it even shows its plan).
+    let binstall = channel == Channel::Cargo
+        && (crate::facts::which("cargo-binstall")
+            || cargo_bin(&facts).join("cargo-binstall").exists());
     let cmd = channel.command(pinned.as_deref(), binstall);
     let fallback = channel.fallback(pinned.as_deref(), binstall);
     println!("envira {CURRENT} → {target}");

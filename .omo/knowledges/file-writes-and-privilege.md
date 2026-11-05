@@ -1,4 +1,4 @@
-# File writes, privilege and process lifetime (rules from five deep reviews, 2026-11-05)
+# File writes, privilege and process lifetime (rules from six deep reviews, 2026-11-05)
 
 ## Writing files
 - Every file envira writes goes through `files::replace_with` / `replace` / `replace_copy`
@@ -30,6 +30,9 @@
   (`edit_target(.., true)` / `guard_parent`). Directories envira creates for a new file in a
   user's directory belong to that user (`create_dirs`: only those it really made, never an
   existing one), and backups record the original's owner so a restore as root gives it back.
+  The generated `env.sh`/`init.*` and rc blocks follow the same ownership: an existing file
+  keeps its owner (no blanket chown to SUDO_USER, which `state::write_atomic` does for
+  envira's own state/cache files only).
 - Accepted risk: a user who swaps a link between the check and the write (TOCTOU) still wins.
   Closing it needs openat2/O_NOFOLLOW walks for every write. Under `sudo envira` SUDO_USER is
   root-equivalent anyway (their `~/.config/envira/catalog.d` overlay runs commands as root), so
@@ -41,7 +44,11 @@
   `--install-with`, the portable copy template): install to `<dir>/.NAME.envira-new[.pid]`,
   then `mv -f` over the target; remove the temp on failure. The fixed name is acceptable only
   because those directories are not writable by the user. A directory (or link to one) at the
-  target is refused first: `mv -f` would move the binary into it and succeed.
+  target is refused first: `mv -f` would move the binary into it and succeed. That check runs
+  as the identity that moves (`{sudo} test -d`, `<install-with> test -d`): the user may not see
+  behind a link into a root-only directory. The portable copy removes its staged file when the
+  install or move fails, and prints paths with `printf '%s' {path}` (a quoted value inside
+  another pair of quotes would be shell code again).
 
 ## Who runs a step
 - `sudo envira` = EUID 0 + SUDO_USER: user-scope steps run as the user via `runuser` (or
@@ -86,12 +93,15 @@
   run is recorded (and self-update is not using the terminal) gives the UI loop 3 s before
   `exit(128+signal)`. The block_on thread runs the UI loop; spawned tasks run on the workers.
 - Ctrl-C in the TUI: first stops after the running steps, second cancels them (as the CLI).
-- A cancel also ends a running check (the probe before a step) and no step starts after it. A
+- A cancel also ends a running check (the probe before a step), the detection after the steps
+  (the unit is then `cancelled`, not `ok`) and the shell-environment regeneration (skipped
+  after a cancelled run: `envira env` redoes it); no step starts after it. A
   probe future dropped before it ends kills its group and its descendants (`ProbeGuard`; the
   child is spawned without `kill_on_drop`, so the shell is still alive to find them by
   parentage).
 - The self-update probe (`<new binary> --version`): once the binary exited, its output is in
-  the pipe; never wait for EOF (a process it left behind can hold the pipe).
+  the pipe; never wait for EOF (a process it left behind can hold the pipe). Tools self-update
+  only might use (cargo-binstall) are looked up on PATH, not run, and only for that channel.
 - After a step exits, the output pumps get 2 s to drain, then are aborted: a background daemon
   holding stdout does not keep the executor waiting.
 - CLI output after the executor starts ignores write errors (`envira install … | head` must
@@ -133,11 +143,24 @@
   failed) gets only the steps after its `done_steps` (`Planner::finishing`), when the route is
   the very one that ran: `plan::route_id` (sha256 of method, scope and every step in full) is
   kept in the unit and its record. `via` alone is not a route identity (raw entries are all
-  `run`; a catalog changed between failure and retry would copy the old build). When the route
+  `run`; a catalog changed between failure and retry would copy the old build). Every install
+  that started and did not finish (`failed`, `cancelled`, `pending`) counts, also with no step
+  done (a first step can fail after creating the tool); `blocked`/`skipped` ones never ran.
+  When the route
   is another now (catalog or machine changed, or a record from an older envira without one),
   the route runs in full: skipping it as "already present" left the system copy missing. Only
   a route that got through every step is "already present". The TUI's `r` waits for a fresh detection before planning (its snapshot
   is from before the run); `t` (retry the last run) splits by action like `envira retry`.
+- state.toml is changed under a short `state.lock` (flock, waits up to 10 s): a run's saves
+  (`save_run`, which keeps the selection on disk) and every other writer, which must use
+  `State::update` (read again, change, save) with only its change: the TUI's bundle selection
+  and adoption, `install <bundle>`, `adopt`. Saving a whole State read earlier (the TUI keeps
+  one from its last scan) dropped the records of a run that finished meanwhile. Adoption also
+  needs the run lock: a run going on saves the tools it read when it started.
+- Lock files and run-dir files open with O_NOFOLLOW|O_NONBLOCK, must be regular files with a
+  single link (a hard link to another file would be emptied or written), and are emptied only
+  after that check; readers (progress, log tails) refuse anything else too (a FIFO there would
+  block `retry` or the TUI's UI thread).
 - No unit starts unless the run dir, its pending record and state pointing at it are on disk
   (else every unit is reported "not started" and state keeps the previous run). Once units ran,
   a failed save of record or state stops further units ("not started: the run cannot be
