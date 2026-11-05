@@ -30,7 +30,10 @@ pub fn replace_with(
 }
 
 /// `replace` for a cache: the same, but not flushed to disk (fsync can take seconds on a busy
-/// disk, and a cache lost in a crash is only rebuilt).
+/// disk, and a cache lost in a crash is only rebuilt). The old file is removed before the new
+/// one takes its name, so a reader may briefly find none (an empty cache): ext4 flushes the data
+/// of a file renamed over another (`auto_da_alloc`), and on a busy disk that rename waited in
+/// the block layer's write throttling for seconds.
 pub fn replace_cache(path: &Path, data: &[u8]) -> io::Result<()> {
     replace_inner(path, None, false, |f| io::Write::write_all(f, data))
 }
@@ -82,6 +85,8 @@ fn replace_inner(
     f.set_permissions(std::fs::Permissions::from_mode(mode))?;
     if durable {
         f.sync_all()?;
+    } else if old.is_some() {
+        let _ = std::fs::remove_file(path);
     }
     tmp.persist(path).map_err(|e| e.error)?;
     // The rename survives a power loss only once the directory is on disk too.
@@ -156,6 +161,32 @@ mod tests {
             })
             .count();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn a_cache_is_replaced_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let cache = d.path().join("cache.toml");
+        replace_cache(&cache, b"one").unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), b"one");
+        replace_cache(&cache, b"two").unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), b"two");
+        // A symlink in its place is replaced, not followed.
+        let target = d.path().join("elsewhere");
+        std::fs::write(&target, "keep").unwrap();
+        std::fs::remove_file(&cache).unwrap();
+        std::os::unix::fs::symlink(&target, &cache).unwrap();
+        replace_cache(&cache, b"three").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        assert!(
+            !std::fs::symlink_metadata(&cache)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&cache).unwrap(), b"three");
+        let left: Vec<_> = std::fs::read_dir(d.path()).unwrap().collect();
+        assert_eq!(left.len(), 2, "no temp file left");
     }
 
     #[test]
