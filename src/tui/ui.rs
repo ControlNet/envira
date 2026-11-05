@@ -2101,7 +2101,10 @@ mod tests {
         assert!(!a.subscribed(&b));
         let cmds = click(&mut a, Hit::BundleMark(i));
         assert!(a.subscribed(&b));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(matches!(
+            cmds[..],
+            [Cmd::SaveBundles { .. }, Cmd::Refresh(_)]
+        ));
     }
 
     #[test]

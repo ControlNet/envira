@@ -597,7 +597,14 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
         }
     }
     if added && !opts.dry_run {
-        state.save(&sess.paths, &sess.facts)?;
+        let kept = state.bundles.clone();
+        state = State::update(&sess.paths, &sess.facts, |st| {
+            for b in kept {
+                if !st.bundles.contains(&b) {
+                    st.bundles.push(b);
+                }
+            }
+        })?;
     }
     let known = disk.is_some() || added;
     let snap = sess.snapshot(known.then_some(&state)).await;
@@ -723,7 +730,7 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
     let _lock = (!dry_run)
         .then(|| state::RunLock::acquire(&sess.paths, &sess.facts))
         .transpose()?;
-    let mut state = sess.state()?.unwrap_or_default();
+    let state = sess.state()?.unwrap_or_default();
     let snap = sess.snapshot(Some(&state)).await;
     let explicit = !items.is_empty();
     let ids = if explicit {
@@ -736,6 +743,7 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
             .collect()
     };
     let mut adopted = 0;
+    let mut records = Vec::new();
     for id in &ids {
         let Some(i) = snap.get(id) else { continue };
         let route: Option<&Route> = i.route.as_ref();
@@ -752,7 +760,7 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
                     r.scope
                 );
                 if !dry_run && let Some(rec) = i.adoption() {
-                    state.tools.insert(id.clone(), rec);
+                    records.push((id.clone(), rec));
                 }
                 adopted += 1;
             }
@@ -769,8 +777,11 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
     } else if dry_run {
         println!("{adopted} would be adopted (dry run).");
     } else {
-        state.mark_all_seen(&sess.catalog);
-        state.save(&sess.paths, &sess.facts)?;
+        // A change to the state on disk: the TUI may have changed the selection meanwhile.
+        State::update(&sess.paths, &sess.facts, |st| {
+            st.tools.extend(records);
+            st.mark_all_seen(&sess.catalog);
+        })?;
         println!("{adopted} adopted; `envira update` can now update them in place.");
     }
     Ok(0)

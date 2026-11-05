@@ -367,11 +367,24 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         app.warn(msg);
                     }
                 }
-                Cmd::SaveState => {
-                    if let Some(st) = &app.state
-                        && let Err(e) = st.save(&sess.paths, &sess.facts)
-                    {
-                        app.notify(format!("could not save state: {e:#}"));
+                Cmd::SaveBundles { bundles, seen } => {
+                    match State::update(&sess.paths, &sess.facts, |st| {
+                        st.bundles = bundles;
+                        st.seen.extend(seen);
+                    }) {
+                        Ok(st) => app.state = Some(st),
+                        Err(e) => app.notify(format!("could not save state: {e:#}")),
+                    }
+                }
+                Cmd::Adopt(records) => {
+                    // Not while a run goes on: it saves the tools it read when it started.
+                    let saved =
+                        state::RunLock::acquire(&sess.paths, &sess.facts).and_then(|_lock| {
+                            State::update(&sess.paths, &sess.facts, |st| st.tools.extend(records))
+                        });
+                    match saved {
+                        Ok(st) => app.state = Some(st),
+                        Err(e) => app.notify(format!("not adopted: {e:#}")),
                     }
                 }
                 Cmd::ExportScript(plan) => {

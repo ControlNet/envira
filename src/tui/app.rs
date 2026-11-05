@@ -185,7 +185,15 @@ pub enum Cmd {
     Refresh(Fetch),
     /// Re-read catalog layers, then refresh.
     Reload,
-    SaveState,
+    /// Keep these bundles on this machine: saved as a change to the state on disk, not as the
+    /// whole state this screen read (a run may have finished since).
+    SaveBundles {
+        bundles: Vec<String>,
+        /// Ids shown so far (a first run counts the whole catalog).
+        seen: BTreeSet<String>,
+    },
+    /// Record these tools as managed, likewise.
+    Adopt(Vec<(String, crate::state::ToolRecord)>),
     StartRun {
         plan: Plan,
         command: String,
@@ -686,15 +694,15 @@ impl App {
             .filter_map(|id| Some((id.clone(), snap.get(id)?.adoption()?)))
             .collect();
         let state = self.state.get_or_insert_with(State::default);
-        for (id, rec) in records {
-            state.tools.insert(id, rec);
+        for (id, rec) in &records {
+            state.tools.insert(id.clone(), rec.clone());
         }
         self.notify(match &ids[..] {
             [one] => format!("{one} is now managed"),
             many => format!("{} tools are now managed", many.len()),
         });
         self.detecting = true;
-        vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)]
+        vec![Cmd::Adopt(records), Cmd::Refresh(Fetch::CacheOnly)]
     }
 
     /// Records a mouse target while drawing.
@@ -1080,8 +1088,16 @@ impl App {
                         super::ui::plural(n, "item", "items")
                     ));
                 }
-                self.state.get_or_insert_with(State::default).bundles = kept;
-                return vec![Cmd::SaveState, Cmd::Refresh(Fetch::CacheOnly)];
+                let state = self.state.get_or_insert_with(State::default);
+                state.bundles = kept.clone();
+                let seen = state.seen.clone();
+                return vec![
+                    Cmd::SaveBundles {
+                        bundles: kept,
+                        seen,
+                    },
+                    Cmd::Refresh(Fetch::CacheOnly),
+                ];
             }
             _ => {}
         }
@@ -1691,7 +1707,10 @@ pub mod tests {
         a.on_key(key(KeyCode::Left));
         let first = a.bundle_ids()[0].clone();
         let cmds = a.on_key(key(KeyCode::Char(' ')));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(matches!(
+            cmds[..],
+            [Cmd::SaveBundles { .. }, Cmd::Refresh(_)]
+        ));
         assert!(a.subscribed(&first));
     }
 
@@ -1726,7 +1745,10 @@ pub mod tests {
             .position(|b| b == "ai-agents")
             .unwrap();
         let cmds = a.on_key(key(KeyCode::Char(' ')));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(matches!(
+            cmds[..],
+            [Cmd::SaveBundles { .. }, Cmd::Refresh(_)]
+        ));
         assert!(a.selected.contains("codex"));
     }
 
@@ -1770,7 +1792,10 @@ pub mod tests {
             .position(|b| b == "ai-agents")
             .unwrap();
         let cmds = a.on_key(key(KeyCode::Char(' ')));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(matches!(
+            cmds[..],
+            [Cmd::SaveBundles { .. }, Cmd::Refresh(_)]
+        ));
         assert!(
             a.state
                 .as_ref()
@@ -1869,7 +1894,7 @@ pub mod tests {
         assert!(adoptable.len() >= 3, "{adoptable:?}");
         a.cursor = a.rows().iter().position(|i| i.id == adoptable[0]).unwrap();
         let cmds = a.on_key(key(KeyCode::Char('A')));
-        assert!(matches!(cmds[..], [Cmd::SaveState, Cmd::Refresh(_)]));
+        assert!(matches!(cmds[..], [Cmd::Adopt(_), Cmd::Refresh(_)]));
         let rec = &a.state.as_ref().unwrap().tools[&adoptable[0]];
         assert_eq!(rec.method.as_deref(), Some("script"));
         assert!(

@@ -160,12 +160,24 @@ impl State {
     /// Saves the results of a run. The selection (bundles, include, exclude) is taken from disk
     /// first: a run never changes it, while the TUI or `install <bundle>` may have meanwhile.
     pub fn save_run(&mut self, paths: &Paths, facts: &Facts) -> Result<()> {
+        let _lock = StateFileLock::take(paths, facts)?;
         if let Ok(Some(disk)) = State::load(paths) {
             self.bundles = disk.bundles;
             self.include = disk.include;
             self.exclude = disk.exclude;
         }
         self.save(paths, facts)
+    }
+
+    /// Changes the state on disk: reads it again, applies `change` and saves, holding the state
+    /// file lock. For every writer that is not a run (bundle selection, adoption): saving a
+    /// whole state read earlier would drop the records of a run that finished meanwhile.
+    pub fn update(paths: &Paths, facts: &Facts, change: impl FnOnce(&mut State)) -> Result<State> {
+        let _lock = StateFileLock::take(paths, facts)?;
+        let mut st = State::load(paths)?.unwrap_or_default();
+        change(&mut st);
+        st.save(paths, facts)?;
+        Ok(st)
     }
 
     /// Desired ids: bundle members plus `include`, minus `exclude`.
@@ -202,6 +214,29 @@ pub fn write_atomic(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
     Ok(())
 }
 
+/// Held while state.toml is read, changed and saved (milliseconds), so two envira processes do
+/// not interleave and lose one's change.
+struct StateFileLock(#[allow(dead_code)] std::fs::File);
+
+impl StateFileLock {
+    fn take(paths: &Paths, facts: &Facts) -> Result<StateFileLock> {
+        use std::os::fd::AsRawFd;
+        create_dir_all_owned(&paths.state_dir, facts)?;
+        let path = paths.state_dir.join("state.lock");
+        let file = open_run_file(&path, true, facts)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // SAFETY: plain syscall on a file descriptor owned by `file`.
+        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            if std::time::Instant::now() > until {
+                bail!("{} stays locked by another envira", path.display());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Ok(StateFileLock(file))
+    }
+}
+
 /// Exclusive lock on the state directory for the length of a run, so two envira processes (a
 /// TUI and a CLI `install`, say) never install at once or overwrite each other's state. Released
 /// when dropped or when the process dies. `envira fs` and `fetch-release`, which steps call,
@@ -228,13 +263,9 @@ impl RunLock {
         use std::os::fd::AsRawFd;
         create_dir_all_owned(&paths.state_dir, facts)?;
         let path = paths.state_dir.join("lock");
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
+        // Like run files: a FIFO there must not block (the TUI takes it on its UI thread).
+        let file = open_run_file(&path, true, facts)
             .with_context(|| format!("opening {}", path.display()))?;
-        chown_to_target(&path, facts);
         // SAFETY: plain syscall on a file descriptor owned by `file`.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             bail!(
@@ -285,26 +316,53 @@ pub fn create_dir_all_owned(dir: &Path, facts: &Facts) -> Result<()> {
     Ok(())
 }
 
+/// Opens a file of a run dir to read: a link, FIFO or anything but a regular file is an error,
+/// not followed or waited on.
+fn open_to_read(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(f)
+}
+
 /// Opens a file of a run dir (a unit's log, a progress file) to write: an existing regular file
 /// is appended to or emptied, while a link, FIFO or anything else already at that name is an
 /// error, not followed or waited on. Under `sudo envira` the file belongs to the user.
 pub fn open_run_file(path: &Path, append: bool, facts: &Facts) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let mut o = std::fs::OpenOptions::new();
     o.write(true)
         .create(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     if append {
         o.append(true);
-    } else {
-        o.truncate(true);
     }
+    // Not O_TRUNC: the file is checked first, and only then emptied.
     let f = o.open(path)?;
-    if !f.metadata()?.is_file() {
+    let m = f.metadata()?;
+    if !m.is_file() {
         return Err(std::io::Error::other(format!(
             "{} is not a regular file",
             path.display()
         )));
+    }
+    // A hard link to another file: writing it (or emptying it) would change that file.
+    if m.nlink() != 1 {
+        return Err(std::io::Error::other(format!(
+            "{} has other hard links",
+            path.display()
+        )));
+    }
+    if !append {
+        f.set_len(0)?;
     }
     if facts.drop_to.is_some() {
         std::os::unix::fs::fchown(&f, Some(facts.uid), Some(facts.gid))?;
@@ -433,9 +491,13 @@ pub fn progress_file(run_dir: &Path, id: &str) -> PathBuf {
 
 /// The steps noted in a progress file, in order.
 pub fn read_progress(run_dir: &Path, id: &str) -> Vec<String> {
-    std::fs::read_to_string(progress_file(run_dir, id))
-        .unwrap_or_default()
-        .lines()
+    use std::io::Read;
+    let mut text = String::new();
+    if let Ok(f) = open_to_read(&progress_file(run_dir, id)) {
+        // Step labels: far below this.
+        let _ = f.take(1 << 20).read_to_string(&mut text);
+    }
+    text.lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect()
 }
@@ -444,7 +506,7 @@ pub fn read_progress(run_dir: &Path, id: &str) -> Vec<String> {
 /// is never loaded whole to show its end.
 pub fn tail_lines(path: &Path, n: usize, max: u64) -> std::io::Result<Vec<String>> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
+    let mut f = open_to_read(path)?;
     let len = f.metadata()?.len();
     let start = len.saturating_sub(max);
     f.seek(SeekFrom::Start(start))?;
@@ -529,6 +591,75 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "old\nmore\n");
         drop(open_run_file(&f, false, &facts).unwrap());
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "");
+        // A hard link to another file: refused before anything is emptied or written.
+        let hard = dir.path().join("h.log");
+        std::fs::hard_link(&other, &hard).unwrap();
+        assert!(open_run_file(&hard, false, &facts).is_err());
+        assert!(open_run_file(&hard, true, &facts).is_err());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "keep");
+        // Readers of the run dir do not wait on a FIFO either.
+        let steps = dir.path().join("u.steps");
+        let c = std::ffi::CString::new(steps.to_str().unwrap()).unwrap();
+        // SAFETY: plain syscall on a valid C string.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(read_progress(dir.path(), "u").is_empty());
+        assert!(tail_lines(&steps, 5, 1 << 20).is_err());
+    }
+
+    #[test]
+    fn a_fifo_at_the_locks_is_an_error_not_a_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let facts = Facts::sample(dir.path());
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
+        };
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        for name in ["lock", "state.lock"] {
+            let c = std::ffi::CString::new(paths.state_dir.join(name).to_str().unwrap()).unwrap();
+            // SAFETY: plain syscall on a valid C string.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        assert!(RunLock::acquire(&paths, &facts).is_err());
+        assert!(State::update(&paths, &facts, |_| {}).is_err());
+    }
+
+    #[test]
+    fn updates_keep_what_a_run_saved_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let facts = Facts::sample(dir.path());
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
+        };
+        // A dashboard read the state, then a run finished and saved its records.
+        let stale = State::default();
+        let mut run = State::default();
+        run.tools.insert(
+            "bat".into(),
+            ToolRecord {
+                method: Some("apt".into()),
+                scope: None,
+                version: None,
+                installed_at: Some("t".into()),
+                last_result: LastResult::Ok,
+                last_error: None,
+                last_run: Some("r1".into()),
+            },
+        );
+        run.last_run = Some("r1".into());
+        run.save_run(&paths, &facts).unwrap();
+        // The dashboard keeps a bundle: a change to what is on disk now.
+        let kept = vec!["base".to_string()];
+        let st = State::update(&paths, &facts, |st| st.bundles = kept).unwrap();
+        assert!(stale.tools.is_empty());
+        let disk = State::load(&paths).unwrap().unwrap();
+        assert_eq!(disk.bundles, ["base"]);
+        assert!(disk.tools.contains_key("bat"));
+        assert_eq!(disk.last_run.as_deref(), Some("r1"));
+        assert_eq!(st.tools.len(), 1);
     }
 
     #[test]
