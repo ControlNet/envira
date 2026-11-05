@@ -128,12 +128,7 @@ impl RealRunner {
         };
         let mut c = match e.drop_to.as_ref().filter(|_| !as_root) {
             Some(user) => {
-                // util-linux's runuser is Linux-only; root's `sudo -u` needs no password.
-                let mut c = Command::new(if cfg!(target_os = "macos") {
-                    "sudo"
-                } else {
-                    "runuser"
-                });
+                let mut c = Command::new(drop_helper());
                 c.args(["-u", user, "--", "env"])
                     .arg(format!("HOME={}", e.home.display()))
                     .arg(format!("USER={}", e.user))
@@ -268,6 +263,32 @@ fn cgroup_free(max: &str, current: &str) -> Option<u64> {
     let max: u64 = max.trim().parse().ok()?;
     let current: u64 = current.trim().parse().ok()?;
     Some(max.saturating_sub(current))
+}
+
+/// How root runs a command as another user: util-linux's `runuser` where there is one (no PAM
+/// password prompt, no sudoers rules), else `sudo -u` (macOS; minimal images with only
+/// util-linux-core, such as Fedora's), which root may use without a password.
+fn drop_helper() -> &'static str {
+    static HELPER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    HELPER.get_or_init(|| {
+        let runuser = [
+            "/usr/sbin/runuser",
+            "/sbin/runuser",
+            "/usr/bin/runuser",
+            "/bin/runuser",
+        ];
+        if cfg!(target_os = "linux") && runuser.iter().any(|p| Path::new(p).exists()) {
+            "runuser"
+        } else {
+            "sudo"
+        }
+    })
+}
+
+/// Whether any process of the group led by `pid` is still alive.
+fn group_alive(pid: Option<u32>) -> bool {
+    // SAFETY: signal 0 only checks that the group exists and may be signalled.
+    pid.is_some_and(|pid| unsafe { libc::kill(-(pid as i32), 0) } == 0)
 }
 
 fn kill_group(pid: Option<u32>, sig: i32) {
@@ -424,11 +445,19 @@ impl Runner for RealRunner {
                             };
                         }
                         if *cancel.borrow() {
+                            // The whole group gets the grace period, not just the shell: a
+                            // shell that exits at once on TERM may leave a child that ignores
+                            // it, still changing the machine after the step "stopped".
                             kill_group(pid, libc::SIGTERM);
-                            if tokio::time::timeout(Duration::from_secs(3), child.wait()).await.is_err() {
-                                kill_group(pid, libc::SIGKILL);
-                                let _ = child.wait().await;
+                            let grace = tokio::time::Instant::now() + Duration::from_secs(3);
+                            let _ = tokio::time::timeout_at(grace, child.wait()).await;
+                            while group_alive(pid) && tokio::time::Instant::now() < grace {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
                             }
+                            if group_alive(pid) {
+                                kill_group(pid, libc::SIGKILL);
+                            }
+                            let _ = child.wait().await;
                             break StreamEnd::Cancelled;
                         }
                     }
@@ -806,6 +835,31 @@ mod tests {
         assert_eq!(end, StreamEnd::Cancelled);
         assert!(start.elapsed() < Duration::from_secs(6));
         drop(h.await);
+    }
+
+    /// Cancelling kills the whole group, also a child that ignores TERM after its shell exited.
+    #[tokio::test]
+    async fn cancel_kills_children_that_ignore_term() {
+        let r = runner();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("after-cancel");
+        let cmd = format!(
+            "bash -c 'trap \"\" TERM; sleep 4; touch {}' & sleep 30",
+            marker.display()
+        );
+        let (tx, _rx) = mpsc::channel(16);
+        let (ctx, crx) = watch::channel(false);
+        let h = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            ctx.send(true).unwrap();
+            ctx
+        });
+        let end = r.stream(&cmd, dir.path(), false, tx, crx).await;
+        assert_eq!(end, StreamEnd::Cancelled);
+        drop(h.await);
+        // The child would touch the marker 4 s after it started.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!marker.exists(), "a child outlived the cancellation");
     }
 
     /// A step that leaves a background process holding its stdout: the step ends when its shell

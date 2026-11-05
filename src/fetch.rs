@@ -3,7 +3,6 @@
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -250,8 +249,10 @@ pub fn run(args: &FetchArgs) -> Result<()> {
     Ok(())
 }
 
-/// Installs the staged `files` (`(bin, path)`) into `to`: atomically when `via` is empty, else
-/// with `<via> install -m 755` (after `<via> mkdir -p`; BSD `install` has no `-D`).
+/// Installs the staged `files` (`(bin, path)`) into `to`, each atomically: directly when `via`
+/// is empty, else `<via> install -m 755` to a new name in `to` and `<via> mv -f` over the old
+/// binary (after `<via> mkdir -p`; BSD `install` has no `-D`). `to` needs `via` because the
+/// user cannot write it, so the fixed temp name cannot be planted by them.
 fn place(files: &[(String, PathBuf)], to: &Path, via: &[String]) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let Some((prog, pre)) = via.split_first() else {
@@ -278,13 +279,26 @@ fn place(files: &[(String, PathBuf)], to: &Path, via: &[String]) -> Result<Vec<P
     run(&["mkdir".as_ref(), "-p".as_ref(), to.as_os_str()])?;
     for (bin, src) in files {
         let dest = to.join(bin);
-        run(&[
+        let new = to.join(format!(".{bin}.envira-new.{}", std::process::id()));
+        let copied = run(&[
             "install".as_ref(),
             "-m".as_ref(),
             "755".as_ref(),
             src.as_os_str(),
-            dest.as_os_str(),
-        ])?;
+            new.as_os_str(),
+        ])
+        .and_then(|_| {
+            run(&[
+                "mv".as_ref(),
+                "-f".as_ref(),
+                new.as_os_str(),
+                dest.as_os_str(),
+            ])
+        });
+        if let Err(e) = copied {
+            let _ = run(&["rm".as_ref(), "-f".as_ref(), new.as_os_str()]);
+            return Err(e.context(format!("{} was not replaced", dest.display())));
+        }
         out.push(dest);
     }
     Ok(out)
@@ -350,7 +364,8 @@ fn matches_sha256(asset: &str, source: &str, want: &str, got: &str) -> Result<()
 }
 
 /// Verifies the download against a published checksum when the release has one; a mismatch is
-/// an error, a release without checksums is only noted.
+/// an error, a release without checksums is only noted. A checksum the release publishes but
+/// that cannot be read is an error too: it must not turn into an unverified install.
 fn verify_checksum(
     c: &reqwest::blocking::Client,
     asset: &str,
@@ -362,8 +377,7 @@ fn verify_checksum(
         let url = &assets.iter().find(|a| &a.0 == sums).expect("from list").1;
         let (status, body) = get(c, url, None)?;
         if !(200..300).contains(&status) {
-            eprintln!("[envira] could not read {sums} (HTTP {status}); checksum not verified");
-            return Ok(());
+            bail!("the release publishes {sums}, but it could not be read (HTTP {status})");
         }
         let Some(want) = expected_sha256(asset, &String::from_utf8_lossy(&body)) else {
             continue;
@@ -374,25 +388,11 @@ fn verify_checksum(
     Ok(())
 }
 
-/// Copies the staged `src` to `dest` through a temp file next to it, so `dest` is replaced
-/// atomically. The temp file has a unique name and is created exclusively: an existing file or
-/// symlink of that name is never followed, and two installs never share one.
+/// Copies the staged `src` to `dest` through a fresh temp file next to it, so `dest` is
+/// replaced atomically (`files::replace_with`).
 fn install_file(dest: &Path, src: &Path) -> Result<()> {
-    let dir = dest.parent().context("destination without parent")?;
-    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("bin");
-    let mut tmp = tempfile::Builder::new()
-        .prefix(&format!(".{name}."))
-        .suffix(".envira-tmp")
-        .tempfile_in(dir)
-        .with_context(|| format!("creating a temp file in {}", dir.display()))?;
-    std::io::copy(&mut File::open(src)?, tmp.as_file_mut())
-        .with_context(|| format!("writing {}", tmp.path().display()))?;
-    tmp.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o755))?;
-    tmp.persist(dest)
-        .map_err(|e| e.error)
-        .with_context(|| format!("installing {}", dest.display()))?;
-    Ok(())
+    crate::files::replace_copy(dest, src, Some(0o755))
+        .with_context(|| format!("installing {}", dest.display()))
 }
 
 /// Extracts each requested binary from `archive` (the downloaded asset `name`) into the
@@ -480,6 +480,7 @@ pub fn extract(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
 
     /// `extract` on in-memory data: the archive and the extracted files go through a temp dir.
     fn extract_bytes(name: &str, data: &[u8], bins: &[String]) -> Result<Vec<(String, Vec<u8>)>> {
@@ -512,6 +513,15 @@ mod tests {
         }
         let err = place(&files, &d.path().join("x"), &["false".to_string()]).unwrap_err();
         assert!(format!("{err:#}").contains("false mkdir -p"), "{err:#}");
+        // The swap fails: the old binary stays and the new copy is cleaned up.
+        std::fs::write(to.join("a"), b"old").unwrap();
+        let no_mv: Vec<String> = ["sh", "-c", r#"[ "$1" = mv ] && exit 1; exec "$@""#, "via"]
+            .map(String::from)
+            .to_vec();
+        let err = place(&files, &to, &no_mv).unwrap_err();
+        assert!(format!("{err:#}").contains("was not replaced"), "{err:#}");
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(&to).unwrap().count(), 1);
     }
 
     #[test]

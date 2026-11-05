@@ -964,6 +964,14 @@ async fn run_plan(
     let run_id = ctx.run_id.clone();
     let paths = sess.paths.clone();
     let handle = tokio::spawn(exec::execute(plan, ctx, state, tx, ctl_rx));
+    // From here on a closed stdout (`envira install … | head`) must not end the run halfway:
+    // output errors are ignored, and the run finishes and records its outcome.
+    macro_rules! say {
+        ($($t:tt)*) => {{
+            use std::io::Write;
+            let _ = writeln!(std::io::stdout(), $($t)*);
+        }};
+    }
 
     let quiet = opts.quiet;
     let mut interrupts = 0;
@@ -978,45 +986,45 @@ async fn run_plan(
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
                 match ev {
-                    Event::UnitStarted(i) => println!("==> [{}/{n}] {}", i + 1, actions[i]),
+                    Event::UnitStarted(i) => say!("==> [{}/{n}] {}", i + 1, actions[i]),
                     Event::Line(i, l) if !quiet || l.starts_with("[envira]") => {
                         if tagged {
-                            println!("    │ {} │ {l}", ids[i]);
+                            say!("    │ {} │ {l}", ids[i]);
                         } else {
-                            println!("    │ {l}");
+                            say!("    │ {l}");
                         }
                     }
                     Event::Line(..) => {}
                     Event::UnitFinished(i, o, d) => {
                         let id = &ids[i];
                         match &o {
-                            Outcome::Ok { version } => println!("  ✓ {id} {} ({})", version.as_deref().unwrap_or(""), fmt_duration(d)),
-                            Outcome::Blocked(dep) => { failed += 1; println!("  ⊘ {id} blocked: needs {dep}") }
-                            Outcome::Skipped => { failed += 1; println!("  · {id} skipped (run stopped)") }
-                            Outcome::Cancelled => { failed += 1; println!("  ✗ {id} cancelled") }
+                            Outcome::Ok { version } => say!("  ✓ {id} {} ({})", version.as_deref().unwrap_or(""), fmt_duration(d)),
+                            Outcome::Blocked(dep) => { failed += 1; say!("  ⊘ {id} blocked: needs {dep}") }
+                            Outcome::Skipped => { failed += 1; say!("  · {id} skipped (run stopped)") }
+                            Outcome::Cancelled => { failed += 1; say!("  ✗ {id} cancelled") }
                             Outcome::Failed(e) => {
                                 failed += 1;
                                 let log = paths.run_dir(&run_id).join(format!("{id}.log"));
-                                println!("  ✗ {id} failed: {e} · log {}", log.display());
+                                say!("  ✗ {id} failed: {e} · log {}", log.display());
                                 if quiet {
                                     // Step output was hidden: show the end of the log.
                                     for l in log_tail(&log, 15) {
-                                        println!("    │ {l}");
+                                        say!("    │ {l}");
                                     }
                                 }
                             }
                         }
                     }
                     Event::ShellEnv(Ok(files)) if !files.is_empty() => {
-                        println!("==> shell environment updated ({} files); open a new shell to use it", files.len())
+                        say!("==> shell environment updated ({} files); open a new shell to use it", files.len())
                     }
                     Event::ShellEnv(Ok(_)) => {}
-                    Event::ShellEnv(Err(e)) => println!("==> shell environment not updated: {e}"),
+                    Event::ShellEnv(Err(e)) => say!("==> shell environment not updated: {e}"),
                     Event::Finished(_) => {}
                 }
             }
             _ = async { tokio::select! { _ = term.recv() => {}, _ = hup.recv() => {} } } => {
-                println!("\n==> terminated: cancelling the running steps and stopping");
+                say!("\n==> terminated: cancelling the running steps and stopping");
                 ctl_tx.send_modify(|c| {
                     c.stop = true;
                     c.cancel_seq += 1;
@@ -1027,7 +1035,7 @@ async fn run_plan(
                 let mut c = *ctl_tx.borrow();
                 if interrupts == 1 {
                     c.stop = true;
-                    println!("\n==> stopping after the running steps (Ctrl-C again cancels them)");
+                    say!("\n==> stopping after the running steps (Ctrl-C again cancels them)");
                 } else {
                     c.cancel_seq += 1;
                 }
@@ -1040,14 +1048,14 @@ async fn run_plan(
         k.abort();
     }
     let ok = record.units.iter().filter(|u| u.outcome == "ok").count();
-    println!(
+    say!(
         "{ok}/{} succeeded · run {} · {}",
         record.units.len(),
         record.id,
         paths.run_dir(&record.id).display()
     );
     if failed > 0 {
-        println!("Retry what did not finish with `envira retry`.");
+        say!("Retry what did not finish with `envira retry`.");
     }
     Ok(if failed > 0 { 1 } else { 0 })
 }

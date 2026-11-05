@@ -67,11 +67,15 @@ impl RetryTargets {
 
 /// One command of a unit. A step with a passing `check` is skipped; `cmd = None` means there is
 /// nothing to run (a revert the catalog does not describe).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct UnitStep {
     pub label: String,
     pub check: Option<String>,
     pub cmd: Option<String>,
+    /// Needs root in a user-scope unit (the system-wide copy of a portable build): under
+    /// `sudo envira` it runs as root, not as the user.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub as_root: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -607,6 +611,7 @@ impl<'a> Planner<'a> {
             label,
             check: None,
             cmd: Some(vars.expand(&tpl, Ctx::Shell)?),
+            as_root: false,
         }];
         if entry.portable
             && scope == Scope::User
@@ -615,14 +620,16 @@ impl<'a> Planner<'a> {
         {
             for b in tool.bins(id) {
                 let sv = Vars::new(facts, id, b, bin_dir(cat, Scope::System), true);
+                // Next to the target, then renamed over it: a failed copy leaves the old one.
                 let c = sv.expand(
-                    "{sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/{bin}",
+                    "{sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/.{bin}.envira-new && {sudo} mv -f {bin_dir}/.{bin}.envira-new {bin_dir}/{bin}",
                     Ctx::Shell,
                 )?;
                 steps.push(UnitStep {
                     label: format!("copy {b} to {}", bin_dir(cat, Scope::System)),
                     check: None,
                     cmd: Some(c),
+                    as_root: true,
                 });
             }
         }
@@ -719,6 +726,7 @@ impl<'a> Planner<'a> {
                 label: s.label,
                 check: s.check,
                 cmd: Some(s.apply),
+                as_root: false,
             })
             .collect();
         Ok(Choice {
@@ -820,6 +828,7 @@ impl<'a> Planner<'a> {
                             label: format!("revert {}", s.label),
                             check: None,
                             cmd: s.revert,
+                            as_root: false,
                         })
                         .collect(),
                     verify: vec![],
@@ -1119,8 +1128,11 @@ mod tests {
         assert_eq!(u.steps.len(), 2);
         assert_eq!(
             u.steps[1].cmd.as_deref().unwrap(),
-            "sudo -n install -m 755 \"$(command -v texlab)\" /usr/local/bin/texlab"
+            "sudo -n install -m 755 \"$(command -v texlab)\" /usr/local/bin/.texlab.envira-new \
+             && sudo -n mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab"
         );
+        // The build runs as the user, the copy as root (under `sudo envira`).
+        assert!(!u.steps[0].as_root && u.steps[1].as_root);
     }
 
     #[test]

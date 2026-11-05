@@ -387,10 +387,10 @@ pub fn run(o: &Opts) -> Result<Outcome> {
         );
     }
     // `pip install --user` would put a second copy in the user site, not replace this one.
-    if channel == Channel::Pip(None) && !under_home(&facts, &exe) {
+    if channel == Channel::Pip(None) && !in_user_base(&facts, &exe) {
         bail!(
-            "{} was installed by pip outside your home; update it with the pip that installed it \
-             (for example `sudo python3 -m pip install --upgrade envira`)",
+            "{} was installed by pip outside your user site; update it with the pip that \
+             installed it (for example `sudo python3 -m pip install --upgrade envira`)",
             exe.display()
         );
     }
@@ -420,7 +420,7 @@ pub fn run(o: &Opts) -> Result<Outcome> {
         }
     }
     // Steps call `<envira> fs …`: never swap the binary under a running install.
-    let _lock = state::RunLock::acquire(&paths, &facts)?;
+    let _lock = state::RunLock::acquire_exclusive(&paths, &facts)?;
     match cmd {
         Some(words) => {
             if let Some(u) = &facts.drop_to {
@@ -440,26 +440,36 @@ pub fn run(o: &Opts) -> Result<Outcome> {
         }
         None => replace_binary(&facts, &exe, &target)?,
     }
-    let now = Command::new(&exe)
-        .arg("--version")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if now.split_whitespace().nth(1) == Some(target.as_str()) {
-        println!("{now} is installed at {}.", tilde(&facts, &exe));
+    let now = version_of(&exe);
+    if now.as_deref() == Ok(target.as_str()) {
+        println!("envira {target} is installed at {}.", tilde(&facts, &exe));
         return Ok(Outcome::Updated(exe));
     }
     // Not `Updated`: the TUI would offer to restart into the same old version.
     eprintln!(
-        "warning: {} reports {now:?}, not {target} (the package index may not have it yet)",
-        exe.display()
+        "warning: {} is not {target} afterwards ({}; the package index may not have it yet)",
+        exe.display(),
+        match now {
+            Ok(v) => format!("it reports {v}"),
+            Err(e) => e,
+        }
     );
     Ok(Outcome::Unchanged(1))
 }
 
-/// Whether `exe` is in the target user's home (a `pip install --user` lands there).
-fn under_home(facts: &Facts, exe: &Path) -> bool {
-    exe.starts_with(&facts.home) || facts.home.canonicalize().is_ok_and(|h| exe.starts_with(h))
+/// Whether `exe` is the `bin/envira` of the user base `pip install --user` uses:
+/// `$PYTHONUSERBASE`, `~/.local` (Linux), `~/Library/Python/<version>` (macOS).
+fn in_user_base(facts: &Facts, exe: &Path) -> bool {
+    let Some(root) = exe.parent().and_then(Path::parent) else {
+        return false;
+    };
+    let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
+    let root = canon(root.to_path_buf());
+    let home = canon(facts.home.clone());
+    let base = std::env::var_os("PYTHONUSERBASE").filter(|_| facts.drop_to.is_none());
+    root == home.join(".local")
+        || root.parent() == Some(home.join("Library/Python").as_path())
+        || base.is_some_and(|b| canon(PathBuf::from(b)) == root)
 }
 
 /// Downloads the release binary for this machine, checks its SHA-256 and that it runs, then
@@ -597,36 +607,71 @@ pub fn install_binary(
     write(&mut f).map_err(anyhow::Error::new)?;
     // Closed before it runs (an open writer makes exec fail with ETXTBSY); removed on drop.
     let new = f.into_temp_path();
-    let out = run_version(&new);
-    let says = out
-        .as_ref()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if says.split_whitespace().nth(1) != Some(version) {
-        bail!(
+    match version_of(&new) {
+        Ok(v) if v == version => {}
+        got => bail!(
             "the downloaded envira does not run here or is not {version} ({}); nothing was changed",
-            match &out {
-                Ok(_) => format!("it says {says:?}"),
-                Err(e) => e.to_string(),
+            match got {
+                Ok(v) => format!("it says {v}"),
+                Err(e) => e,
             }
-        );
+        ),
     }
     new.persist(exe).map_err(|e| anyhow::Error::new(e.error))
 }
 
-/// `<exe> --version`, retried briefly while another thread's fork still holds the file open for
-/// writing (ETXTBSY).
-fn run_version(exe: &Path) -> std::io::Result<std::process::Output> {
+/// The version `<exe> --version` reports (`envira X`), if it exits successfully within 10 s.
+/// Retried briefly while another thread's fork still holds the file open for writing (ETXTBSY).
+fn version_of(exe: &Path) -> Result<String, String> {
+    use std::io::Read;
     let mut n = 0;
-    loop {
-        match Command::new(exe).arg("--version").output() {
+    let mut child = loop {
+        match Command::new(exe)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
             Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && n < 5 => {
                 n += 1;
                 std::thread::sleep(Duration::from_millis(50));
             }
-            r => return r,
+            Err(e) => return Err(e.to_string()),
+            Ok(c) => break c,
         }
+    };
+    let mut out = child.stdout.take().expect("piped");
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = (&mut out).take(4096).read_to_end(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("it did not answer `--version` within 10 s".into());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let text = String::from_utf8_lossy(&reader.join().unwrap_or_default())
+        .trim()
+        .to_string();
+    if !status.success() {
+        return Err(format!("`--version` failed ({status}): {text:?}"));
     }
+    text.split_whitespace()
+        .nth(1)
+        .map(String::from)
+        .ok_or_else(|| format!("it says {text:?}"))
 }
 
 #[cfg(test)]
@@ -786,6 +831,11 @@ mod tests {
         assert!(format!("{e:#}").contains("is not 0.2.0"), "{e:#}");
         assert_eq!(std::fs::read(&exe).unwrap(), fake("0.1.0"));
         assert!(leftovers(tmp.path()).is_empty());
+        // The right version but a failing exit: not a working envira.
+        let failing = b"#!/bin/sh\necho envira 0.2.0\nexit 42\n";
+        let e = install_binary(tmp.path(), &exe, failing, "0.2.0", None).unwrap_err();
+        assert!(format!("{e:#}").contains("failed"), "{e:#}");
+        assert_eq!(std::fs::read(&exe).unwrap(), fake("0.1.0"));
 
         let m = std::fs::metadata(&exe).unwrap();
         install_binary(
@@ -800,6 +850,16 @@ mod tests {
         let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
         assert!(leftovers(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn pip_user_installs_are_told_from_other_prefixes() {
+        let facts = Facts::sample(Path::new("/home/user"));
+        let user = |p: &str| in_user_base(&facts, Path::new(p));
+        assert!(user("/home/user/.local/bin/envira"));
+        assert!(user("/home/user/Library/Python/3.12/bin/envira"));
+        assert!(!user("/home/user/custom-prefix/bin/envira"));
+        assert!(!user("/usr/local/bin/envira"));
     }
 
     #[test]

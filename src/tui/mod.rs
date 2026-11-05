@@ -449,7 +449,13 @@ fn start_run(
     let (etx, mut erx) = mpsc::unbounded_channel();
     let ctx = sess.exec_ctx(command, true);
     let run_id = ctx.run_id.clone();
-    let st = app.state.clone().unwrap_or_default();
+    // The state on disk, read under the run lock: `app.state` is from the last scan, and a
+    // run finished since (retry with `r` right away) would lose that run's records.
+    let st = match sess.state() {
+        Ok(Some(st)) => st,
+        _ => app.state.clone().unwrap_or_default(),
+    };
+    app.state = Some(st.clone());
     let run = plan.clone();
     tokio::spawn(async move {
         let _lock = lock;

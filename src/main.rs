@@ -7,6 +7,7 @@ mod diagnose;
 mod exec;
 mod facts;
 mod fetch;
+mod files;
 mod fs;
 mod latest;
 mod net;

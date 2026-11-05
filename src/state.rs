@@ -196,20 +196,8 @@ impl State {
 pub fn write_atomic(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
     let dir = path.parent().context("path without parent")?;
     create_dir_all_owned(dir, facts)?;
-    let tmp = dir.join(format!(
-        ".{}.{}.envira-tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("f"),
-        std::process::id()
-    ));
-    {
-        use std::io::Write;
-        let mut f =
-            std::fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
-        f.write_all(data)
-            .and_then(|_| f.sync_all())
-            .with_context(|| format!("writing {}", tmp.display()))?;
-    }
-    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    crate::files::replace(path, data, None)
+        .with_context(|| format!("writing {}", path.display()))?;
     chown_to_target(path, facts);
     Ok(())
 }
@@ -221,10 +209,22 @@ pub fn write_atomic(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
 #[derive(Debug)]
 pub struct RunLock {
     _file: std::fs::File,
+    _exe: Option<std::fs::File>,
 }
 
 impl RunLock {
+    /// For a run: also holds the envira binary shared, so `self-update` (exclusive) cannot swap
+    /// it while any run uses it, whatever user or state dir that run has.
     pub fn acquire(paths: &Paths, facts: &Facts) -> Result<RunLock> {
+        Self::take(paths, facts, false)
+    }
+
+    /// For `self-update`: the binary exclusively.
+    pub fn acquire_exclusive(paths: &Paths, facts: &Facts) -> Result<RunLock> {
+        Self::take(paths, facts, true)
+    }
+
+    fn take(paths: &Paths, facts: &Facts, exclusive: bool) -> Result<RunLock> {
         use std::os::fd::AsRawFd;
         create_dir_all_owned(&paths.state_dir, facts)?;
         let path = paths.state_dir.join("lock");
@@ -242,7 +242,29 @@ impl RunLock {
                 path.display()
             );
         }
-        Ok(RunLock { _file: file })
+        // The running binary itself (/proc/self/exe also opens it after it was replaced).
+        // Best effort: a binary that cannot be opened is not locked.
+        let exe = std::fs::File::open("/proc/self/exe")
+            .or_else(|_| std::env::current_exe().and_then(std::fs::File::open))
+            .ok();
+        if let Some(f) = &exe {
+            let op = if exclusive {
+                libc::LOCK_EX
+            } else {
+                libc::LOCK_SH
+            };
+            // SAFETY: plain syscall on a file descriptor owned by `f`.
+            if unsafe { libc::flock(f.as_raw_fd(), op | libc::LOCK_NB) } != 0 {
+                if exclusive {
+                    bail!("an envira run is using this binary; update it when that run is done");
+                }
+                bail!("envira is being updated; run it again in a moment");
+            }
+        }
+        Ok(RunLock {
+            _file: file,
+            _exe: exe,
+        })
     }
 }
 
@@ -543,6 +565,16 @@ mod tests {
         let held = RunLock::acquire(&paths, &facts).unwrap();
         let err = format!("{:#}", RunLock::acquire(&paths, &facts).unwrap_err());
         assert!(err.contains("another envira run"), "{err}");
+        // self-update with another state dir: the binary is still in use.
+        let other = Paths {
+            state_dir: dir.path().join("s2"),
+            ..paths.clone()
+        };
+        let err = format!(
+            "{:#}",
+            RunLock::acquire_exclusive(&other, &facts).unwrap_err()
+        );
+        assert!(err.contains("using this binary"), "{err}");
         drop(held);
         // Tests running in parallel fork children; between fork and exec a child briefly holds
         // a copy of the descriptor (O_CLOEXEC closes it only at exec), so allow a short wait.

@@ -151,12 +151,10 @@ fn write_cache(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    crate::files::replace(path, text.as_bytes(), None)?;
     let etag_path = path.with_extension("etag");
     match etag {
-        Some(e) => std::fs::write(&etag_path, e)?,
+        Some(e) => crate::files::replace(&etag_path, e.as_bytes(), None)?,
         None => std::fs::remove_file(&etag_path).or(Ok::<(), std::io::Error>(()))?,
     }
     if let Some((uid, gid)) = owner {

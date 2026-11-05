@@ -60,8 +60,26 @@ impl Backups {
         Backups::new(backups_dir())
     }
 
+    /// The backup dir of `path`: its absolute path with `/` turned into `%` (the name earlier
+    /// versions used). That is not one-to-one once a path contains `%` (`/a/b` and `/a%b`
+    /// share it), so such a path, or one whose name is taken by another path's backup, uses
+    /// `h-<hash of the path>` instead.
     fn slot(&self, path: &Path) -> PathBuf {
-        self.dir.join(path.display().to_string().replace('/', "%"))
+        let shown = abs(path).display().to_string();
+        let legacy = self.dir.join(shown.replace('/', "%"));
+        let owner = Self::meta_path(&legacy);
+        // No meta.toml yet: free, or this path's backup being made.
+        if owner.as_deref() == Some(shown.as_str()) || (owner.is_none() && !shown.contains('%')) {
+            return legacy;
+        }
+        let hash = crate::fetch::sha256_hex(shown.as_bytes());
+        self.dir.join(format!("h-{}", &hash[..32]))
+    }
+
+    /// The path a backup dir belongs to, from its meta.toml.
+    fn meta_path(slot: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(slot.join("meta.toml")).ok()?;
+        toml::from_str::<Meta>(&text).ok().map(|m| m.path)
     }
 
     fn load(&self, path: &Path) -> Option<Meta> {
@@ -72,7 +90,11 @@ impl Backups {
     fn save(&self, meta: &Meta, path: &Path) -> Result<()> {
         let slot = self.slot(path);
         std::fs::create_dir_all(&slot)?;
-        std::fs::write(slot.join("meta.toml"), toml::to_string_pretty(meta)?)?;
+        crate::files::replace(
+            &slot.join("meta.toml"),
+            toml::to_string_pretty(meta)?.as_bytes(),
+            None,
+        )?;
         self.own(&[
             &self.dir,
             &slot,
@@ -110,7 +132,7 @@ impl Backups {
         std::fs::create_dir_all(&slot).with_context(|| format!("creating {}", slot.display()))?;
         let lmeta = std::fs::symlink_metadata(path).ok();
         let mut meta = Meta {
-            path: path.display().to_string(),
+            path: abs(path).display().to_string(),
             existed: lmeta.is_some(),
             ..Default::default()
         };
@@ -120,8 +142,13 @@ impl Backups {
                     .ok()
                     .map(|p| p.display().to_string());
             } else if m.is_file() {
-                std::fs::copy(path, slot.join("orig"))
-                    .with_context(|| format!("backing up {}", path.display()))?;
+                // Same mode as the original: a backup of a private file stays private.
+                crate::files::replace_copy(
+                    &slot.join("orig"),
+                    path,
+                    Some(m.permissions().mode() & 0o7777),
+                )
+                .with_context(|| format!("backing up {}", path.display()))?;
             }
         }
         self.save(&meta, path)?;
@@ -152,27 +179,8 @@ fn write_atomic(path: &Path, data: &str, mode: Option<u32>) -> Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let keep_mode = std::fs::metadata(path)
-        .ok()
-        .map(|m| m.permissions().mode() & 0o7777);
-    // A unique temp name, created exclusively: never written through an existing file or link.
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("f");
-    let mut tmp = tempfile::Builder::new()
-        .prefix(&format!(".{name}."))
-        .suffix(".envira-tmp")
-        .permissions(std::fs::Permissions::from_mode(0o666))
-        .tempfile_in(dir)
-        .with_context(|| format!("creating a temp file in {}", dir.display()))?;
-    std::io::Write::write_all(&mut tmp, data.as_bytes())
-        .with_context(|| format!("writing {}", tmp.path().display()))?;
-    if let Some(m) = mode.or(keep_mode) {
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(m))?;
-    }
-    tmp.persist(path)
-        .map_err(|e| e.error)
-        .with_context(|| format!("replacing {}", path.display()))?;
-    Ok(())
+    crate::files::replace(path, data.as_bytes(), mode)
+        .with_context(|| format!("replacing {}", path.display()))
 }
 
 /// Whole-file content. Returns whether the file is (or now is) in the desired state.
@@ -546,18 +554,54 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
         }
         return Ok(());
     }
+    // The current file is replaced in one rename once the original is staged: a missing or
+    // unreadable backup leaves it as it is.
     let slot = b.slot(path);
-    if std::fs::symlink_metadata(path).is_ok() {
-        std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
-    }
     if let Some(t) = &meta.link {
-        std::os::unix::fs::symlink(t, path)?;
-    } else if meta.existed {
-        std::fs::copy(slot.join("orig"), path)
+        replace_with_link(path, Path::new(t))
             .with_context(|| format!("restoring {}", path.display()))?;
+    } else if meta.existed {
+        let orig = slot.join("orig");
+        let mode = std::fs::metadata(&orig)
+            .with_context(|| format!("reading the backup {}", orig.display()))?
+            .permissions()
+            .mode()
+            & 0o7777;
+        crate::files::replace_copy(path, &orig, Some(mode))
+            .with_context(|| format!("restoring {}", path.display()))?;
+    } else if std::fs::symlink_metadata(path).is_ok() {
+        std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
     }
     let _ = std::fs::remove_dir_all(slot);
     Ok(())
+}
+
+/// Puts a symlink to `target` at `path` in one rename (a fresh name next to it first).
+fn replace_with_link(path: &Path, target: &Path) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("f");
+    for n in 0..100u32 {
+        let tmp = dir.join(format!(".{name}.{}.{n}.envira-link", std::process::id()));
+        match std::os::unix::fs::symlink(target, &tmp) {
+            Ok(()) => {
+                return std::fs::rename(&tmp, path).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp);
+                    e.into()
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    bail!("cannot create a temporary link in {}", dir.display())
+}
+
+/// `path` made absolute (backups are kept per absolute path).
+fn abs(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -764,6 +808,47 @@ mod tests {
         assert!(link(&b, "/usr/bin/batcat", &l, true).unwrap());
         restore(&b, &l, None).unwrap();
         assert_eq!(std::fs::read_to_string(&l).unwrap(), "old");
+    }
+
+    #[test]
+    fn backups_of_look_alike_paths_stay_apart() {
+        let (d, b) = setup();
+        let dir = d.path().join("c");
+        std::fs::create_dir_all(dir.join("x")).unwrap();
+        let (a, pct) = (dir.join("x/a"), dir.join("x%a"));
+        std::fs::write(&a, "A-original").unwrap();
+        std::fs::write(&pct, "B-original").unwrap();
+        write(&b, &a, "A-new", None, false).unwrap();
+        write(&b, &pct, "B-new", None, false).unwrap();
+        restore(&b, &pct, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&pct).unwrap(), "B-original");
+        restore(&b, &a, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "A-original");
+    }
+
+    #[test]
+    fn a_missing_backup_leaves_the_file_in_place() {
+        let (d, b) = setup();
+        let f = d.path().join("rc");
+        std::fs::write(&f, "old").unwrap();
+        write(&b, &f, "new", None, false).unwrap();
+        std::fs::remove_file(b.slot(&f).join("orig")).unwrap();
+        assert!(restore(&b, &f, None).is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+    }
+
+    #[test]
+    fn a_private_file_keeps_private_backups() {
+        let (d, b) = setup();
+        let f = d.path().join("secret");
+        std::fs::write(&f, "token").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write(&b, &f, "token2", None, false).unwrap();
+        let orig = b.slot(&f).join("orig");
+        let mode = std::fs::metadata(&orig).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

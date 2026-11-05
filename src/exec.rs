@@ -414,9 +414,6 @@ where
     };
     state::chown_to_target(tmp.path(), &ctx.facts);
     let base_seq = ctl.borrow().cancel_seq;
-    // Under `sudo envira`, system-scope steps keep root (their `{sudo}` is empty); the rest run
-    // as the user.
-    let as_root = unit.scope == Scope::System;
 
     for (n, step) in unit.steps.iter().enumerate() {
         let label = format!("step {}/{}", n + 1, unit.steps.len());
@@ -437,6 +434,9 @@ where
             continue;
         };
         emit(format!("$ {cmd}"));
+        // Under `sudo envira`, system-scope steps keep root (their `{sudo}` is empty); the rest
+        // run as the user.
+        let as_root = unit.scope == Scope::System || step.as_root;
         let mut attempt = 1;
         loop {
             let (end, timed_out, lines) =
@@ -1159,6 +1159,7 @@ mod tests {
                 label: "run".into(),
                 check: None,
                 cmd: Some(cmd.into()),
+                as_root: false,
             }],
             verify: vec![],
             deps: deps.iter().map(|d| d.to_string()).collect(),
