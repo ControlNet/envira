@@ -77,8 +77,15 @@ the package cache), and without a cgroup limit `process_jobs` allows 8 at once (
 
 `runner/budget.rs` gates every `capture_as` (detection, checks, `installed` and latest command
 queries; steps are not gated):
+- The limit follows the memory available, not the machine's total (user's call, same day):
+  `limit_for(available_memory())`, where available is `MemAvailable` or what a cgroup limit
+  leaves (the tightest). From 1 GiB available up: half of it, which never holds a scan back
+  (status 1.3-1.4 s, ~210-270 MiB, faster than before thanks to the lighter detects). Under
+  1 GiB: `SCAN_MEMORY` (176 MiB: 200 MB less a margin), at most 3/4 of what is left. Unknown
+  (macOS): `SCAN_MEMORY`. Read again while none of envira's commands runs, at most once a
+  second (the TUI lives long; reading it while ours run would count them against themselves).
 - A command starts only when envira's own RSS + the reservations of the running commands + its
-  estimate fit in `SCAN_MEMORY` (176 MiB: 200 MB less a margin), or when nothing else runs.
+  estimate fit in the limit, or when nothing else runs.
 - Estimate, in order: its own peak seen before (x1.25 + 2 MiB); for a command that ended before
   it could be sampled, its static estimate capped at 32 MiB; the highest peak of another command
   of the same program (`apt-cache policy git` for `apt-cache policy curl`); else static: bash
@@ -97,21 +104,31 @@ queries; steps are not gated):
   quarter per run); peaks vary by about a third between runs (codex 33-46 MiB, gh 25-37), and
   any-change rewrites happened every run. Written without fsync (`files::replace_cache`): one
   fsync on the busy workstation disk took 2.2 s and made `status` stall 4-10 s now and then.
+  Without fsync it still stalled (2 in ~40 runs under a cgroup limit): caught with a sampler
+  that dumps `/proc/<pid>/task/*/{wchan,syscall}` when envira has had no child for 1 s, the
+  main thread was in D state in `renameat` (syscall 264), wchan `rq_qos_wait`. ext4's
+  `auto_da_alloc` flushes the data of a file renamed over an existing one, and that write
+  waited in the block layer's throttling. `replace_cache` now removes the old file first (a
+  rename onto a free name flushes nothing; a reader may briefly see no cache).
 
 Also: the jupyter detect reads the package metadata (`importlib.metadata`, 17 MiB) instead of
 `jupyter-lab --version` (python 57 + node/yarn 98 MiB), and pm2's reads the package.json behind
 the command on PATH instead of `npm ls -g pm2` (110 MiB, and it missed a pm2 installed under an
 older npm prefix: status said "not installed").
 
-Measured on the workstation (summed RSS of the tree, 20 ms samples; old = 26fff17):
+Measured on the workstation (summed RSS of the tree, 20 ms samples; old = 26fff17; memory
+available set with `systemd-run --user --scope -p MemoryMax=...`):
 
 | Scenario | old peak / time | now peak / time |
 |---|---|---|
-| `status`, no saved peaks | 279-313 MiB / 1.7-1.8 s | 136-168 MiB / 3.1 s |
-| `status`, peaks saved | – | 134-170 MiB / 2.4-2.6 s |
-| `status` under MemoryMax=256M | 195-205 MiB / 3.6-4.6 s | 135-168 MiB / 3.1 s |
-| TUI first scan (scan only) | 300-303 MiB / 1.6-1.7 s | 134-171 MiB / 2.4-3.0 s |
-| TUI start, no caches at all, latest refresh + update check over the network | 221 MiB | 174 MiB (envira itself at most 54 MiB, during the latest JSON) |
+| `status`, ~100 GiB available (budget open) | 279-313 MiB / 1.7-1.8 s | 209-271 MiB / 1.3-1.4 s |
+| `status`, MemoryMax=2G (open) | – | 209-271 MiB / 1.3-1.4 s |
+| `status`, MemoryMax=1G (just under 1 GiB available: 200 MB budget) | – | 165-171 MiB / 2.5-2.6 s |
+| `status`, MemoryMax=768M | – | 136-138 MiB / 3.2 s |
+| `status`, MemoryMax=256M | 195-205 MiB / 3.6-4.6 s | 135-168 MiB / 3.1 s |
+| 200 MB budget forced on the big host, no saved peaks / peaks saved | – | 136-168 MiB / 3.1 s; 134-170 MiB / 2.5 s |
+| TUI first scan, 200 MB budget forced | 300-303 MiB / 1.6-1.7 s | 134-171 MiB / 2.4-3.0 s |
+| TUI start, no caches at all, latest refresh + update check over the network, 200 MB budget forced | 221 MiB | 174 MiB (envira itself at most 54 MiB, during the latest JSON) |
 
 The largest single command bounds what is possible: agy alone is up to 160 MiB plus envira's
 11-20 MiB. Batching every apt package into one `apt-cache policy a b c` (needs a multi-package

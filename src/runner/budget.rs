@@ -4,6 +4,9 @@
 //! at once whatever they were, and several are Node or Bun programs at 100-160 MiB each
 //! (`npm ls -g`, `opencode --version`, `agy --version`): the tree took ~300 MiB.
 //!
+//! The budget follows the memory available (`limit_for`): with 1 GiB or more, half of it, which
+//! never holds a scan back; with less, 200 MB.
+//!
 //! A command never seen before is estimated from the peak of another command of its program
 //! (`apt-cache policy curl` from `apt-cache policy git`: 92 MiB, the package cache it maps),
 //! else from the programs it names: a script by its interpreter, a native program by its size
@@ -16,6 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -25,10 +29,28 @@ use crate::facts::Facts;
 
 const MIB: u64 = 1 << 20;
 
-/// What envira and its commands may take at once during a scan: 200 MB (190.7 MiB), less
-/// ~15 MiB for what sampling sees late (a command growing between two samples, envira's own
-/// buffers).
+/// What envira and its commands may take at once during a scan when memory is short: 200 MB
+/// (190.7 MiB), less ~15 MiB for what sampling sees late (a command growing between two
+/// samples, envira's own buffers).
 pub const SCAN_MEMORY: u64 = 176 * MIB;
+
+/// Memory available from which a scan is not held back.
+const PLENTY: u64 = 1 << 30;
+
+/// How often the memory available is read again (when no command runs).
+const RECHECK: Duration = Duration::from_secs(1);
+
+/// The budget for `available` bytes (`MemAvailable`, or what a cgroup limit leaves; not the
+/// machine's total): from `PLENTY` up, half of it, where a scan (~300 MiB at most) runs as
+/// fast as it can; below, `SCAN_MEMORY`, and at most three quarters of what is left. Unknown
+/// (no /proc): `SCAN_MEMORY`.
+pub fn limit_for(available: Option<u64>) -> u64 {
+    match available {
+        Some(a) if a >= PLENTY => a / 2,
+        Some(a) => SCAN_MEMORY.min(a / 4 * 3),
+        None => SCAN_MEMORY,
+    }
+}
 
 /// bash itself, around every command.
 const SHELL: u64 = 4 * MIB;
@@ -43,7 +65,8 @@ const NATIVE_MIN: u64 = 8 * MIB;
 const NATIVE_MAX: u64 = 160 * MIB;
 
 pub struct Budget {
-    limit: u64,
+    /// A fixed limit (tests); else it follows the memory available.
+    fixed: Option<u64>,
     /// Where the peaks are kept between runs.
     file: Option<PathBuf>,
     state: Mutex<State>,
@@ -52,6 +75,9 @@ pub struct Budget {
 
 #[derive(Default)]
 struct State {
+    limit: u64,
+    /// When `limit` was taken from the memory available.
+    checked: Option<Instant>,
     next: u64,
     /// Reservation of each running command: its estimate, or more once it was seen to take more.
     running: HashMap<u64, u64>,
@@ -106,12 +132,14 @@ enum Known {
 }
 
 impl Budget {
-    /// A budget of `SCAN_MEMORY`, or of three quarters of the memory left when that is less,
-    /// with the peaks kept in `file`.
+    /// A budget that follows the memory available (`limit_for`), with the peaks kept in
+    /// `file`.
     pub fn for_scans(file: PathBuf) -> Budget {
-        let left = super::available_memory().map_or(u64::MAX, |a| a / 4 * 3);
-        let mut b = Budget::new(SCAN_MEMORY.min(left));
+        let mut b = Budget::new(0);
+        b.fixed = None;
         let s = b.state.get_mut().unwrap();
+        s.limit = limit_for(super::available_memory());
+        s.checked = Some(Instant::now());
         s.saved = std::fs::read_to_string(&file)
             .ok()
             .and_then(|t| toml::from_str::<Peaks>(&t).ok())
@@ -129,9 +157,12 @@ impl Budget {
 
     pub fn new(limit: u64) -> Budget {
         Budget {
-            limit,
+            fixed: Some(limit),
             file: None,
-            state: Mutex::default(),
+            state: Mutex::new(State {
+                limit,
+                ..State::default()
+            }),
             freed: Notify::new(),
         }
     }
@@ -203,13 +234,22 @@ impl Budget {
             freed.as_mut().enable();
             {
                 let mut s = self.state.lock().unwrap();
+                // Memory freed or taken by others since: read again while nothing of ours runs
+                // (our commands would count against themselves).
+                if self.fixed.is_none()
+                    && s.running.is_empty()
+                    && s.checked.is_none_or(|t| t.elapsed() >= RECHECK)
+                {
+                    s.limit = limit_for(super::available_memory());
+                    s.checked = Some(Instant::now());
+                }
                 let known = s.known(cmd, program.as_deref());
                 let est = reserve(&known, || guess);
                 // A program never measured: one of its commands at a time until one has ended.
                 let first = known == Known::Nothing && program.is_some();
                 let held = first && program.as_ref().is_some_and(|p| s.probing.contains(p));
                 let used: u64 = s.running.values().sum();
-                if !held && (s.running.is_empty() || own_rss() + used + est <= self.limit) {
+                if !held && (s.running.is_empty() || own_rss() + used + est <= s.limit) {
                     let id = s.next;
                     s.next += 1;
                     s.running.insert(id, est);
@@ -699,6 +739,20 @@ mod tests {
             b.estimate("first", "", Path::new(ROOT)),
             150 * MIB + 150 * MIB / 4 + 2 * MIB
         );
+    }
+
+    #[test]
+    fn the_budget_follows_the_memory_available() {
+        const GIB: u64 = 1 << 30;
+        // Short of memory: 200 MB, and no more than three quarters of what is left.
+        assert_eq!(limit_for(Some(800 * MIB)), SCAN_MEMORY);
+        assert_eq!(limit_for(Some(500 * MIB)), SCAN_MEMORY);
+        assert_eq!(limit_for(Some(200 * MIB)), 150 * MIB);
+        // Plenty: a scan is not held back.
+        assert_eq!(limit_for(Some(GIB)), GIB / 2);
+        assert_eq!(limit_for(Some(3 * GIB)), 3 * GIB / 2);
+        // Unknown: careful.
+        assert_eq!(limit_for(None), SCAN_MEMORY);
     }
 
     #[test]
