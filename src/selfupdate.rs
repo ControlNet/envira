@@ -61,7 +61,8 @@ impl Channel {
     }
 
     /// The package-manager command that installs `version` (latest when `None`); `None` for the
-    /// release binary and source builds. `binstall`: cargo-binstall is available.
+    /// release binary and source builds. `binstall`: cargo-binstall is available; it only
+    /// downloads a prebuilt binary (a build from source is [`Channel::fallback`], shown first).
     pub fn command(&self, version: Option<&str>, binstall: bool) -> Option<Vec<String>> {
         let pinned =
             |sep: &str| version.map_or("envira".to_string(), |v| format!("envira{sep}{v}"));
@@ -107,6 +108,8 @@ impl Channel {
                 "binstall".into(),
                 "-y".into(),
                 "--force".into(),
+                "--disable-strategies".into(),
+                "compile".into(),
                 pinned("@"),
             ],
             Channel::Cargo => {
@@ -124,6 +127,15 @@ impl Channel {
             }
         };
         Some(words)
+    }
+
+    /// What runs when `command` fails: with cargo-binstall and no prebuilt binary for this
+    /// platform, a build from source with `cargo install` (minutes, one job per GiB free).
+    pub fn fallback(&self, version: Option<&str>, binstall: bool) -> Option<Vec<String>> {
+        match self {
+            Channel::Cargo if binstall => self.command(version, false),
+            _ => None,
+        }
     }
 }
 
@@ -400,10 +412,14 @@ pub fn run(o: &Opts) -> Result<Outcome> {
         .is_ok_and(|o| o.status.success())
         || cargo_bin(&facts).join("cargo-binstall").exists();
     let cmd = channel.command(pinned.as_deref(), binstall);
+    let fallback = channel.fallback(pinned.as_deref(), binstall);
     println!("envira {CURRENT} → {target}");
     println!("  installed via  {where_}");
     if let Some(c) = &cmd {
         println!("  runs           {}", c.join(" "));
+    }
+    if let Some(c) = &fallback {
+        println!("  if no prebuilt {} (builds from source)", c.join(" "));
     }
     println!("  notes          {}/tag/v{target}", releases());
     if !o.yes {
@@ -429,13 +445,23 @@ pub fn run(o: &Opts) -> Result<Outcome> {
                     channel.label()
                 );
             }
-            let st = Command::new(&words[0])
-                .args(&words[1..])
-                .envs(crate::runner::build_env())
-                .status()
-                .with_context(|| format!("cannot run {}", words[0]))?;
-            if !st.success() {
-                bail!("`{}` failed ({st})", words.join(" "));
+            let run = |words: &[String]| -> Result<()> {
+                let st = Command::new(&words[0])
+                    .args(&words[1..])
+                    .envs(crate::runner::build_env())
+                    .status()
+                    .with_context(|| format!("cannot run {}", words[0]))?;
+                if !st.success() {
+                    bail!("`{}` failed ({st})", words.join(" "));
+                }
+                Ok(())
+            };
+            if let Err(e) = run(&words) {
+                let Some(fb) = &fallback else {
+                    return Err(e);
+                };
+                eprintln!("envira: {e:#}; building it from source instead");
+                run(fb)?;
             }
         }
         None => replace_binary(&facts, &exe, &target)?,
@@ -768,8 +794,18 @@ mod tests {
         );
         assert_eq!(
             j(&Channel::Cargo, Some("0.1.1"), true).unwrap(),
-            "cargo binstall -y --force envira@0.1.1"
+            "cargo binstall -y --force --disable-strategies compile envira@0.1.1"
         );
+        // A build from source is never implicit: it is the fallback, shown before asking.
+        assert_eq!(
+            Channel::Cargo
+                .fallback(Some("0.1.1"), true)
+                .unwrap()
+                .join(" "),
+            "cargo install --locked --force --version 0.1.1 envira"
+        );
+        assert_eq!(Channel::Cargo.fallback(None, false), None);
+        assert_eq!(Channel::Pipx.fallback(None, true), None);
         assert_eq!(
             j(&Channel::Cargo, None, false).unwrap(),
             "cargo install --locked --force envira"

@@ -72,4 +72,5 @@
   the step that failed runs again as it is (it may have undone part of its change), and the
   steps after it carry `only_if` = their apply check (run only while their change is in place;
   `as_script` writes `if check; then cmd; fi`). Plain `config revert` is unchanged.
-- Open items: explicit binstall compile policy for self-update.
+- Open items: a third status for a check root could not run ("cannot tell" for a private
+  system file seen by a plain user without passwordless sudo).

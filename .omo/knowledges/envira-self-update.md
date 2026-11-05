@@ -12,7 +12,7 @@ From the canonical path of the running binary (`current_exe()` + `canonicalize`)
 | `…/target/{debug,release}/envira` (or `target/<triple>/release`) | source build | refused |
 | contains `/pipx/venvs/envira/` | pipx | `pipx upgrade envira`, pinned `pipx install --force envira==v` |
 | contains `/uv/tools/envira/` | uv tool | `uv tool upgrade envira`, pinned `uv tool install --force envira==v` |
-| `$CARGO_HOME/bin` (default `~/.cargo/bin`) | cargo | `cargo binstall -y --force envira[@v]`, else `cargo install --locked --force [--version v] envira` |
+| `$CARGO_HOME/bin` (default `~/.cargo/bin`) | cargo | with cargo-binstall: `cargo binstall -y --force --disable-strategies compile envira[@v]` (download only), and if that fails, `cargo install --locked --force [--version v] envira` (shown as "if no prebuilt" before asking); without it, that `cargo install` directly. Both get `runner::build_env()` (`CARGO_BUILD_JOBS` one per GiB free). |
 | `<root>/bin/envira` with `<root>/lib/python*/site-packages/envira-*.dist-info/RECORD` listing `/bin/envira,` | pip (`pyvenv.cfg` in root: venv python; else `python3 -m pip install --user`) | pip install --upgrade |
 | anything else | release binary | download + replace |
 
