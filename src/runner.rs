@@ -40,8 +40,8 @@ pub trait Runner: Send + Sync {
     }
 
     /// `capture`, as root when `as_root`: directly when envira is root, else through `sudo -n`
-    /// (which fails at once rather than ask for a password). The environment is the user's
-    /// either way, so a check looks at the same files.
+    /// (which fails at once rather than ask for a password). HOME is the user's either way, so
+    /// a check looks at the same files; PATH is the system's (`ROOT_PATH`).
     fn capture_as<'a>(
         &'a self,
         cmd: &'a str,
@@ -463,6 +463,44 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// PATH of a check run as root: the system dirs only. Tools the user installed (and could
+/// swap) do not answer for root; `{sudo}` in a step sees much the same through sudo's
+/// `secure_path`.
+pub const ROOT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+impl RealRunner {
+    /// The command `capture_as` runs; `euid_root`: envira itself runs as root.
+    fn capture_command(&self, cmd: &str, as_root: bool, euid_root: bool) -> Command {
+        let e = &self.env;
+        let through_sudo;
+        let cmd = if as_root && !euid_root {
+            let q = |s: &str| crate::template::shell_quote(s);
+            through_sudo = format!(
+                "sudo -n -- env HOME={} PATH={} ENVIRA_STATE_DIR={} bash -eo pipefail -c {}",
+                q(&e.home.display().to_string()),
+                ROOT_PATH,
+                q(&e.state_dir.display().to_string()),
+                q(cmd)
+            );
+            through_sudo.as_str()
+        } else {
+            cmd
+        };
+        let mut c = self.command(cmd, as_root && euid_root);
+        if as_root && euid_root {
+            c.env("PATH", ROOT_PATH);
+        }
+        // Detection must not depend on where envira was started (rust-toolchain.toml,
+        // .nvmrc and similar files change what `rustc` / `node` report). As root too, `~`
+        // is the user's: a check looks at the user's files.
+        c.env("HOME", &e.home)
+            .current_dir(&e.home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        c
+    }
+}
+
 impl Runner for RealRunner {
     fn http_get<'a>(
         &'a self,
@@ -479,31 +517,9 @@ impl Runner for RealRunner {
         as_root: bool,
     ) -> BoxFuture<'a, Probe> {
         Box::pin(async move {
-            let e = &self.env;
             // SAFETY: geteuid has no preconditions.
             let root = unsafe { libc::geteuid() } == 0;
-            let through_sudo;
-            let cmd = if as_root && !root {
-                let q = |s: &str| crate::template::shell_quote(s);
-                through_sudo = format!(
-                    "sudo -n -- env HOME={} PATH={} ENVIRA_STATE_DIR={} bash -eo pipefail -c {}",
-                    q(&e.home.display().to_string()),
-                    q(&e.path),
-                    q(&e.state_dir.display().to_string()),
-                    q(cmd)
-                );
-                through_sudo.as_str()
-            } else {
-                cmd
-            };
-            let mut c = self.command(cmd, as_root && root);
-            // Detection must not depend on where envira was started (rust-toolchain.toml,
-            // .nvmrc and similar files change what `rustc` / `node` report). As root too, `~`
-            // is the user's: a check looks at the user's files.
-            c.env("HOME", &e.home)
-                .current_dir(&e.home)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            let mut c = self.capture_command(cmd, as_root, root);
             let mut child = match c.spawn() {
                 Ok(ch) => ch,
                 Err(e) => {
@@ -815,6 +831,38 @@ mod tests {
                 state_dir: std::env::temp_dir(),
             },
         }
+    }
+
+    #[test]
+    fn root_checks_take_the_system_path() {
+        let mut r = runner();
+        r.env.path = "/home/user/.local/bin:/usr/bin".into();
+        let env = |c: &Command, k: &str| {
+            c.as_std()
+                .get_envs()
+                .find(|(n, _)| *n == k)
+                .and_then(|(_, v)| v)
+                .map(|v| v.to_string_lossy().into_owned())
+        };
+        let args = |c: &Command| {
+            c.as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        // As the user: the user's PATH.
+        let c = r.capture_command("grep x", false, false);
+        assert_eq!(env(&c, "PATH").unwrap(), r.env.path);
+        // Through sudo: root gets the system PATH.
+        let c = r.capture_command("grep x", true, false);
+        let a = args(&c);
+        assert!(a.contains(&format!("PATH={ROOT_PATH} ")), "{a}");
+        assert!(!a.contains(".local/bin"), "{a}");
+        // envira is root: the same.
+        let c = r.capture_command("grep x", true, true);
+        assert_eq!(env(&c, "PATH").unwrap(), ROOT_PATH);
+        assert_eq!(env(&c, "HOME").unwrap(), r.env.home.display().to_string());
     }
 
     #[tokio::test]
