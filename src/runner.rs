@@ -1256,6 +1256,8 @@ mod tests {
 
     /// A step child that started a session of its own (as `sudo` does for its command) and
     /// ignores TERM is outside the process group, and is stopped all the same.
+    // /proc (and the setsid tool) are Linux.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn cancel_stops_processes_that_left_the_group() {
         let r = runner();
@@ -1282,6 +1284,8 @@ mod tests {
         );
     }
 
+    // /proc (and the setsid tool) are Linux.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn descendants_are_found_and_killed() {
         let mut parent = std::process::Command::new("bash")
