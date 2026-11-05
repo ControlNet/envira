@@ -1,11 +1,13 @@
 //! `envira fetch-release`: download a GitHub release asset for this arch and install binaries
 //! from it. Extraction is in-process, so bare machines need neither curl nor tar/unzip.
 
-use std::io::Read;
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use sha2::Digest;
 
 use crate::net;
 
@@ -65,6 +67,53 @@ pub fn get(
     url: &str,
     accept: Option<&str>,
 ) -> Result<(u16, Vec<u8>)> {
+    get_with(c, url, accept, |r| {
+        r.bytes().map(Vec::from).map_err(std::io::Error::other)
+    })
+}
+
+/// Streams the body of `url` into `file` (emptied before every attempt) and returns the final
+/// status and the SHA-256 of what was written: a release asset never sits in memory.
+fn download(c: &reqwest::blocking::Client, url: &str, file: &mut File) -> Result<(u16, String)> {
+    get_with(c, url, None, |mut r| {
+        file.set_len(0)?;
+        file.rewind()?;
+        let mut w = HashWriter {
+            inner: &mut *file,
+            hash: sha2::Sha256::new(),
+        };
+        std::io::copy(&mut r, &mut w)?;
+        Ok(hex(&w.hash.finalize()))
+    })
+}
+
+/// Writes through to `inner` and hashes what was written.
+struct HashWriter<W> {
+    inner: W,
+    hash: sha2::Sha256,
+}
+
+impl<W: Write> Write for HashWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hash.update(&buf[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// The retry loop of [`get`]; `read` consumes the body of each answer. A failure while reading
+/// the body is retried when reqwest calls it transient (connection reset, timeout), not when
+/// writing it failed (disk full).
+fn get_with<T>(
+    c: &reqwest::blocking::Client,
+    url: &str,
+    accept: Option<&str>,
+    mut read: impl FnMut(reqwest::blocking::Response) -> std::io::Result<T>,
+) -> Result<(u16, T)> {
     let policy = net::Retry::DOWNLOAD;
     let mut n = 1;
     loop {
@@ -75,14 +124,20 @@ pub fn get(
         if let Some(t) = token() {
             req = req.bearer_auth(t);
         }
-        let sent = req.send().and_then(|r| {
+        let sent = req.send().map(|r| {
             let status = r.status().as_u16();
             let after = net::retry_after(r.headers());
-            r.bytes().map(|b| (status, after, b.to_vec()))
+            (status, after, read(r))
         });
         let (why, after, last) = match sent {
-            Ok((status, _, body)) if !net::transient_status(status) => return Ok((status, body)),
-            Ok((status, after, body)) => (format!("HTTP {status}"), after, Some((status, body))),
+            Ok((status, _, Ok(body))) if !net::transient_status(status) => {
+                return Ok((status, body));
+            }
+            Ok((status, after, Ok(body))) => {
+                (format!("HTTP {status}"), after, Some((status, body)))
+            }
+            Ok((_, _, Err(e))) if transient_io(&e) => (format!("{e}"), None, None),
+            Ok((_, _, Err(e))) => return Err(e).with_context(|| format!("reading {url}")),
             Err(e) if net::transient_error(&e) => (format!("{e}"), None, None),
             Err(e) => return Err(e).with_context(|| format!("requesting {url}")),
         };
@@ -103,6 +158,13 @@ pub fn get(
             },
         }
     }
+}
+
+/// A body read that failed in reqwest (connection, timeout), not in the writer.
+fn transient_io(e: &std::io::Error) -> bool {
+    e.get_ref()
+        .and_then(|r| r.downcast_ref::<reqwest::Error>())
+        .is_some_and(net::transient_error)
 }
 
 pub fn run(args: &FetchArgs) -> Result<()> {
@@ -160,7 +222,17 @@ pub fn run(args: &FetchArgs) -> Result<()> {
         .expect("picked from list")
         .1;
     eprintln!("[envira] downloading {name} ({tag})");
-    let (status, bytes) = get(&c, dl, None)?;
+    // The asset and the binaries taken from it go to files, not memory (assets are tens of MB).
+    let work = tempfile::tempdir().context("creating a download directory")?;
+    let archive = work.path().join("asset");
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&archive)
+        .with_context(|| format!("creating {}", archive.display()))?;
+    let (status, got) = download(&c, dl, &mut file)?;
+    drop(file);
     if !(200..300).contains(&status) {
         bail!("HTTP {status} downloading {dl}");
     }
@@ -174,25 +246,25 @@ pub fn run(args: &FetchArgs) -> Result<()> {
             .map(str::to_ascii_lowercase)
     });
     match digest {
-        Some(want) => matches_sha256(name, "the GitHub asset digest", &want, &bytes)?,
-        None => verify_checksum(&c, name, &bytes, &assets)?,
+        Some(want) => matches_sha256(name, "the GitHub asset digest", &want, &got)?,
+        None => verify_checksum(&c, name, &got, &assets)?,
     }
-    let files = extract(name, &bytes, &args.bins)?;
+    let files = extract(name, &archive, &args.bins, work.path())?;
     for dest in place(&files, &args.to, &args.install_with)? {
         println!("installed {tag} -> {}", dest.display());
     }
     Ok(())
 }
 
-/// Installs `files` into `to`: atomically when `via` is empty, else staged in a temp dir and
-/// copied with `<via> install -m 755` (after `<via> mkdir -p`; BSD `install` has no `-D`).
-fn place(files: &[(String, Vec<u8>)], to: &Path, via: &[String]) -> Result<Vec<PathBuf>> {
+/// Installs the staged `files` (`(bin, path)`) into `to`: atomically when `via` is empty, else
+/// with `<via> install -m 755` (after `<via> mkdir -p`; BSD `install` has no `-D`).
+fn place(files: &[(String, PathBuf)], to: &Path, via: &[String]) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let Some((prog, pre)) = via.split_first() else {
         std::fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
-        for (bin, data) in files {
+        for (bin, src) in files {
             let dest = to.join(bin);
-            install_bytes(&dest, data)?;
+            install_file(&dest, src)?;
             out.push(dest);
         }
         return Ok(out);
@@ -210,10 +282,7 @@ fn place(files: &[(String, Vec<u8>)], to: &Path, via: &[String]) -> Result<Vec<P
         Ok(())
     };
     run(&["mkdir".as_ref(), "-p".as_ref(), to.as_os_str()])?;
-    let stage = tempfile::tempdir().context("creating a staging directory")?;
-    for (bin, data) in files {
-        let src = stage.path().join(bin);
-        std::fs::write(&src, data).with_context(|| format!("writing {}", src.display()))?;
+    for (bin, src) in files {
         let dest = to.join(bin);
         run(&[
             "install".as_ref(),
@@ -270,15 +339,15 @@ pub fn expected_sha256(asset: &str, text: &str) -> Option<String> {
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(data)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex(&sha2::Sha256::digest(data))
 }
 
-fn matches_sha256(asset: &str, source: &str, want: &str, data: &[u8]) -> Result<()> {
-    let got = sha256_hex(data);
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `got` is the SHA-256 (hex) of the download.
+fn matches_sha256(asset: &str, source: &str, want: &str, got: &str) -> Result<()> {
     if got != want {
         bail!("checksum mismatch for {asset}: {source} says {want}, the download is {got}");
     }
@@ -291,7 +360,7 @@ fn matches_sha256(asset: &str, source: &str, want: &str, data: &[u8]) -> Result<
 fn verify_checksum(
     c: &reqwest::blocking::Client,
     asset: &str,
-    data: &[u8],
+    got: &str,
     assets: &[(String, String)],
 ) -> Result<()> {
     let names: Vec<String> = assets.iter().map(|a| a.0.clone()).collect();
@@ -305,68 +374,75 @@ fn verify_checksum(
         let Some(want) = expected_sha256(asset, &String::from_utf8_lossy(&body)) else {
             continue;
         };
-        return matches_sha256(asset, sums, &want, data);
+        return matches_sha256(asset, sums, &want, got);
     }
     eprintln!("[envira] the release publishes no checksum for {asset}; not verified");
     Ok(())
 }
 
-fn install_bytes(dest: &Path, data: &[u8]) -> Result<()> {
+/// Copies the staged `src` to `dest` through a temp file next to it, so `dest` is replaced
+/// atomically.
+fn install_file(dest: &Path, src: &Path) -> Result<()> {
     let dir = dest.parent().context("destination without parent")?;
     let tmp = dir.join(format!(
         ".{}.envira-tmp",
         dest.file_name().and_then(|n| n.to_str()).unwrap_or("bin")
     ));
-    std::fs::write(&tmp, data).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::copy(src, &tmp).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
     std::fs::rename(&tmp, dest).with_context(|| format!("installing {}", dest.display()))?;
     Ok(())
 }
 
-/// Returns `(bin, content)` for each requested binary found in the asset.
-pub fn extract(name: &str, bytes: &[u8], bins: &[String]) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut found: Vec<(String, String, Vec<u8>)> = Vec::new(); // bin, archive path, data
-    let mut consider = |path: &str, read: &mut dyn FnMut() -> Result<Vec<u8>>| -> Result<()> {
+/// Extracts each requested binary from `archive` (the downloaded asset `name`) into the
+/// directory `out` and returns `(bin, staged file)` in the order of `bins`. Entries are copied
+/// to disk as they are read, never held in memory.
+pub fn extract(
+    name: &str,
+    archive: &Path,
+    bins: &[String],
+    out: &Path,
+) -> Result<Vec<(String, PathBuf)>> {
+    let staged = |i: usize| out.join(format!("bin-{i}"));
+    // Archive depth of the entry staged for each bin.
+    let mut depth: Vec<Option<usize>> = vec![None; bins.len()];
+    let mut consider = |path: &str, entry: &mut dyn Read| -> Result<()> {
         let base = path.rsplit('/').next().unwrap_or(path);
-        if let Some(b) = bins.iter().find(|b| b.as_str() == base) {
-            // Prefer the shallowest match (e.g. `bat-v1/bat` over `bat-v1/autocomplete/bat`).
-            let depth = path.matches('/').count();
-            let better = found.iter().position(|f| &f.0 == b);
-            match better {
-                Some(i) if found[i].1.matches('/').count() <= depth => {}
-                Some(i) => found[i] = (b.clone(), path.to_string(), read()?),
-                None => found.push((b.clone(), path.to_string(), read()?)),
-            }
+        let Some(i) = bins.iter().position(|b| b.as_str() == base) else {
+            return Ok(());
+        };
+        // Prefer the shallowest match (e.g. `bat-v1/bat` over `bat-v1/autocomplete/bat`).
+        let d = path.matches('/').count();
+        if depth[i].is_some_and(|s| s <= d) {
+            return Ok(());
         }
+        let dest = staged(i);
+        let mut f = File::create(&dest).with_context(|| format!("creating {}", dest.display()))?;
+        std::io::copy(entry, &mut f).with_context(|| format!("extracting {path}"))?;
+        depth[i] = Some(d);
         Ok(())
     };
+    let open = || File::open(archive).with_context(|| format!("opening {}", archive.display()));
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-        let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+        let gz = flate2::read::GzDecoder::new(BufReader::new(open()?));
+        let mut ar = tar::Archive::new(gz);
         for entry in ar.entries()? {
             let mut e = entry?;
             if !e.header().entry_type().is_file() {
                 continue;
             }
             let path = e.path()?.display().to_string();
-            consider(&path, &mut || {
-                let mut v = Vec::new();
-                e.read_to_end(&mut v)?;
-                Ok(v)
-            })?;
+            consider(&path, &mut e)?;
         }
     } else if name.ends_with(".zip") {
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+        let mut zip = zip::ZipArchive::new(BufReader::new(open()?))?;
         for i in 0..zip.len() {
             let mut f = zip.by_index(i)?;
             if !f.is_file() {
                 continue;
             }
             let path = f.name()?.to_string();
-            consider(&path, &mut || {
-                let mut v = Vec::new();
-                f.read_to_end(&mut v)?;
-                Ok(v)
-            })?;
+            consider(&path, &mut f)?;
         }
     } else if [".tar.xz", ".tar.bz2", ".tar.zst", ".7z", ".deb", ".rpm"]
         .iter()
@@ -381,24 +457,21 @@ pub fn extract(name: &str, bytes: &[u8], bins: &[String]) -> Result<Vec<(String,
                 bins.len()
             );
         }
-        return Ok(vec![(bins[0].clone(), bytes.to_vec())]);
+        return Ok(vec![(bins[0].clone(), archive.to_path_buf())]);
     }
     let missing: Vec<&String> = bins
         .iter()
-        .filter(|b| !found.iter().any(|f| &f.0 == *b))
+        .zip(&depth)
+        .filter(|(_, d)| d.is_none())
+        .map(|(b, _)| b)
         .collect();
     if !missing.is_empty() {
         bail!("{name} does not contain {missing:?}");
     }
     Ok(bins
         .iter()
-        .map(|b| {
-            found
-                .iter()
-                .find(|f| &f.0 == b)
-                .map(|f| (f.0.clone(), f.2.clone()))
-                .unwrap()
-        })
+        .enumerate()
+        .map(|(i, b)| (b.clone(), staged(i)))
         .collect())
 }
 
@@ -407,10 +480,24 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// `extract` on in-memory data: the archive and the extracted files go through a temp dir.
+    fn extract_bytes(name: &str, data: &[u8], bins: &[String]) -> Result<Vec<(String, Vec<u8>)>> {
+        let d = tempfile::tempdir().unwrap();
+        let archive = d.path().join("asset");
+        std::fs::write(&archive, data).unwrap();
+        let out = extract(name, &archive, bins, d.path())?;
+        Ok(out
+            .into_iter()
+            .map(|(b, p)| (b, std::fs::read(p).unwrap()))
+            .collect())
+    }
+
     #[test]
     fn place_directly_or_through_a_command() {
         let d = tempfile::tempdir().unwrap();
-        let files = vec![("a".to_string(), b"#!/bin/sh\n".to_vec())];
+        let staged = d.path().join("staged-a");
+        std::fs::write(&staged, b"#!/bin/sh\n").unwrap();
+        let files = vec![("a".to_string(), staged)];
         let direct = place(&files, &d.path().join("direct"), &[]).unwrap();
         assert_eq!(direct, vec![d.path().join("direct/a")]);
         // `env` stands in for `sudo -n`: the copy runs through the given command.
@@ -489,8 +576,8 @@ mod tests {
         assert_eq!(expected_sha256("x.tar.gz", "not a hash  x.tar.gz"), None);
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         assert_eq!(sha256_hex(b"abc"), abc);
-        assert!(matches_sha256("x", "digest", abc, b"abc").is_ok());
-        let err = matches_sha256("x", "digest", abc, b"abd")
+        assert!(matches_sha256("x", "digest", abc, &sha256_hex(b"abc")).is_ok());
+        let err = matches_sha256("x", "digest", abc, &sha256_hex(b"abd"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("checksum mismatch for x"), "{err}");
@@ -502,10 +589,17 @@ mod tests {
             ("bat-v1/autocomplete/bat", b"completion"),
             ("bat-v1/bat", b"binary"),
         ]);
-        let out = extract("bat-v1.tar.gz", &data, &["bat".into()]).unwrap();
+        let out = extract_bytes("bat-v1.tar.gz", &data, &["bat".into()]).unwrap();
+        assert_eq!(out, vec![("bat".to_string(), b"binary".to_vec())]);
+        // The deeper match coming second must not replace the staged one either.
+        let data = targz(&[
+            ("bat-v1/bat", b"binary"),
+            ("bat-v1/autocomplete/bat", b"completion"),
+        ]);
+        let out = extract_bytes("bat-v1.tar.gz", &data, &["bat".into()]).unwrap();
         assert_eq!(out, vec![("bat".to_string(), b"binary".to_vec())]);
         assert!(
-            extract("bat-v1.tar.gz", &data, &["nope".into()])
+            extract_bytes("bat-v1.tar.gz", &data, &["nope".into()])
                 .unwrap_err()
                 .to_string()
                 .contains("nope")
@@ -524,19 +618,34 @@ mod tests {
             z.write_all(b"A").unwrap();
             z.finish().unwrap();
         }
-        let out = extract("yazi.zip", buf.get_ref(), &["yazi".into(), "ya".into()]).unwrap();
+        let out = extract_bytes("yazi.zip", buf.get_ref(), &["yazi".into(), "ya".into()]).unwrap();
         assert_eq!(out[0], ("yazi".to_string(), b"Y".to_vec()));
         assert_eq!(out[1], ("ya".to_string(), b"A".to_vec()));
     }
 
     #[test]
     fn bare_file_and_install() {
-        let out = extract("pipx.pyz", b"PK..", &["pipx".into()]).unwrap();
-        assert_eq!(out[0].0, "pipx");
         let d = tempfile::tempdir().unwrap();
-        install_bytes(&d.path().join("pipx"), &out[0].1).unwrap();
+        let archive = d.path().join("asset");
+        std::fs::write(&archive, b"PK..").unwrap();
+        let out = extract("pipx.pyz", &archive, &["pipx".into()], d.path()).unwrap();
+        assert_eq!(out, vec![("pipx".to_string(), archive.clone())]);
+        install_file(&d.path().join("pipx"), &out[0].1).unwrap();
+        assert_eq!(std::fs::read(d.path().join("pipx")).unwrap(), b"PK..");
         let m = std::fs::metadata(d.path().join("pipx")).unwrap();
         assert_eq!(m.permissions().mode() & 0o777, 0o755);
-        assert!(extract("x.tar.xz", b"", &["x".into()]).is_err());
+        assert!(extract_bytes("x.tar.xz", b"", &["x".into()]).is_err());
+    }
+
+    #[test]
+    fn hash_writer_hashes_what_it_writes() {
+        let mut out = Vec::new();
+        let mut w = HashWriter {
+            inner: &mut out,
+            hash: sha2::Sha256::new(),
+        };
+        std::io::copy(&mut &b"abc"[..], &mut w).unwrap();
+        assert_eq!(hex(&w.hash.finalize()), sha256_hex(b"abc"));
+        assert_eq!(out, b"abc");
     }
 }
