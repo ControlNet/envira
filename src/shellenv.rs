@@ -41,11 +41,16 @@ fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// A path under the target home written with `$HOME`.
+/// A path under the target home written with `$HOME`, as one shell word. A path with
+/// characters the shell would expand inside double quotes (`$`, backquote, `"`, `\\`) gets its
+/// literal part single-quoted: `"$HOME"/'odd $dir/env.sh'`.
 fn home_rel(p: &Path, home: &Path) -> String {
+    let plain = |s: &str| !s.contains(['$', '`', '"', '\\', '\n']);
     match p.strip_prefix(home) {
-        Ok(rest) => format!("\"$HOME/{}\"", rest.display()),
-        Err(_) => format!("\"{}\"", p.display()),
+        Ok(rest) if plain(&rest.to_string_lossy()) => format!("\"$HOME/{}\"", rest.display()),
+        Ok(rest) => format!("\"$HOME\"/{}", sq(&rest.to_string_lossy())),
+        Err(_) if plain(&p.to_string_lossy()) => format!("\"{}\"", p.display()),
+        Err(_) => sq(&p.to_string_lossy()),
     }
 }
 
@@ -226,6 +231,37 @@ pub fn rc_duplicates(cat: &Catalog, facts: &Facts, present: &BTreeSet<String>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn odd_paths_stay_one_literal_word() {
+        let home = Path::new("/home/user");
+        assert_eq!(
+            home_rel(Path::new("/home/user/.config/envira/env.sh"), home),
+            "\"$HOME/.config/envira/env.sh\""
+        );
+        assert_eq!(
+            home_rel(Path::new("/home/user/my dir/env.sh"), home),
+            "\"$HOME/my dir/env.sh\""
+        );
+        assert_eq!(
+            home_rel(Path::new("/home/user/$x/`id`/it's/env.sh"), home),
+            "\"$HOME\"/'$x/`id`/it'\\''s/env.sh'"
+        );
+        assert_eq!(
+            home_rel(Path::new("/opt/$v/env.sh"), home),
+            "'/opt/$v/env.sh'"
+        );
+        // What the shell makes of it.
+        let word = home_rel(Path::new("/home/user/$x/`id`/it's \"q\"/env.sh"), home);
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("HOME=/home/user; printf %s {word}")])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "/home/user/$x/`id`/it's \"q\"/env.sh"
+        );
+    }
     use crate::catalog::load::{embedded_layer, load};
 
     fn setup() -> (tempfile::TempDir, Catalog, Facts, Paths) {

@@ -951,19 +951,22 @@ fn command_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a
     }
 }
 
-fn last_log(app: &App, id: &str) -> Option<(String, Vec<String>)> {
+/// The end of the item's last log, enough for `height` lines (read on every frame, so never
+/// the whole file).
+fn last_log(app: &App, id: &str, height: usize) -> Option<(String, Vec<String>)> {
     let st = app.state.as_ref()?;
     let run = st
         .tools
         .get(id)
         .and_then(|r| r.last_run.clone())
         .or_else(|| st.configs.get(id).and_then(|r| r.last_run.clone()))?;
-    let text = std::fs::read_to_string(app.paths.run_dir(&run).join(format!("{id}.log"))).ok()?;
-    Some((run, text.lines().map(String::from).collect()))
+    let path = app.paths.run_dir(&run).join(format!("{id}.log"));
+    let lines = crate::state::tail_lines(&path, height, 256 << 10).ok()?;
+    Some((run, lines))
 }
 
 fn log_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme, height: usize) -> Vec<Line<'a>> {
-    match last_log(app, &it.id) {
+    match last_log(app, &it.id, height) {
         None => vec![Line::styled(
             "no envira run has touched this item yet",
             t.s(t.dim),

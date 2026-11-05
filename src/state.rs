@@ -363,6 +363,28 @@ impl RunRecord {
     }
 }
 
+/// The last `n` lines of a log, reading at most the last `max` bytes of it: a long build log
+/// is never loaded whole to show its end.
+pub fn tail_lines(path: &Path, n: usize, max: u64) -> std::io::Result<Vec<String>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let start = len.saturating_sub(max);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        // Starts mid-line.
+        lines.remove(0);
+    }
+    Ok(lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|l| l.to_string())
+        .collect())
+}
+
 /// Run ids sorted newest first.
 pub fn list_runs(paths: &Paths) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(paths.logs_dir())
@@ -401,6 +423,24 @@ pub fn new_run_id(paths: &Paths) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tails_read_only_the_end() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("x.log");
+        let text: String = (0..10_000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&f, &text).unwrap();
+        assert_eq!(
+            tail_lines(&f, 2, 1 << 20).unwrap(),
+            ["line 9998", "line 9999"]
+        );
+        // 100 bytes from the end: the cut first line is dropped.
+        let t = tail_lines(&f, 1000, 100).unwrap();
+        assert_eq!(t.last().unwrap(), "line 9999");
+        assert!(t.iter().all(|l| l.starts_with("line ")) && t.len() < 12);
+        assert_eq!(tail_lines(&f, 3, 1 << 20).unwrap().len(), 3);
+        assert!(tail_lines(&d.path().join("none"), 3, 100).is_err());
+    }
 
     #[test]
     fn round_trip_and_desired() {

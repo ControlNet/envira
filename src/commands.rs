@@ -373,10 +373,14 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32>
     let dir = sess.paths.run_dir(&run_id);
     if let Some(item) = item {
         let f = dir.join(format!("{item}.log"));
-        print!(
-            "{}",
-            std::fs::read_to_string(&f).with_context(|| format!("reading {}", f.display()))?
-        );
+        let mut file =
+            std::fs::File::open(&f).with_context(|| format!("reading {}", f.display()))?;
+        // Streamed: a build log can be large.
+        match std::io::copy(&mut file, &mut std::io::stdout().lock()) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", f.display())),
+        }
         return Ok(0);
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
@@ -902,12 +906,10 @@ pub fn print_plan(plan: &Plan, sess: &Session) {
 
 /// The last `n` lines of a unit log, without its `#` header and trailer.
 fn log_tail(path: &std::path::Path, n: usize) -> Vec<String> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with("# ")).collect();
-    lines[lines.len().saturating_sub(n)..]
-        .iter()
-        .map(|l| l.to_string())
-        .collect()
+    // A few more for the header and trailer lines left out.
+    let lines = crate::state::tail_lines(path, n + 8, 1 << 20).unwrap_or_default();
+    let lines: Vec<String> = lines.into_iter().filter(|l| !l.starts_with("# ")).collect();
+    lines[lines.len().saturating_sub(n)..].to_vec()
 }
 
 async fn run_plan(
