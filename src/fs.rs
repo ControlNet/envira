@@ -73,7 +73,32 @@ impl Backups {
         let slot = self.slot(path);
         std::fs::create_dir_all(&slot)?;
         std::fs::write(slot.join("meta.toml"), toml::to_string_pretty(meta)?)?;
+        self.own(&[
+            &self.dir,
+            &slot,
+            &slot.join("meta.toml"),
+            &slot.join("orig"),
+        ]);
         Ok(())
+    }
+
+    /// Under `sudo envira` (root acting for `SUDO_UID`), backups belong to the user like the
+    /// rest of their state dir, so that runs without sudo can still update and restore them.
+    fn own(&self, paths: &[&Path]) {
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let id = |v: &str| std::env::var(v).ok()?.parse::<u32>().ok();
+        let (Some(uid), Some(gid)) = (id("SUDO_UID"), id("SUDO_GID")) else {
+            return;
+        };
+        if uid == 0 {
+            return;
+        }
+        for p in paths {
+            let _ = std::os::unix::fs::lchown(p, Some(uid), Some(gid));
+        }
     }
 
     /// Saves the original file once, before the first modification.
@@ -130,15 +155,23 @@ fn write_atomic(path: &Path, data: &str, mode: Option<u32>) -> Result<()> {
     let keep_mode = std::fs::metadata(path)
         .ok()
         .map(|m| m.permissions().mode() & 0o7777);
-    let tmp = dir.join(format!(
-        ".{}.envira-tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("f")
-    ));
-    std::fs::write(&tmp, data).with_context(|| format!("writing {}", tmp.display()))?;
+    // A unique temp name, created exclusively: never written through an existing file or link.
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("f");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(".envira-tmp")
+        .permissions(std::fs::Permissions::from_mode(0o666))
+        .tempfile_in(dir)
+        .with_context(|| format!("creating a temp file in {}", dir.display()))?;
+    std::io::Write::write_all(&mut tmp, data.as_bytes())
+        .with_context(|| format!("writing {}", tmp.path().display()))?;
     if let Some(m) = mode.or(keep_mode) {
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(m))?;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(m))?;
     }
-    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
 }
 
@@ -530,6 +563,28 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_writes_use_fresh_temp_files() {
+        let d = tempfile::tempdir().unwrap();
+        let victim = d.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        // The fixed temp name of earlier versions, planted as a link.
+        std::os::unix::fs::symlink(&victim, d.path().join(".rc.envira-tmp")).unwrap();
+        let rc = d.path().join("rc");
+        write_atomic(&rc, "new\n", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "new\n");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        // A new file gets the mode a plain write would (0666 less the umask).
+        let plain = d.path().join("plain");
+        std::fs::write(&plain, "x").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(&rc), mode(&plain));
+        // An existing file keeps its mode.
+        std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic(&rc, "again\n", None).unwrap();
+        assert_eq!(mode(&rc), 0o600);
+    }
 
     fn setup() -> (tempfile::TempDir, Backups) {
         let d = tempfile::tempdir().unwrap();

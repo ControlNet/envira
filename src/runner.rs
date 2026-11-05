@@ -40,11 +40,13 @@ pub trait Runner: Send + Sync {
     /// Runs an install or apply step, sending each output line to `lines`, until it exits or
     /// `cancel` becomes true (then the whole process group is killed). `lines` is bounded: a
     /// step that prints faster than its lines are logged waits on its pipe instead of queueing
-    /// its output in memory.
+    /// its output in memory. `as_root`: a system-scope step, which under `sudo envira` runs as
+    /// root (its `{sudo}` is empty) while everything else runs as the user.
     fn stream<'a>(
         &'a self,
         cmd: &'a str,
         cwd: &'a Path,
+        as_root: bool,
         lines: mpsc::Sender<String>,
         cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, StreamEnd>;
@@ -104,6 +106,9 @@ pub struct CmdEnv {
     pub user: String,
     /// Run commands as this user (envira itself runs as root via sudo).
     pub drop_to: Option<String>,
+    /// HOME of system-scope steps, which stay root under `sudo envira`: root writing caches
+    /// into the user's home would leave root-owned files there.
+    pub root_home: PathBuf,
     pub state_dir: PathBuf,
 }
 
@@ -112,9 +117,16 @@ pub struct RealRunner {
 }
 
 impl RealRunner {
-    fn command(&self, cmd: &str) -> Command {
+    /// `bash -c cmd` in envira's environment: as `drop_to` when envira acts for a user, unless
+    /// `as_root` (a system-scope step).
+    fn command(&self, cmd: &str, as_root: bool) -> Command {
         let e = &self.env;
-        let mut c = match &e.drop_to {
+        let home = if as_root && e.drop_to.is_some() {
+            &e.root_home
+        } else {
+            &e.home
+        };
+        let mut c = match e.drop_to.as_ref().filter(|_| !as_root) {
             Some(user) => {
                 // util-linux's runuser is Linux-only; root's `sudo -u` needs no password.
                 let mut c = Command::new(if cfg!(target_os = "macos") {
@@ -134,7 +146,7 @@ impl RealRunner {
         };
         c.args(["-eo", "pipefail", "-c", cmd])
             .env("PATH", &e.path)
-            .env("HOME", &e.home)
+            .env("HOME", home)
             .env("ENVIRA_STATE_DIR", &e.state_dir)
             .env("DEBIAN_FRONTEND", "noninteractive")
             .env("NO_COLOR", "1")
@@ -322,7 +334,7 @@ impl Runner for RealRunner {
 
     fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe> {
         Box::pin(async move {
-            let mut c = self.command(cmd);
+            let mut c = self.command(cmd, false);
             // Detection must not depend on where envira was started (rust-toolchain.toml,
             // .nvmrc and similar files change what `rustc` / `node` report).
             c.current_dir(&self.env.home)
@@ -366,11 +378,12 @@ impl Runner for RealRunner {
         &'a self,
         cmd: &'a str,
         cwd: &'a Path,
+        as_root: bool,
         lines: mpsc::Sender<String>,
         mut cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, StreamEnd> {
         Box::pin(async move {
-            let mut c = self.command(cmd);
+            let mut c = self.command(cmd, as_root);
             c.current_dir(cwd)
                 .env("ENVIRA_TMP", cwd)
                 .stdout(Stdio::piped())
@@ -449,6 +462,8 @@ pub mod fake {
         /// that many times before the normal rules apply.
         pub flaky: Mutex<Vec<(String, u32, String)>>,
         pub log: Mutex<Vec<String>>,
+        /// Streamed commands asked to run as root (system scope).
+        pub as_root: Mutex<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -525,10 +540,14 @@ pub mod fake {
             &'a self,
             cmd: &'a str,
             _cwd: &'a Path,
+            as_root: bool,
             lines: mpsc::Sender<String>,
             mut cancel: watch::Receiver<bool>,
         ) -> BoxFuture<'a, StreamEnd> {
             self.log.lock().unwrap().push(cmd.to_string());
+            if as_root {
+                self.as_root.lock().unwrap().push(cmd.to_string());
+            }
             let flaky = self
                 .flaky
                 .lock()
@@ -593,6 +612,7 @@ mod tests {
                 home: std::env::temp_dir(),
                 user: "user".into(),
                 drop_to: None,
+                root_home: "/root".into(),
                 state_dir: std::env::temp_dir(),
             },
         }
@@ -673,6 +693,45 @@ mod tests {
         assert_eq!(cgroup_left(root, "user.slice", files), None);
     }
 
+    /// Under `sudo envira` (root acting for a user), steps run as the user except system-scope
+    /// ones, which keep root with root's HOME.
+    #[test]
+    fn sudo_envira_runs_system_steps_as_root() {
+        let mut r = runner();
+        r.env.drop_to = Some("alice".into());
+        r.env.home = "/home/alice".into();
+        let words = |c: &Command| {
+            let c = c.as_std();
+            let mut w = vec![c.get_program().to_string_lossy().into_owned()];
+            w.extend(c.get_args().map(|a| a.to_string_lossy().into_owned()));
+            let home = c
+                .get_envs()
+                .find(|(k, _)| *k == "HOME")
+                .and_then(|(_, v)| v)
+                .map(|v| v.to_string_lossy().into_owned());
+            (w, home)
+        };
+        let (user, home) = words(&r.command("id -u", false));
+        let drop = if cfg!(target_os = "macos") {
+            "sudo"
+        } else {
+            "runuser"
+        };
+        assert_eq!(user[..3], [drop, "-u", "alice"]);
+        assert!(user.contains(&"HOME=/home/alice".to_string()), "{user:?}");
+        assert_eq!(home.as_deref(), Some("/home/alice"));
+
+        let (root, home) = words(&r.command("apt-get install -y x", true));
+        assert_eq!(root[0], "bash");
+        assert_eq!(home.as_deref(), Some("/root"));
+
+        // envira run as root itself (no SUDO_USER) or as a user: nobody to switch to.
+        r.env.drop_to = None;
+        let (plain, home) = words(&r.command("x", true));
+        assert_eq!(plain[0], "bash");
+        assert_eq!(home.as_deref(), Some("/home/alice"));
+    }
+
     #[tokio::test]
     async fn rustup_gets_one_io_thread() {
         if std::env::var_os("RUSTUP_IO_THREADS").is_some() {
@@ -703,6 +762,7 @@ mod tests {
             .stream(
                 "echo a; printf '\\033[31mb\\033[0m\\n'",
                 dir.path(),
+                false,
                 tx,
                 crx,
             )
@@ -719,7 +779,9 @@ mod tests {
             ctx
         });
         let start = std::time::Instant::now();
-        let end = r.stream("sleep 30 & sleep 30", dir.path(), tx, crx).await;
+        let end = r
+            .stream("sleep 30 & sleep 30", dir.path(), false, tx, crx)
+            .await;
         assert_eq!(end, StreamEnd::Cancelled);
         assert!(start.elapsed() < Duration::from_secs(6));
         drop(h.await);
@@ -734,7 +796,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let (_ctx, crx) = watch::channel(false);
         let start = std::time::Instant::now();
-        let end = r.stream("sleep 8 & echo hi", dir.path(), tx, crx).await;
+        let end = r
+            .stream("sleep 8 & echo hi", dir.path(), false, tx, crx)
+            .await;
         assert_eq!(end, StreamEnd::Exit(0));
         let closed = tokio::time::timeout(Duration::from_secs(1), async {
             let mut got = Vec::new();

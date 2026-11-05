@@ -37,6 +37,7 @@ impl Session {
                 home: facts.home.clone(),
                 user: facts.user.clone(),
                 drop_to: facts.drop_to.clone(),
+                root_home: crate::facts::home_of(0).unwrap_or_else(|| "/root".into()),
                 state_dir: paths.state_dir.clone(),
             },
         });

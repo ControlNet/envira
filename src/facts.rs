@@ -273,6 +273,11 @@ fn passwd_by_name(name: &str) -> Option<(PathBuf, u32, u32)> {
     })
 }
 
+/// The home directory of `uid` in the passwd database.
+pub fn home_of(uid: u32) -> Option<PathBuf> {
+    passwd_by_uid(uid).map(|(_, home, _)| home)
+}
+
 fn passwd_by_uid(uid: u32) -> Option<(String, PathBuf, u32)> {
     libc_passwd_by_uid(uid).or_else(|| {
         let (name, _, gid, home) = getent_passwd(&uid.to_string())?;

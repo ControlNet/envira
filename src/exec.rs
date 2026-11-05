@@ -414,6 +414,9 @@ where
     };
     state::chown_to_target(tmp.path(), &ctx.facts);
     let base_seq = ctl.borrow().cancel_seq;
+    // Under `sudo envira`, system-scope steps keep root (their `{sudo}` is empty); the rest run
+    // as the user.
+    let as_root = unit.scope == Scope::System;
 
     for (n, step) in unit.steps.iter().enumerate() {
         let label = format!("step {}/{}", n + 1, unit.steps.len());
@@ -437,7 +440,7 @@ where
         let mut attempt = 1;
         loop {
             let (end, timed_out, lines) =
-                attempt_step(cmd, tmp.path(), ctx, emit, ctl, base_seq).await;
+                attempt_step(cmd, tmp.path(), as_root, ctx, emit, ctl, base_seq).await;
             match end {
                 StreamEnd::Exit(0) => break,
                 StreamEnd::Exit(code) => {
@@ -537,6 +540,7 @@ where
 async fn attempt_step<F>(
     cmd: &str,
     dir: &std::path::Path,
+    as_root: bool,
     ctx: &ExecCtx,
     emit: &F,
     ctl: &mut watch::Receiver<Control>,
@@ -561,7 +565,7 @@ where
             Vec::from(tail)
         })
     };
-    let fut = ctx.runner.stream(cmd, dir, ltx, crx);
+    let fut = ctx.runner.stream(cmd, dir, as_root, ltx, crx);
     tokio::pin!(fut);
     let deadline = tokio::time::sleep(ctx.step_timeout);
     tokio::pin!(deadline);
@@ -1299,6 +1303,26 @@ mod tests {
         assert_eq!(
             outcomes(&rec),
             vec![("a", "cancelled"), ("b", "skipped"), ("c", "cancelled")]
+        );
+    }
+
+    #[tokio::test]
+    async fn system_scope_steps_ask_for_root() {
+        let s = setup();
+        s.runner.rule("ok", 0, "");
+        let mut sys = unit("sys", "ok apt-get install -y sys", &[]);
+        sys.scope = Scope::System;
+        let plan = Plan {
+            units: vec![sys, unit("usr", "ok pipx install usr", &[])],
+            skipped: vec![],
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let (rec, _) = execute(plan, ctx_of(&s), State::default(), tx, ctl_rx).await;
+        assert_eq!(outcomes(&rec), vec![("sys", "ok"), ("usr", "ok")]);
+        assert_eq!(
+            *s.runner.as_root.lock().unwrap(),
+            ["ok apt-get install -y sys"]
         );
     }
 
