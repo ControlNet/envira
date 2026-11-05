@@ -46,6 +46,8 @@ pub struct RetryTargets {
     pub revert: Vec<String>,
     /// The steps each revert got through (labels), from the run record.
     pub revert_done: BTreeMap<String, Vec<String>>,
+    /// The steps each failed install got through (see `Planner::finishing`).
+    pub install_done: BTreeMap<String, Vec<String>>,
 }
 
 impl RetryTargets {
@@ -63,13 +65,17 @@ impl RetryTargets {
     }
 
     /// Adds how far the reverts got, from the run's records, or for a unit still `pending`
-    /// (envira died during it) from the progress file in `run_dir`.
+    /// (envira died during it) from the progress file in `run_dir`; and how far failed installs
+    /// got.
     pub fn progress<'a>(
         mut self,
         records: impl IntoIterator<Item = &'a UnitRecord>,
         run_dir: Option<&std::path::Path>,
     ) -> Self {
         for r in records {
+            if r.action == "install" && self.install.contains(&r.id) && !r.done_steps.is_empty() {
+                self.install_done.insert(r.id.clone(), r.done_steps.clone());
+            }
             if r.action != "revert" || !self.revert.contains(&r.id) {
                 continue;
             }
@@ -476,6 +482,10 @@ pub struct Planner<'a> {
     /// Retrying reverts that stopped halfway, with the steps each got through (see
     /// [`resume_revert`]); a config no longer (fully) applied is reverted too.
     pub retrying: Option<BTreeMap<String, Vec<String>>>,
+    /// Retrying installs that failed after some of their steps, with those steps: a tool that
+    /// is present now gets the steps it did not get through (the system-wide copy of a portable
+    /// build), not "already present".
+    pub finishing: BTreeMap<String, Vec<String>>,
     memo: BTreeMap<String, Result<Choice, String>>,
     visiting: BTreeSet<String>,
 }
@@ -488,6 +498,7 @@ impl<'a> Planner<'a> {
             present,
             prefer_system: facts.privilege.can_elevate(),
             retrying: None,
+            finishing: BTreeMap::new(),
             memo: BTreeMap::new(),
             visiting: BTreeSet::new(),
         }
@@ -786,6 +797,9 @@ impl<'a> Planner<'a> {
                 continue;
             }
             if self.present.contains(t) && !force {
+                if self.finish(t, &mut plan) {
+                    continue;
+                }
                 plan.skipped.push((t.clone(), "already present".into()));
                 continue;
             }
@@ -795,6 +809,28 @@ impl<'a> Planner<'a> {
             }
         }
         plan
+    }
+
+    /// Plans the steps of `id` that a failed install did not get through (see `finishing`),
+    /// when there are some and the route is still the one that ran.
+    fn finish(&mut self, id: &str, plan: &mut Plan) -> bool {
+        let Some(done) = self.finishing.get(id).cloned() else {
+            return false;
+        };
+        let Ok(choice) = self.choose(id) else {
+            return false;
+        };
+        let ran = choice.steps.len() > done.len()
+            && choice.steps.iter().zip(&done).all(|(s, d)| &s.label == d);
+        if !ran {
+            return false;
+        }
+        self.commit(id, "requested".into(), plan);
+        if let Some(u) = plan.units.iter_mut().find(|u| u.id == id) {
+            u.steps.drain(..done.len());
+            u.resumed = done;
+        }
+        true
     }
 
     fn commit(&mut self, id: &str, reason: String, plan: &mut Plan) {
@@ -1219,6 +1255,43 @@ mod tests {
         );
         // The build runs as the user, the copy as root (under `sudo envira`).
         assert!(!u.steps[0].as_root && u.steps[1].as_root);
+    }
+
+    #[test]
+    fn a_retry_finishes_the_copy_of_a_portable_build() {
+        let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
+        // The build went through and the copy failed: texlab is present for the user now.
+        let present = set(&["rust-toolchain", "cargo-binstall", "texlab"]);
+        let full = Planner::new(&c, &f, &set(&["rust-toolchain", "cargo-binstall"]))
+            .plan(&["texlab".into()], false);
+        let build = full.units[0].steps[0].label.clone();
+        let mut p = Planner::new(&c, &f, &present);
+        p.finishing = BTreeMap::from([("texlab".to_string(), vec![build.clone()])]);
+        let plan = p.plan(&["texlab".into()], false);
+        let u = &plan.units[0];
+        assert_eq!(u.steps.len(), 1);
+        assert!(
+            u.steps[0].label.starts_with("copy texlab to "),
+            "{:?}",
+            u.steps
+        );
+        assert_eq!(u.resumed, std::slice::from_ref(&build));
+        // Steps that do not match what ran (another route): nothing is assumed.
+        let mut p = Planner::new(&c, &f, &present);
+        p.finishing = BTreeMap::from([("texlab".to_string(), vec!["other".to_string()])]);
+        assert_eq!(
+            p.plan(&["texlab".into()], false).skipped[0].1,
+            "already present"
+        );
+        // Without the copy (no sudo now), nothing is left to do.
+        let mut nf = f.clone();
+        nf.privilege = Privilege::None;
+        let mut p = Planner::new(&c, &nf, &present);
+        p.finishing = BTreeMap::from([("texlab".to_string(), vec![build])]);
+        assert_eq!(
+            p.plan(&["texlab".into()], false).skipped[0].1,
+            "already present"
+        );
     }
 
     #[test]

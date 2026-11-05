@@ -470,9 +470,16 @@ impl App {
     }
 
     pub fn make_plan(&self, targets: &[String]) -> Plan {
+        self.make_retry_install(targets, &BTreeMap::new())
+    }
+
+    /// `make_plan` after a failed run; `done`: the steps each install got through (see
+    /// `Planner::finishing`).
+    fn make_retry_install(&self, targets: &[String], done: &BTreeMap<String, Vec<String>>) -> Plan {
         let present = self.present();
         let mut p = Planner::new(&self.catalog, &self.facts, &present);
         p.prefer_system = self.prefer_system;
+        p.finishing = done.clone();
         p.plan(targets, false)
     }
 
@@ -551,7 +558,7 @@ impl App {
     fn retry_plan(&self, t: &crate::plan::RetryTargets) -> Plan {
         let mut plan = Plan::default();
         if !t.install.is_empty() {
-            plan.extend(self.make_plan(&t.install));
+            plan.extend(self.make_retry_install(&t.install, &t.install_done));
         }
         if !t.update.is_empty() {
             let (targets, skipped) = self

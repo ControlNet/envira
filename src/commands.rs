@@ -792,7 +792,7 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     let mut snap = sess.snapshot(Some(&state)).await;
     let mut plan = Plan::default();
     if !t.install.is_empty() {
-        plan.extend(sess.plan(&snap.present(), &t.install, false));
+        plan.extend(sess.retry_install_plan(&snap.present(), &t.install, &t.install_done));
     }
     if !t.update.is_empty() {
         sess.apply_latest(&mut snap, Fetch::CacheOnly).await;

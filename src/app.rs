@@ -139,6 +139,20 @@ impl Session {
         p.plan(targets, force)
     }
 
+    /// Installs `targets` again after a failed run; `done`: the steps each got through (see
+    /// `Planner::finishing`).
+    pub fn retry_install_plan(
+        &self,
+        present: &BTreeSet<String>,
+        targets: &[String],
+        done: &BTreeMap<String, Vec<String>>,
+    ) -> Plan {
+        let mut p = Planner::new(&self.catalog, &self.facts, present);
+        p.prefer_system = self.prefer_system();
+        p.finishing = done.clone();
+        p.plan(targets, false)
+    }
+
     /// Reverts `targets`; `retrying` reverts that stopped halfway, with the steps each got
     /// through (see `Planner::retrying`).
     pub fn revert_plan(
