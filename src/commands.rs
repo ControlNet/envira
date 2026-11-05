@@ -768,13 +768,30 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
 pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     let state = sess.state()?.unwrap_or_default();
     let run_id = state.last_run.clone().context("no previous run to retry")?;
-    let targets = RunRecord::load(&sess.paths, &run_id)?.unfinished();
-    if targets.is_empty() {
+    let rec = RunRecord::load(&sess.paths, &run_id)?;
+    let t = crate::plan::RetryTargets::new(
+        rec.unfinished_units()
+            .map(|u| (u.id.as_str(), u.action.as_str())),
+    );
+    if t.is_empty() {
         println!("Nothing failed in run {run_id}.");
         return Ok(0);
     }
-    let snap = sess.snapshot(Some(&state)).await;
-    let plan = sess.plan(&snap.present(), &targets, false);
+    let mut snap = sess.snapshot(Some(&state)).await;
+    let mut plan = Plan::default();
+    if !t.install.is_empty() {
+        plan.extend(sess.plan(&snap.present(), &t.install, false));
+    }
+    if !t.update.is_empty() {
+        sess.apply_latest(&mut snap, Fetch::CacheOnly).await;
+        let (targets, skipped) = snap.update_targets(&t.update);
+        let mut p = sess.update_plan(&targets);
+        p.skipped.extend(skipped);
+        plan.extend(p);
+    }
+    if !t.revert.is_empty() {
+        plan.extend(sess.revert_plan(&snap.present(), &t.revert));
+    }
     run_plan(sess, plan, state, "retry", opts).await
 }
 

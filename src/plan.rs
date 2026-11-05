@@ -36,6 +36,35 @@ impl Action {
     }
 }
 
+/// The unfinished units of a run, split by what they were doing: retrying an update must
+/// update again (an install plan skips a tool still present at its old version), and retrying
+/// a revert must revert again (an install plan would apply the config instead).
+#[derive(Debug, Default, PartialEq)]
+pub struct RetryTargets {
+    pub install: Vec<String>,
+    pub update: Vec<String>,
+    pub revert: Vec<String>,
+}
+
+impl RetryTargets {
+    /// From `(id, action)` pairs (`Action::as_str` names).
+    pub fn new<'a>(units: impl IntoIterator<Item = (&'a str, &'a str)>) -> RetryTargets {
+        let mut t = RetryTargets::default();
+        for (id, action) in units {
+            match action {
+                "update" => t.update.push(id.to_string()),
+                "revert" => t.revert.push(id.to_string()),
+                _ => t.install.push(id.to_string()),
+            }
+        }
+        t
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.install.is_empty() && self.update.is_empty() && self.revert.is_empty()
+    }
+}
+
 /// One command of a unit. A step with a passing `check` is skipped; `cmd = None` means there is
 /// nothing to run (a revert the catalog does not describe).
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +102,12 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Appends `other` (a plan for other ids).
+    pub fn extend(&mut self, other: Plan) {
+        self.units.extend(other.units);
+        self.skipped.extend(other.skipped);
+    }
+
     pub fn needs_sudo(&self, facts: &Facts) -> bool {
         !facts.is_root()
             && self.units.iter().any(|u| {
@@ -845,6 +880,20 @@ pub fn as_script(plan: &Plan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_keep_what_each_unit_was_doing() {
+        let t = RetryTargets::new([
+            ("bat", "install"),
+            ("zsh-rc", "apply"),
+            ("yazi", "update"),
+            ("codex-sandbox-network", "revert"),
+        ]);
+        assert_eq!(t.install, ["bat", "zsh-rc"]);
+        assert_eq!(t.update, ["yazi"]);
+        assert_eq!(t.revert, ["codex-sandbox-network"]);
+        assert!(RetryTargets::new([]).is_empty());
+    }
     use crate::catalog::load::{embedded_layer, load};
     use crate::facts::Privilege;
     use std::path::Path;

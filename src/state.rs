@@ -350,16 +350,16 @@ impl RunRecord {
     /// Ids that did not succeed: failed, blocked, cancelled, skipped after a stop, or never
     /// reached because envira was killed.
     pub fn unfinished(&self) -> Vec<String> {
-        self.units
-            .iter()
-            .filter(|u| {
-                matches!(
-                    u.outcome.as_str(),
-                    "failed" | "blocked" | "cancelled" | "skipped" | "pending"
-                )
-            })
-            .map(|u| u.id.clone())
-            .collect()
+        self.unfinished_units().map(|u| u.id.clone()).collect()
+    }
+
+    pub fn unfinished_units(&self) -> impl Iterator<Item = &UnitRecord> {
+        self.units.iter().filter(|u| {
+            matches!(
+                u.outcome.as_str(),
+                "failed" | "blocked" | "cancelled" | "skipped" | "pending"
+            )
+        })
     }
 }
 

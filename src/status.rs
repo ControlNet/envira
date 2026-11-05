@@ -193,6 +193,20 @@ impl Snapshot {
         self.items.iter().filter(|i| f(i)).count()
     }
 
+    /// Update targets for `ids` as if each was named (`envira update <id>`), and why the others
+    /// cannot be updated.
+    pub fn update_targets(&self, ids: &[String]) -> (Vec<UpdateTarget>, Vec<(String, String)>) {
+        let (mut targets, mut skipped) = (Vec::new(), Vec::new());
+        for id in ids {
+            match self.get(id).map(|i| i.update_target(true)) {
+                Some(Ok(t)) => targets.push(t),
+                Some(Err(why)) => skipped.push((id.clone(), why)),
+                None => skipped.push((id.clone(), "not in the catalog".into())),
+            }
+        }
+        (targets, skipped)
+    }
+
     /// Present tools envira can update with a newer version available.
     pub fn outdated(&self) -> Vec<String> {
         self.items

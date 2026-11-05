@@ -251,7 +251,7 @@ impl RunView {
     }
 
     /// Units to retry: failed, blocked, cancelled, or skipped after a stop.
-    pub fn failed_ids(&self) -> Vec<String> {
+    fn failed_units(&self) -> impl Iterator<Item = &crate::plan::Unit> {
         self.plan
             .units
             .iter()
@@ -268,8 +268,7 @@ impl RunView {
                     )
                 )
             })
-            .map(|(u, _)| u.id.clone())
-            .collect()
+            .map(|(u, _)| u)
     }
 }
 
@@ -541,6 +540,28 @@ impl App {
             self.notify(format!("envira {v} is out · U updates envira"));
         }
         self.self_latest = newer;
+    }
+
+    /// Retries each unit the way it ran: install/apply, update or revert.
+    fn retry_plan(&self, t: &crate::plan::RetryTargets) -> Plan {
+        let mut plan = Plan::default();
+        if !t.install.is_empty() {
+            plan.extend(self.make_plan(&t.install));
+        }
+        if !t.update.is_empty() {
+            let (targets, skipped) = self
+                .snap
+                .as_ref()
+                .map(|s| s.update_targets(&t.update))
+                .unwrap_or_default();
+            let mut p = self.make_update_plan(&targets);
+            p.skipped.extend(skipped);
+            plan.extend(p);
+        }
+        if !t.revert.is_empty() {
+            plan.extend(self.make_revert(&t.revert));
+        }
+        plan
     }
 
     fn make_revert(&self, targets: &[String]) -> Plan {
@@ -1117,12 +1138,15 @@ impl App {
                 self.notify("Cancelling the running steps");
             }
             KeyCode::Char('r') if finished => {
-                let failed = run.failed_ids();
-                if failed.is_empty() {
+                let t = crate::plan::RetryTargets::new(
+                    run.failed_units()
+                        .map(|u| (u.id.as_str(), u.action.as_str())),
+                );
+                if t.is_empty() {
                     self.notify("Nothing to retry");
                 } else {
-                    let plan = self.make_plan(&failed);
-                    let n = failed.len();
+                    let plan = self.retry_plan(&t);
+                    let n = t.install.len() + t.update.len() + t.revert.len();
                     self.run = None;
                     self.screen = Screen::Dashboard;
                     self.open_plan(plan, format!("retry · {n} unfinished"));
@@ -1404,6 +1428,25 @@ pub mod tests {
         assert_eq!(plan.units[0].reason, "1.0.0 → 2.0.0");
         let cmds = a.on_key(key(KeyCode::Enter));
         assert!(matches!(&cmds[..], [Cmd::StartRun { command, .. }] if command == "update"));
+
+        // The update fails; `r` updates again (an install plan would skip the present tool).
+        let Some(Cmd::StartRun { plan, .. }) = cmds.into_iter().next() else {
+            unreachable!()
+        };
+        a.start_run(plan, "r1".into(), None);
+        a.on_exec(Event::UnitFinished(
+            0,
+            Outcome::Failed("exit 1".into()),
+            Duration::from_secs(1),
+        ));
+        a.on_exec(Event::Finished(RunRecord::default()));
+        a.on_key(key(KeyCode::Char('r')));
+        assert_eq!(a.screen, Screen::Plan);
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert_eq!(title, "retry · 1 unfinished");
+        assert_eq!(plan.units.len(), 1);
+        assert_eq!(plan.units[0].action, crate::plan::Action::Update);
+        assert_eq!(plan.units[0].steps[0].cmd.as_deref(), Some("rustup update"));
     }
 
     #[test]
@@ -1464,7 +1507,9 @@ pub mod tests {
         let run = a.run.as_ref().unwrap();
         assert_eq!(run.sel, 0);
         assert_eq!(
-            run.failed_ids(),
+            run.failed_units()
+                .map(|u| u.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["fnm", "nodejs", "npm-prefix", "codex"]
         );
         a.on_key(key(KeyCode::Char('r')));
