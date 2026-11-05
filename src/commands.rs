@@ -951,6 +951,20 @@ async fn run_plan(
         }
     }
     let _lock = state::RunLock::acquire(&sess.paths, &sess.facts)?;
+    // The state on disk, read under the run lock: `state` was read before it, and a run that
+    // finished meanwhile (another terminal, the TUI) would lose its records when this one saves.
+    // The bundles this command added are kept.
+    let state = match sess.state()? {
+        Some(mut disk) => {
+            for b in state.bundles {
+                if !disk.bundles.contains(&b) {
+                    disk.bundles.push(b);
+                }
+            }
+            disk
+        }
+        None => state,
+    };
     let keepalive = if plan.needs_sudo(&sess.facts) {
         app::ensure_sudo(&sess.facts)?
     } else {
