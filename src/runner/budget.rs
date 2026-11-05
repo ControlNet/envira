@@ -809,6 +809,8 @@ mod tests {
         assert_eq!(b.estimate("spiky", "", home), estimate("spiky", "", home));
     }
 
+    // Needs /proc: elsewhere nothing is measured, so nothing is learned.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_command_too_fast_to_measure_keeps_a_bounded_estimate() {
         let t = tempfile::tempdir().unwrap();
@@ -838,6 +840,7 @@ mod tests {
         assert!(t.is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_process_tree_is_measured() {
         let mut c = std::process::Command::new("bash")

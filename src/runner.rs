@@ -1300,8 +1300,10 @@ mod tests {
         let tight = RealRunner::new(test_env(), Arc::new(Budget::new(1)));
         let (x, y) = tokio::join!(span(&tight, &a), span(&tight, &b));
         assert!(x.1 <= y.0 || y.1 <= x.0, "overlapped: {x:?} {y:?}");
-        // The peak seen is what the next estimate starts from.
-        assert!(tight.budget.learned(&a).is_some_and(|p| p > 0));
+        // The peak seen is what the next estimate starts from (measured through /proc).
+        if cfg!(target_os = "linux") {
+            assert!(tight.budget.learned(&a).is_some_and(|p| p > 0));
+        }
         // Room for both: at once.
         let r = runner();
         let (x, y) = tokio::join!(span(&r, &a), span(&r, &b));
