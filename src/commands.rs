@@ -784,7 +784,7 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
         rec.unfinished_units()
             .map(|u| (u.id.as_str(), u.action.as_str())),
     )
-    .progress(&rec.units);
+    .progress(&rec.units, Some(&sess.paths.run_dir(&run_id)));
     if t.is_empty() {
         println!("Nothing failed in run {run_id}.");
         return Ok(0);

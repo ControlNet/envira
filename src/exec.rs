@@ -416,6 +416,47 @@ pub async fn execute(
     (record, state)
 }
 
+/// The steps a unit got through, starting with those an earlier run got through (`resumed`). A
+/// revert also appends each to `<run dir>/<id>.steps` (a JSON string per line) as it ends: if
+/// envira dies midway, `retry` still knows where it stopped.
+struct Progress {
+    done: Vec<String>,
+    file: Option<std::fs::File>,
+}
+
+impl Progress {
+    fn new(unit: &Unit, run_dir: &std::path::Path, facts: &Facts) -> Progress {
+        let file = (unit.action == Action::Revert)
+            .then(|| {
+                let path = state::progress_file(run_dir, &unit.id);
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .ok()?;
+                state::chown_to_target(&path, facts);
+                Some(f)
+            })
+            .flatten();
+        let mut p = Progress {
+            done: Vec::new(),
+            file,
+        };
+        for l in &unit.resumed {
+            p.step(l);
+        }
+        p
+    }
+
+    fn step(&mut self, label: &str) {
+        self.done.push(label.to_string());
+        if let Some(f) = &mut self.file {
+            let line = serde_json::to_string(label).unwrap_or_default() + "\n";
+            let _ = f.write_all(line.as_bytes()).and_then(|_| f.sync_data());
+        }
+    }
+}
+
 /// What a unit leaves for its run record besides its outcome.
 #[derive(Default)]
 struct Trail {
@@ -448,7 +489,12 @@ fn finish_unit(
         detail: outcome.detail(),
         hint: trail.hint.filter(|_| failed),
         seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
-        done_steps: if failed { trail.done_steps } else { vec![] },
+        // A unit that did not start keeps what an earlier run got through.
+        done_steps: match failed {
+            true if trail.done_steps.is_empty() => unit.resumed.clone(),
+            true => trail.done_steps,
+            false => vec![],
+        },
     };
     if let Err(e) = state
         .save_run(&ctx.paths, &ctx.facts)
@@ -507,7 +553,7 @@ async fn run_unit(
         );
     }
     let started = Instant::now();
-    let mut done = Vec::new();
+    let mut done = Progress::new(unit, run_dir, &ctx.facts);
     let outcome = run_steps(unit, ctx, &emit, ctl, &mut done).await;
     if let Some(f) = log.lock().unwrap().as_mut() {
         let _ = writeln!(
@@ -526,18 +572,18 @@ async fn run_unit(
         outcome,
         Trail {
             hint,
-            done_steps: done,
+            done_steps: done.done,
         },
     )
 }
 
-/// Runs the steps of a unit; `done` gets the label of each step it gets through.
+/// Runs the steps of a unit; `done` gets each step it gets through.
 async fn run_steps<F>(
     unit: &Unit,
     ctx: &ExecCtx,
     emit: &F,
     ctl: &mut watch::Receiver<Control>,
-    done: &mut Vec<String>,
+    done: &mut Progress,
 ) -> Outcome
 where
     F: Fn(String) + Clone + Send + 'static,
@@ -572,7 +618,7 @@ where
                 "[envira] {label} · {} · nothing to undo",
                 step.label
             ));
-            done.push(step.label.clone());
+            done.step(&step.label);
             continue;
         }
         if let Some(check) = &step.check
@@ -582,7 +628,7 @@ where
                 "[envira] {label} · {} · already in place",
                 step.label
             ));
-            done.push(step.label.clone());
+            done.step(&step.label);
             continue;
         }
         let Some(cmd) = &step.cmd else {
@@ -590,7 +636,7 @@ where
                 "[envira] {label} · {} · not described by the catalog, revert manually",
                 step.label
             ));
-            done.push(step.label.clone());
+            done.step(&step.label);
             continue;
         };
         emit(format!("$ {cmd}"));
@@ -651,7 +697,7 @@ where
                 }
             }
         }
-        done.push(step.label.clone());
+        done.step(&step.label);
     }
 
     // Post-condition: the item must now be detected.
@@ -1333,6 +1379,7 @@ mod tests {
             deps: deps.iter().map(|d| d.to_string()).collect(),
             reason: "requested".into(),
             expect: None,
+            resumed: vec![],
         }
     }
 
@@ -1588,6 +1635,9 @@ mod tests {
         let (rec, _, _) = run(&s, revert(plain(vec![step("a"), step("b"), step("c")]))).await;
         assert_eq!(outcomes(&rec), vec![("cfg", "failed")]);
         assert_eq!(rec.units[0].done_steps, ["a"]);
+        // The same progress is on disk as it happens, for a run envira does not live to record.
+        let dir = s.ctx.paths.run_dir(&s.ctx.run_id);
+        assert_eq!(state::read_progress(&dir, "cfg"), ["a"]);
         // The retry starts at b, as it is (it may have undone part of its change); c only runs
         // while its change is in place, and it no longer is.
         s.runner
@@ -1601,11 +1651,26 @@ mod tests {
             .unwrap()
             .insert(0, ("in-place-c".into(), 1, String::new()));
         s.runner.log.lock().unwrap().clear();
-        let steps = crate::plan::resume_revert(
+        let (steps, resumed) = crate::plan::resume_revert(
             vec![step("a"), step("b"), step("c")],
             &rec.units[0].done_steps,
         );
-        let (rec, _, events) = run(&s, revert(steps)).await;
+        // b fails again: the record still has a, which this run left out.
+        s.runner
+            .rules
+            .lock()
+            .unwrap()
+            .insert(0, ("undo-b".into(), 1, String::new()));
+        let mut plan = revert(steps.clone());
+        plan.units[0].resumed = resumed.clone();
+        let (rec, _, _) = run(&s, plan).await;
+        assert_eq!(rec.units[0].done_steps, ["a"]);
+        // Then it goes through.
+        s.runner.rules.lock().unwrap().remove(0);
+        s.runner.log.lock().unwrap().clear();
+        let mut plan = revert(steps);
+        plan.units[0].resumed = resumed;
+        let (rec, _, events) = run(&s, plan).await;
         assert_eq!(outcomes(&rec), vec![("cfg", "ok")]);
         assert_eq!(s.runner.ran(), ["undo-b"]);
         assert!(rec.units[0].done_steps.is_empty());

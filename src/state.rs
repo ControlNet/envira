@@ -387,6 +387,20 @@ impl RunRecord {
     }
 }
 
+/// Where a revert notes each step it gets through (see `exec::Progress`).
+pub fn progress_file(run_dir: &Path, id: &str) -> PathBuf {
+    run_dir.join(format!("{id}.steps"))
+}
+
+/// The steps noted in a progress file, in order.
+pub fn read_progress(run_dir: &Path, id: &str) -> Vec<String> {
+    std::fs::read_to_string(progress_file(run_dir, id))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
 /// The last `n` lines of a log, reading at most the last `max` bytes of it: a long build log
 /// is never loaded whole to show its end.
 pub fn tail_lines(path: &Path, n: usize, max: u64) -> std::io::Result<Vec<String>> {

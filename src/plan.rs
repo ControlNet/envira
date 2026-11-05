@@ -62,11 +62,23 @@ impl RetryTargets {
         t
     }
 
-    /// Adds how far the reverts got, from the run's records.
-    pub fn progress<'a>(mut self, records: impl IntoIterator<Item = &'a UnitRecord>) -> Self {
+    /// Adds how far the reverts got, from the run's records, or for a unit still `pending`
+    /// (envira died during it) from the progress file in `run_dir`.
+    pub fn progress<'a>(
+        mut self,
+        records: impl IntoIterator<Item = &'a UnitRecord>,
+        run_dir: Option<&std::path::Path>,
+    ) -> Self {
         for r in records {
-            if r.action == "revert" && self.revert.contains(&r.id) && !r.done_steps.is_empty() {
-                self.revert_done.insert(r.id.clone(), r.done_steps.clone());
+            if r.action != "revert" || !self.revert.contains(&r.id) {
+                continue;
+            }
+            let done = match run_dir {
+                Some(dir) if r.outcome == "pending" => crate::state::read_progress(dir, &r.id),
+                _ => r.done_steps.clone(),
+            };
+            if !done.is_empty() {
+                self.revert_done.insert(r.id.clone(), done);
             }
         }
         self
@@ -112,6 +124,10 @@ pub struct Unit {
     /// Version an update is expected to reach (the latest known).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expect: Option<String>,
+    /// Steps an earlier run got through, left out of `steps` (a retried revert): this run's
+    /// record counts them as done too, so a second retry does not run them again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resumed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -721,6 +737,7 @@ impl<'a> Planner<'a> {
                         deps,
                         reason: t.reason.clone(),
                         expect: t.expect.clone(),
+                        resumed: vec![],
                     });
                 }
                 Err(e) => plan.skipped.push((t.id.clone(), e)),
@@ -816,6 +833,7 @@ impl<'a> Planner<'a> {
             deps: in_plan,
             reason,
             expect: None,
+            resumed: vec![],
         });
     }
 
@@ -837,57 +855,65 @@ impl<'a> Planner<'a> {
                 plan.skipped.push((id.clone(), "needs sudo".into()));
                 continue;
             }
-            match config_steps(self.cat, self.facts, id, scope) {
-                Ok(cs) => plan.units.push(Unit {
-                    id: id.clone(),
-                    kind: Kind::Config,
-                    action: Action::Revert,
-                    via: "config".into(),
-                    scope,
-                    steps: {
-                        let steps = cs
-                            .into_iter()
-                            .rev()
-                            .map(|s| UnitStep {
-                                label: format!("revert {}", s.label),
-                                cmd: s.revert,
-                                only_if: s.check,
-                                ..Default::default()
-                            })
-                            .collect();
-                        match &self.retrying {
-                            Some(done) => resume_revert(
-                                steps,
-                                done.get(id).map(Vec::as_slice).unwrap_or_default(),
-                            ),
-                            None => steps
-                                .into_iter()
-                                .map(|s| UnitStep { only_if: None, ..s })
-                                .collect(),
-                        }
-                    },
-                    verify: vec![],
-                    deps: vec![],
-                    reason: "requested".into(),
-                    expect: None,
-                }),
-                Err(e) => plan.skipped.push((id.clone(), e)),
-            }
+            let cs = match config_steps(self.cat, self.facts, id, scope) {
+                Ok(cs) => cs,
+                Err(e) => {
+                    plan.skipped.push((id.clone(), e));
+                    continue;
+                }
+            };
+            let steps: Vec<UnitStep> = cs
+                .into_iter()
+                .rev()
+                .map(|s| UnitStep {
+                    label: format!("revert {}", s.label),
+                    cmd: s.revert,
+                    only_if: s.check,
+                    ..Default::default()
+                })
+                .collect();
+            let (steps, resumed) = match &self.retrying {
+                Some(done) => {
+                    resume_revert(steps, done.get(id).map(Vec::as_slice).unwrap_or_default())
+                }
+                None => (
+                    steps
+                        .into_iter()
+                        .map(|s| UnitStep { only_if: None, ..s })
+                        .collect(),
+                    vec![],
+                ),
+            };
+            plan.units.push(Unit {
+                id: id.clone(),
+                kind: Kind::Config,
+                action: Action::Revert,
+                via: "config".into(),
+                scope,
+                steps,
+                verify: vec![],
+                deps: vec![],
+                reason: "requested".into(),
+                expect: None,
+                resumed,
+            });
         }
         plan
     }
 }
 
 /// The steps of a revert still to run after a run that stopped halfway got through `done`
-/// (labels, in order). Those are left out; the one that failed runs again as it is (it may have
-/// undone part of its change), and the ones after it only while their change is in place.
-pub fn resume_revert(steps: Vec<UnitStep>, done: &[String]) -> Vec<UnitStep> {
+/// (labels, in order), and the labels of those left out. The one that failed runs again as it
+/// is (it may have undone part of its change), the ones after it only while their change is in
+/// place.
+pub fn resume_revert(steps: Vec<UnitStep>, done: &[String]) -> (Vec<UnitStep>, Vec<String>) {
     let skip = steps
         .iter()
         .zip(done)
         .take_while(|(s, d)| &s.label == *d)
         .count();
-    steps
+    let resumed = done[..skip].to_vec();
+    let left = steps
         .into_iter()
         .skip(skip)
         .enumerate()
@@ -898,7 +924,8 @@ pub fn resume_revert(steps: Vec<UnitStep>, done: &[String]) -> Vec<UnitStep> {
                 s
             }
         })
-        .collect()
+        .collect();
+    (left, resumed)
 }
 
 fn summarize(notes: &[String], facts: &Facts) -> String {
@@ -1288,8 +1315,9 @@ mod tests {
                 .map(|s| (s.label.clone(), s.only_if.is_some()))
                 .collect::<Vec<_>>()
         };
-        let left = resume_revert(steps.clone(), &["a".into()]);
+        let (left, resumed) = resume_revert(steps.clone(), &["a".into()]);
         assert_eq!(labels(&left), [("b".into(), false), ("c".into(), true)]);
+        assert_eq!(resumed, ["a"]);
         let script = as_script(&Plan {
             units: vec![Unit {
                 id: "cfg".into(),
@@ -1302,6 +1330,7 @@ mod tests {
                 deps: vec![],
                 reason: "retry".into(),
                 expect: None,
+                resumed: vec![],
             }],
             skipped: vec![],
         });
@@ -1310,13 +1339,19 @@ mod tests {
             "{script}"
         );
         // Steps that changed since are not skipped past their first difference.
-        let left = resume_revert(steps.clone(), &["x".into(), "b".into()]);
+        let (left, resumed) = resume_revert(steps.clone(), &["x".into(), "b".into()]);
         assert_eq!(labels(&left).len(), 3);
-        assert!(resume_revert(steps, &["a".into(), "b".into(), "c".into()]).is_empty());
-        let t = RetryTargets::new([("cfg", "revert"), ("bat", "install")]).progress(&[
+        assert!(resumed.is_empty());
+        assert!(
+            resume_revert(steps, &["a".into(), "b".into(), "c".into()])
+                .0
+                .is_empty()
+        );
+        let records = [
             UnitRecord {
                 id: "cfg".into(),
                 action: "revert".into(),
+                outcome: "failed".into(),
                 done_steps: vec!["a".into()],
                 ..Default::default()
             },
@@ -1326,9 +1361,25 @@ mod tests {
                 done_steps: vec!["x".into()],
                 ..Default::default()
             },
-        ]);
-        assert_eq!(t.revert_done.len(), 1);
+            // envira died during it: the record has nothing, the progress file has a.
+            UnitRecord {
+                id: "died".into(),
+                action: "revert".into(),
+                outcome: "pending".into(),
+                ..Default::default()
+            },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::state::progress_file(dir.path(), "died"),
+            "\"a\"\n\"b\\nc\"\n",
+        )
+        .unwrap();
+        let t = RetryTargets::new([("cfg", "revert"), ("bat", "install"), ("died", "revert")])
+            .progress(&records, Some(dir.path()));
+        assert_eq!(t.revert_done.len(), 2);
         assert_eq!(t.revert_done["cfg"], ["a"]);
+        assert_eq!(t.revert_done["died"], ["a", "b\nc"]);
     }
 
     #[test]

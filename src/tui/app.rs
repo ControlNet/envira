@@ -1154,7 +1154,7 @@ impl App {
                     run.failed_units()
                         .map(|u| (u.id.as_str(), u.action.as_str())),
                 )
-                .progress(run.finished.iter().flat_map(|(rec, _)| &rec.units));
+                .progress(run.finished.iter().flat_map(|(rec, _)| &rec.units), None);
                 if t.is_empty() {
                     self.notify("Nothing to retry");
                 } else {
