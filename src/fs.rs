@@ -5,7 +5,7 @@
 //! records the previous value, so `envira fs restore` can undo exactly what envira did.
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -165,6 +165,46 @@ impl Backups {
     }
 }
 
+/// The file an edit of `path` changes: `path`, or what it links to. A dotfile kept in a
+/// dotfiles repo and linked into place (stow, chezmoi) stays linked and the repo's file gets the
+/// edit, as `>>` would. Writing as root, a link is followed only when root made it or when its
+/// owner owns what it points to: a user's link must not point root's edit at a file of someone
+/// else (`~/.bashrc -> /etc/shadow`); that is refused, the link left as it is.
+pub fn edit_target(path: &Path, writing: bool) -> Result<PathBuf> {
+    // SAFETY: geteuid has no preconditions.
+    let guard = writing && unsafe { libc::geteuid() } == 0;
+    let mut cur = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(m) = std::fs::symlink_metadata(&cur) else {
+            return Ok(cur);
+        };
+        if !m.file_type().is_symlink() {
+            return Ok(cur);
+        }
+        let to = std::fs::read_link(&cur).with_context(|| format!("reading {}", cur.display()))?;
+        let next = cur.parent().unwrap_or(Path::new("/")).join(to);
+        if guard && m.uid() != 0 {
+            // The file, or for a new one the directory it goes in (both through any linked
+            // directories on the way).
+            let owner = std::fs::symlink_metadata(&next)
+                .or_else(|_| std::fs::metadata(next.parent().unwrap_or(Path::new("/"))))
+                .map(|t| t.uid())
+                .ok();
+            if owner != Some(m.uid()) {
+                bail!(
+                    "refusing to edit {} through the link {}: the link's owner (uid {}) does not \
+                     own it",
+                    next.display(),
+                    cur.display(),
+                    m.uid()
+                );
+            }
+        }
+        cur = next;
+    }
+    bail!("{}: too many levels of links", path.display())
+}
+
 fn read_opt(path: &Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(s)),
@@ -191,6 +231,7 @@ pub fn write(
     mode: Option<u32>,
     check: bool,
 ) -> Result<bool> {
+    let path = &edit_target(path, !check)?;
     let cur = read_opt(path)?;
     let mode_ok = mode.is_none_or(|m| {
         std::fs::metadata(path).is_ok_and(|md| md.permissions().mode() & 0o7777 == m)
@@ -220,6 +261,7 @@ pub fn block(
     content: Option<&str>,
     check: bool,
 ) -> Result<bool> {
+    let path = &edit_target(path, !check)?;
     let (start, end) = markers(id, comment);
     let cur = read_opt(path)?.unwrap_or_default();
     let lines: Vec<&str> = cur.lines().collect();
@@ -287,6 +329,7 @@ fn canon(v: &toml_edit::Value) -> String {
 
 /// Sets a dotted key in a TOML file, keeping comments and formatting elsewhere.
 pub fn toml_set(b: &Backups, path: &Path, key: &str, value: &str, check: bool) -> Result<bool> {
+    let path = &edit_target(path, !check)?;
     let text = read_opt(path)?.unwrap_or_default();
     let mut doc: toml_edit::DocumentMut = text
         .parse()
@@ -389,6 +432,7 @@ pub fn ini_set(
     value: &str,
     check: bool,
 ) -> Result<bool> {
+    let path = &edit_target(path, !check)?;
     let text = read_opt(path)?.unwrap_or_default();
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     let (header, key_line, insert) = ini_find(&lines, section, key);
@@ -445,6 +489,7 @@ pub fn line(
     after: Option<&str>,
     check: bool,
 ) -> Result<bool> {
+    let path = &edit_target(path, !check)?;
     let re = regex::Regex::new(pattern).with_context(|| format!("bad --match {pattern:?}"))?;
     let after = after
         .filter(|a| !a.is_empty())
@@ -510,6 +555,12 @@ pub fn link(b: &Backups, target: &str, link: &Path, check: bool) -> Result<bool>
 
 /// Undoes envira's changes: one key (`key = Some`) or the whole file.
 pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
+    // A backup of the path itself (a link envira made, an older backup), else of the file an
+    // edit through a link changed.
+    let path = &match b.load(path) {
+        Some(_) => path.to_path_buf(),
+        None => edit_target(path, true)?,
+    };
     let Some(mut meta) = b.load(path) else {
         bail!("no envira backup for {}", path.display());
     };
@@ -808,6 +859,52 @@ mod tests {
         assert!(link(&b, "/usr/bin/batcat", &l, true).unwrap());
         restore(&b, &l, None).unwrap();
         assert_eq!(std::fs::read_to_string(&l).unwrap(), "old");
+    }
+
+    #[test]
+    fn linked_dotfiles_are_edited_where_they_live() {
+        let (d, b) = setup();
+        // ~/.zshrc -> dotfiles/zshrc (stow), relative like stow makes them.
+        let repo = d.path().join("dotfiles/zshrc");
+        std::fs::create_dir_all(repo.parent().unwrap()).unwrap();
+        std::fs::write(&repo, "alias ls=lsd\n").unwrap();
+        let rc = d.path().join(".zshrc");
+        std::os::unix::fs::symlink("dotfiles/zshrc", &rc).unwrap();
+        let is_link = |p: &Path| {
+            std::fs::symlink_metadata(p)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        };
+        assert!(!block(&b, &rc, "envira", "#", Some(". ~/.envira"), true).unwrap());
+        assert!(block(&b, &rc, "envira", "#", Some(". ~/.envira"), false).unwrap());
+        assert!(is_link(&rc));
+        let text = std::fs::read_to_string(&repo).unwrap();
+        assert!(
+            text.starts_with("alias ls=lsd\n") && text.contains(". ~/.envira"),
+            "{text}"
+        );
+        assert!(block(&b, &rc, "envira", "#", Some(". ~/.envira"), true).unwrap());
+        block(&b, &rc, "envira", "#", None, false).unwrap();
+        assert!(is_link(&rc));
+        // (The blank line put before the block stays.)
+        assert_eq!(std::fs::read_to_string(&repo).unwrap(), "alias ls=lsd\n\n");
+        std::fs::write(&repo, "alias ls=lsd\n").unwrap();
+        // Keys and whole files too; their reverts put the file back, still linked.
+        line(&b, &rc, "^alias ls=", "alias ls='lsd -l'", None, false).unwrap();
+        assert!(is_link(&rc));
+        restore(&b, &rc, Some("^alias ls=")).unwrap();
+        assert_eq!(std::fs::read_to_string(&repo).unwrap(), "alias ls=lsd\n");
+        write(&b, &rc, "replaced\n", None, false).unwrap();
+        assert!(is_link(&rc));
+        restore(&b, &rc, None).unwrap();
+        assert!(is_link(&rc));
+        assert_eq!(std::fs::read_to_string(&repo).unwrap(), "alias ls=lsd\n");
+        // A link envira made itself is restored as a link, not followed.
+        let l = d.path().join("bin/tool");
+        link(&b, "/usr/bin/true", &l, false).unwrap();
+        restore(&b, &l, None).unwrap();
+        assert!(std::fs::symlink_metadata(&l).is_err());
     }
 
     #[test]

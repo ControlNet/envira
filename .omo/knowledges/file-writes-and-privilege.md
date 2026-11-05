@@ -9,6 +9,14 @@
   with 0666 while still empty), as root chowns it to the old file's owner, then renames.
 - Do not write `std::fs::write`, `File::create` or `fs::copy` to a destination that already
   exists or sits in a directory someone else can write; use `files::*`.
+- A destination that is a symlink (a dotfile linked from a dotfiles repo by stow/chezmoi) is
+  edited where it points (`fs::edit_target`, used by every `envira fs` edit, `restore` and the
+  rc blocks): the link stays, the repo's file gets the edit, like `>>`. As root a link is
+  followed only if root owns it or its owner owns the file it points to (checked per hop, with
+  lstat through linked directories; for a new file, the directory's owner); otherwise the edit
+  is refused and the link left alone. `restore` first looks for a backup of the path itself
+  (links envira made, older backups), then of the file it points to. `files::replace_with`
+  itself still replaces a link at its destination: callers resolve first.
 - Restore stages the original first and renames it over; a missing backup leaves the current
   file. Backup dirs: legacy `%`-for-`/` name, or `h-<sha256 prefix>` when the path has `%` or
   the legacy name belongs to another path (meta.toml `path` is checked).
