@@ -396,7 +396,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                     };
                     if plan.needs_sudo(&sess.facts) {
                         match authorize_sudo(term, &mut input, &tx) {
-                            Ok(true) => keepalive = Some(spawn_keepalive()),
+                            Ok(true) => keepalive = Some(crate::app::sudo_keepalive()),
                             Ok(false) => {
                                 app.notify("sudo authentication failed; nothing was run");
                                 continue;
@@ -493,19 +493,6 @@ fn ask(prompt: &str, default: bool) -> bool {
         "" => default,
         a => matches!(a, "y" | "Y" | "yes"),
     }
-}
-
-fn spawn_keepalive() -> JoinHandle<()> {
-    tokio::spawn(async {
-        loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            let _ = tokio::process::Command::new("sudo")
-                .args(["-n", "-v"])
-                .stdin(std::process::Stdio::null())
-                .status()
-                .await;
-        }
-    })
 }
 
 /// Events handled before the next redraw, at most.

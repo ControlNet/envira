@@ -145,7 +145,7 @@ impl Session {
         &self,
         present: &BTreeSet<String>,
         targets: &[String],
-        done: &BTreeMap<String, Vec<String>>,
+        done: &crate::plan::InstallsDone,
     ) -> Plan {
         let mut p = Planner::new(&self.catalog, &self.facts, present);
         p.prefer_system = self.prefer_system();
@@ -231,24 +231,33 @@ pub fn ensure_sudo(facts: &Facts) -> Result<Option<tokio::task::JoinHandle<()>>>
         Privilege::None => bail!("this plan needs sudo, which is not available"),
         Privilege::Sudo { .. } => {}
     }
-    if sudo_without_password() {
-        return Ok(None);
+    if !sudo_without_password() {
+        let ok = std::process::Command::new("sudo")
+            .arg("-v")
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            bail!("sudo authentication failed");
+        }
     }
-    let ok = std::process::Command::new("sudo")
-        .arg("-v")
-        .status()
-        .is_ok_and(|s| s.success());
-    if !ok {
-        bail!("sudo authentication failed");
-    }
-    Ok(Some(tokio::spawn(async {
+    // Also when `sudo -n true` passed: that may be a ticket cached from earlier, which can run
+    // out before a long build reaches its sudo steps.
+    Ok(Some(sudo_keepalive()))
+}
+
+/// Refreshes the sudo ticket every minute for as long as it runs (a run). Harmless where sudo
+/// needs no password.
+pub fn sudo_keepalive() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
             let _ = tokio::process::Command::new("sudo")
                 .args(["-n", "-v"])
                 .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .status()
                 .await;
         }
-    })))
+    })
 }

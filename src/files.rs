@@ -66,6 +66,10 @@ pub fn replace_with(
     f.set_permissions(std::fs::Permissions::from_mode(mode))?;
     f.sync_all()?;
     tmp.persist(path).map_err(|e| e.error)?;
+    // The rename survives a power loss only once the directory is on disk too.
+    if let Ok(d) = File::open(dir) {
+        let _ = d.sync_all();
+    }
     Ok(())
 }
 

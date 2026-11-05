@@ -36,6 +36,9 @@ impl Action {
     }
 }
 
+/// Per install that failed after some of its steps: the route it took (`via`) and those steps.
+pub type InstallsDone = BTreeMap<String, (String, Vec<String>)>;
+
 /// The unfinished units of a run, split by what they were doing: retrying an update must
 /// update again (an install plan skips a tool still present at its old version), and retrying
 /// a revert must revert again (an install plan would apply the config instead).
@@ -47,7 +50,7 @@ pub struct RetryTargets {
     /// The steps each revert got through (labels), from the run record.
     pub revert_done: BTreeMap<String, Vec<String>>,
     /// The steps each failed install got through (see `Planner::finishing`).
-    pub install_done: BTreeMap<String, Vec<String>>,
+    pub install_done: InstallsDone,
 }
 
 impl RetryTargets {
@@ -74,7 +77,8 @@ impl RetryTargets {
     ) -> Self {
         for r in records {
             if r.action == "install" && self.install.contains(&r.id) && !r.done_steps.is_empty() {
-                self.install_done.insert(r.id.clone(), r.done_steps.clone());
+                self.install_done
+                    .insert(r.id.clone(), (r.via.clone(), r.done_steps.clone()));
             }
             if r.action != "revert" || !self.revert.contains(&r.id) {
                 continue;
@@ -493,7 +497,7 @@ pub struct Planner<'a> {
     /// Retrying installs that failed after some of their steps, with those steps: a tool that
     /// is present now gets the steps it did not get through (the system-wide copy of a portable
     /// build), not "already present".
-    pub finishing: BTreeMap<String, Vec<String>>,
+    pub finishing: InstallsDone,
     memo: BTreeMap<String, Result<Choice, String>>,
     visiting: BTreeSet<String>,
 }
@@ -822,13 +826,15 @@ impl<'a> Planner<'a> {
     /// Plans the steps of `id` that a failed install did not get through (see `finishing`),
     /// when there are some and the route is still the one that ran.
     fn finish(&mut self, id: &str, plan: &mut Plan) -> bool {
-        let Some(done) = self.finishing.get(id).cloned() else {
+        let Some((via, done)) = self.finishing.get(id).cloned() else {
             return false;
         };
         let Ok(choice) = self.choose(id) else {
             return false;
         };
-        let ran = choice.steps.len() > done.len()
+        // The same route (labels such as `install` are shared by routes), the same steps.
+        let ran = choice.via == via
+            && choice.steps.len() > done.len()
             && choice.steps.iter().zip(&done).all(|(s, d)| &s.label == d);
         if !ran {
             return false;
@@ -1274,7 +1280,8 @@ mod tests {
             .plan(&["texlab".into()], false);
         let build = full.units[0].steps[0].label.clone();
         let mut p = Planner::new(&c, &f, &present);
-        p.finishing = BTreeMap::from([("texlab".to_string(), vec![build.clone()])]);
+        let via = full.units[0].via.clone();
+        p.finishing = BTreeMap::from([("texlab".to_string(), (via.clone(), vec![build.clone()]))]);
         let plan = p.plan(&["texlab".into()], false);
         let u = &plan.units[0];
         assert_eq!(u.steps.len(), 1);
@@ -1286,7 +1293,20 @@ mod tests {
         assert_eq!(u.resumed, std::slice::from_ref(&build));
         // Steps that do not match what ran (another route): nothing is assumed.
         let mut p = Planner::new(&c, &f, &present);
-        p.finishing = BTreeMap::from([("texlab".to_string(), vec!["other".to_string()])]);
+        p.finishing = BTreeMap::from([(
+            "texlab".to_string(),
+            (via.clone(), vec!["other".to_string()]),
+        )]);
+        assert_eq!(
+            p.plan(&["texlab".into()], false).skipped[0].1,
+            "already present"
+        );
+        // The same steps by another route: nothing is assumed either.
+        let mut p = Planner::new(&c, &f, &present);
+        p.finishing = BTreeMap::from([(
+            "texlab".to_string(),
+            ("other route".to_string(), vec![build.clone()]),
+        )]);
         assert_eq!(
             p.plan(&["texlab".into()], false).skipped[0].1,
             "already present"
@@ -1295,7 +1315,7 @@ mod tests {
         let mut nf = f.clone();
         nf.privilege = Privilege::None;
         let mut p = Planner::new(&c, &nf, &present);
-        p.finishing = BTreeMap::from([("texlab".to_string(), vec![build])]);
+        p.finishing = BTreeMap::from([("texlab".to_string(), (via, vec![build]))]);
         assert_eq!(
             p.plan(&["texlab".into()], false).skipped[0].1,
             "already present"

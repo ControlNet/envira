@@ -484,7 +484,7 @@ impl App {
 
     /// `make_plan` after a failed run; `done`: the steps each install got through (see
     /// `Planner::finishing`).
-    fn make_retry_install(&self, targets: &[String], done: &BTreeMap<String, Vec<String>>) -> Plan {
+    fn make_retry_install(&self, targets: &[String], done: &crate::plan::InstallsDone) -> Plan {
         let present = self.present();
         let mut p = Planner::new(&self.catalog, &self.facts, &present);
         p.prefer_system = self.prefer_system;

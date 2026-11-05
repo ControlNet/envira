@@ -21,6 +21,13 @@
   link redirect root's edit. `restore` first looks for a backup of the path itself (links envira
   made, older backups), then of the file it points to. `files::replace_with` itself still
   replaces a link at its destination: callers resolve first.
+- The walk is for checking only: `edit_target` returns the path as given with only its final
+  links replaced (backup keys stay stable; macOS `/var -> /private/var` must not leak in). A
+  `..` after a missing directory re-enables link checks once back in an existing one. `fs link`
+  and a restore of a path with its own backup check the links on the way to the path
+  (`guard_parent`). Directories created for a new file in a user's directory belong to that
+  user (`create_dirs`), and backups record the original's owner so a restore as root gives it
+  back.
 - Accepted risk: a user who swaps a link between the check and the write (TOCTOU) still wins.
   Closing it needs openat2/O_NOFOLLOW walks for every write. Under `sudo envira` SUDO_USER is
   root-equivalent anyway (their `~/.config/envira/catalog.d` overlay runs commands as root), so
@@ -59,10 +66,25 @@
   step's descendants from `/proc/*/stat` (ppid walk, pid + start time) before TERM orphans them
   and again before KILL, then KILLs what is left one by one, through `sudo -n kill -KILL` for
   EPERM. Only on cancel: a step that exits normally may leave a daemon running. Without /proc
-  (macOS, hidepid=2) this falls back to the group kill.
+  (macOS, hidepid=2) this falls back to the group kill. A probe that times out gets the same.
+  Known limit: a helper that double-forks and calls setsid *before* the cancel (already
+  reparented to PID 1 when the first snapshot is taken) is not found. Closing that needs a
+  per-step cgroup (or a subreaper that also reaps), with a policy for services a successful
+  step starts on purpose.
+- The sudo ticket is refreshed every minute during CLI and TUI runs (`app::sudo_keepalive`),
+  also when `sudo -n true` passed at the start: that may be a cached ticket that runs out
+  before a long build reaches its sudo steps.
 - After a run is recorded, the CLI waits for its output thread in `spawn_blocking` and selects
   on SIGINT/TERM/HUP: a blocked stdout must not make the process unkillable (the run's signal
   handlers keep the default action off), and exiting then (128+signal) loses nothing.
+- The TUI's redraw (`term.draw`) blocks on a terminal that stopped reading (TCOOFF, stalled
+  SSH), so nothing that must happen on a signal may wait for the UI loop: the signal task holds
+  its own clone of the run's control (`watch::Sender` is Clone), cancels directly, and once the
+  run is recorded (and self-update is not using the terminal) gives the UI loop 3 s before
+  `exit(128+signal)`. The block_on thread runs the UI loop; spawned tasks run on the workers.
+- Ctrl-C in the TUI: first stops after the running steps, second cancels them (as the CLI).
+- Opening the self-update probe's output: once the binary exited, its output is in the pipe;
+  never wait for EOF (a process it left behind can hold the pipe).
 - After a step exits, the output pumps get 2 s to drain, then are aborted: a background daemon
   holding stdout does not keep the executor waiting.
 - CLI output after the executor starts ignores write errors (`envira install … | head` must
@@ -99,7 +121,14 @@
   may still finish on its own (steps run in their own sessions): reverts should be idempotent
   (`rm -f`), since the resumed step runs again as it is.
 - A retried install whose tool is present now (the build worked, the portable system copy
-  failed) gets only the steps after its `done_steps` (`Planner::finishing`), when those match
-  the leading steps of the current route; otherwise it is "already present" as before.
+  failed) gets only the steps after its `done_steps` (`Planner::finishing`), when the route
+  (`via`) is the one that ran and its leading step labels match; otherwise it is "already
+  present" as before. The TUI's `r` waits for a fresh detection before planning (its snapshot
+  is from before the run); `t` (retry the last run) splits by action like `envira retry`.
+- No unit starts unless the run dir, its pending record and state pointing at it are on disk
+  (else every unit is reported "not started" and state keeps the previous run). The pending
+  record already carries each unit's inherited `resumed` steps: a unit that never started
+  before envira died has no progress file. Run-dir files (unit logs, `.steps`) open with
+  O_NOFOLLOW|O_NONBLOCK, must be regular files, and are fchown'd by descriptor.
 - Open items: a third status for a check root could not run ("cannot tell" for a private
   system file seen by a plain user without passwordless sudo).

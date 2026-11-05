@@ -645,7 +645,15 @@ impl Runner for RealRunner {
                     output: e.to_string(),
                 },
                 Err(_) => {
+                    // As for a cancelled step: what it started outside its group too (a check
+                    // run as root through `sudo`).
+                    let mut procs = Vec::new();
+                    add_descendants(
+                        &pid.map(|p| p as i32).into_iter().collect::<Vec<_>>(),
+                        &mut procs,
+                    );
                     kill_group(pid, libc::SIGKILL);
+                    kill_left(&procs).await;
                     Probe {
                         code: -1,
                         output: format!("timed out after {}s", timeout.as_secs()),
@@ -1181,6 +1189,22 @@ mod tests {
             .await;
         assert_eq!(p.code, -1);
         assert!(p.output.contains("timed out"));
+    }
+
+    /// A probe that timed out leaves nothing running, even outside its group.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_timed_out_probe_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("late");
+        let cmd = format!(
+            "setsid bash -c 'trap \"\" TERM HUP; sleep 2; touch {}' & sleep 30",
+            marker.display()
+        );
+        let p = runner().capture(&cmd, Duration::from_millis(500)).await;
+        assert_eq!(p.code, -1);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!marker.exists(), "a probe's process outlived its timeout");
     }
 
     #[tokio::test]
