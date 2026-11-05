@@ -203,10 +203,14 @@ pub enum UnitState {
     Done(Outcome, Duration),
 }
 
+/// Lines of a unit's log the run view keeps (the log file has all of them).
+pub const LOG_LINES: usize = 20_000;
+
 pub struct RunView {
     pub plan: Plan,
     pub run_id: String,
     pub units: Vec<UnitState>,
+    /// The latest `LOG_LINES` (up to a quarter more) lines of each unit.
     pub logs: Vec<Vec<String>>,
     pub sel: usize,
     /// Cursor follows the running unit and the log sticks to the bottom.
@@ -1207,7 +1211,13 @@ impl App {
                     run.scroll = 0;
                 }
             }
-            Event::Line(i, l) => run.logs[i].push(l),
+            Event::Line(i, l) => {
+                let log = &mut run.logs[i];
+                if log.len() >= LOG_LINES + LOG_LINES / 4 {
+                    log.drain(..LOG_LINES / 4);
+                }
+                log.push(l);
+            }
             Event::UnitFinished(i, o, d) => run.units[i] = UnitState::Done(o, d),
             Event::ShellEnv(r) => run.shell_env = Some(r),
             Event::Finished(rec) => {
@@ -1408,6 +1418,19 @@ pub mod tests {
         a.on_key(key(KeyCode::Char('u')));
         assert_eq!(a.screen, Screen::Plan);
         assert_eq!(a.plan.as_ref().unwrap().1, "update · from 1 selected");
+    }
+
+    #[test]
+    fn run_view_keeps_the_latest_lines() {
+        let mut a = app();
+        let plan = a.make_plan(&["codex".into()]);
+        a.start_run(plan, "r1".into(), None);
+        for n in 0..LOG_LINES * 2 {
+            a.on_exec(Event::Line(0, n.to_string()));
+        }
+        let log = &a.run.as_ref().unwrap().logs[0];
+        assert!((LOG_LINES..=LOG_LINES + LOG_LINES / 4).contains(&log.len()));
+        assert_eq!(log.last().unwrap(), &(LOG_LINES * 2 - 1).to_string());
     }
 
     #[test]
