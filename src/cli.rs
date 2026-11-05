@@ -127,6 +127,18 @@ pub enum Command {
     Explain { item: String },
     /// Machine facts, catalog layers, PATH and shell integration.
     Doctor,
+    /// Update envira itself, the way it was installed (release binary, pipx, uv, pip, cargo).
+    SelfUpdate {
+        /// Only say whether a newer release exists (exit 1 when there is one).
+        #[arg(long, conflicts_with = "version")]
+        check: bool,
+        /// Install this release instead of the latest (also to go back to an older one).
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        /// Do not ask for confirmation.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Catalog utilities.
     Catalog {
         #[command(subcommand)]

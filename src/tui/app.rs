@@ -192,6 +192,8 @@ pub enum Cmd {
     },
     /// Write the plan as a shell script next to the state.
     ExportScript(Plan),
+    /// Leave the screen and run `envira self-update`.
+    SelfUpdate,
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +290,10 @@ pub struct App {
     pub detecting: bool,
     /// A latest-version check is running in the background.
     pub checking_latest: bool,
+    /// A newer envira release, when there is one.
+    pub self_latest: Option<String>,
+    /// envira was updated during this session; a restart runs the new version.
+    pub self_updated: bool,
     pub screen: Screen,
     pub focus: Focus,
     pub cursor: usize,
@@ -339,6 +345,8 @@ impl App {
             snap: None,
             detecting: true,
             checking_latest: false,
+            self_latest: None,
+            self_updated: false,
             screen: Screen::Loading,
             focus: Focus::Items,
             cursor: 0,
@@ -515,6 +523,20 @@ impl App {
             }
         }
         self.clamp();
+    }
+
+    /// A newer envira is out: the header shows it; say so once unless a warning is up.
+    pub fn on_self_latest(&mut self, newer: Option<String>) {
+        if self.self_updated {
+            return;
+        }
+        if let Some(v) = &newer
+            && self.self_latest.as_ref() != Some(v)
+            && !(self.toast_warns && self.toast_text().is_some())
+        {
+            self.notify(format!("envira {v} is out · U updates envira"));
+        }
+        self.self_latest = newer;
     }
 
     fn make_revert(&self, targets: &[String]) -> Plan {
@@ -777,6 +799,10 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Items,
             KeyCode::Enter => self.install_selection(),
             KeyCode::Char('n') => self.selected.clear(),
+            KeyCode::Char('U') if self.self_updated => {
+                self.notify("envira is already updated: restart it to use the new version")
+            }
+            KeyCode::Char('U') => return vec![Cmd::SelfUpdate],
             KeyCode::Tab | KeyCode::BackTab => {
                 let tabs = [DetailTab::Info, DetailTab::Commands, DetailTab::Log];
                 let i = tabs.iter().position(|d| *d == self.detail).unwrap_or(0);

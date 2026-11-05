@@ -28,7 +28,10 @@ pipx install envira        # or: uv tool install envira
 cargo binstall envira      # or: cargo install --locked envira
 ```
 
-Run the curl line again to update envira itself.
+`envira self-update` updates envira itself, the same way it was installed (release binary,
+pipx, uv, pip or cargo). envira mentions a newer release after commands and in the TUI header
+(`U` there updates it); it never updates on its own. `ENVIRA_NO_UPDATE_CHECK=1` turns the
+check off, and it is skipped in CI.
 
 ## Use
 
@@ -41,6 +44,7 @@ envira install bat yazi    # some tools or configs, with their dependencies (not
 envira plan                # what `envira install` would do, without doing it
 envira update              # update outdated tools in place
 envira retry               # retry what failed or was blocked in the last run
+envira self-update         # update envira itself (--check, --version 0.1.1 to go back)
 envira log / explain <id>  # logs of the last run; why an item has its status
 envira doctor              # machine facts, catalog layers, PATH, shell integration
 ```

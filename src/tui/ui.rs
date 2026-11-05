@@ -144,11 +144,18 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u
             "envira",
             Style::new().fg(t.blue).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {} · {} · ", env!("CARGO_PKG_VERSION"), app.facts.hostname),
-            t.s(t.dim),
-        ),
+        Span::styled(format!(" {}", env!("CARGO_PKG_VERSION")), t.s(t.dim)),
     ];
+    if let Some(v) = &app.self_latest {
+        left.push(Span::styled(
+            format!(" → {v}"),
+            Style::new().fg(t.yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+    left.push(Span::styled(
+        format!(" · {} · ", app.facts.hostname),
+        t.s(t.dim),
+    ));
     let what_x = area.x + Line::from(left.clone()).width() as u16;
     left.extend(what);
     // Where the catalog came from is in `envira doctor`; load warnings show as a toast.
@@ -1574,6 +1581,7 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
         "adopt selected (else this) tools installed outside envira",
     ),
     ("t", "retry what the last run left unfinished"),
+    ("U", "update envira itself (envira self-update)"),
     ("R  r", "re-detect + check updates · reload catalog"),
     ("esc", "clear the search"),
     ("q", "quit"),
@@ -1849,6 +1857,51 @@ mod tests {
         let start = format!("envira {} · workstation · ", env!("CARGO_PKG_VERSION"));
         assert!(first.starts_with(&start), "{first}");
         assert!(!first.contains("catalog"), "{first}");
+    }
+
+    #[test]
+    fn a_newer_envira_shows_in_the_header_and_u_updates_it() {
+        let mut a = app();
+        a.on_self_latest(Some("9.9.9".into()));
+        let s = render(&a, 100, 30);
+        let first = s.lines().next().unwrap();
+        let start = format!(
+            "envira {} → 9.9.9 · workstation · ",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(first.starts_with(&start), "{first}");
+        assert!(
+            s.lines()
+                .last()
+                .unwrap()
+                .contains("envira 9.9.9 is out · U updates envira"),
+            "{s}"
+        );
+        // Said once: the next check with the same answer stays quiet.
+        a.notify("something else");
+        a.on_self_latest(Some("9.9.9".into()));
+        assert_eq!(a.toast_text(), Some("something else"));
+        assert!(matches!(
+            a.on_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT))
+                .as_slice(),
+            [Cmd::SelfUpdate]
+        ));
+        // A catalog warning on screen is not covered.
+        a.warn("Catalog: x");
+        a.on_self_latest(Some("10.0.0".into()));
+        assert_eq!(a.toast_text(), Some("Catalog: x"));
+        a.on_self_latest(None);
+        let first = render(&a, 100, 30).lines().next().unwrap().to_string();
+        assert!(!first.contains("→ 10.0.0"), "{first}");
+        // Updated but not restarted: U does not download it again, checks stay quiet.
+        a.self_updated = true;
+        assert!(
+            a.on_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT))
+                .is_empty()
+        );
+        assert!(a.toast_text().unwrap().contains("restart it"));
+        a.on_self_latest(Some("10.0.0".into()));
+        assert_eq!(a.self_latest, None);
     }
 
     #[test]

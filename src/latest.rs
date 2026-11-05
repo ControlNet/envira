@@ -21,7 +21,7 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(20);
 /// Successful answers are reused for this long.
 pub const TTL: chrono::Duration = chrono::Duration::hours(6);
 /// Failed queries are retried sooner.
-const ERROR_TTL: chrono::Duration = chrono::Duration::minutes(30);
+pub const ERROR_TTL: chrono::Duration = chrono::Duration::minutes(30);
 
 /// How much network a check may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

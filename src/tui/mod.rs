@@ -19,6 +19,7 @@ use crate::app::Session;
 use crate::exec::{self, Control};
 use crate::latest::{self, Fetch, Latest};
 use crate::plan::Plan;
+use crate::selfupdate;
 use crate::state::{self, State};
 use crate::status::{self, Snapshot};
 use app::{App, Cmd, Screen};
@@ -29,6 +30,8 @@ enum AppEvent {
     Tick,
     Snapshot(Box<Snapshot>, Option<State>),
     Latest(BTreeMap<String, Latest>),
+    /// A newer envira release, if any.
+    SelfLatest(Option<String>),
     Exec(exec::Event),
     Error(String),
     /// SIGTERM or SIGHUP (the terminal went away).
@@ -168,6 +171,16 @@ fn spawn_detect(
     });
 }
 
+/// Looks for a newer envira release (`selfupdate::newer`), off the UI thread.
+fn spawn_self_check(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>, fetch: Fetch) {
+    let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
+    tokio::task::spawn_blocking(move || {
+        let _ = tx.send(AppEvent::SelfLatest(selfupdate::newer(
+            &paths, &facts, fetch,
+        )));
+    });
+}
+
 async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme) -> Result<i32> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut input = spawn_input(tx.clone());
@@ -185,6 +198,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
         });
     }
     spawn_detect(&sess, tx.clone(), Fetch::IfStale, sess.prefer_system());
+    spawn_self_check(&sess, tx.clone(), Fetch::IfStale);
     let mut app = App::new(
         &sess.loaded,
         sess.catalog.clone(),
@@ -221,6 +235,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 AppEvent::Tick => app.tick += 1,
                 AppEvent::Snapshot(s, st) => app.on_snapshot(*s, st),
                 AppEvent::Latest(a) => app.on_latest(a),
+                AppEvent::SelfLatest(v) => app.on_self_latest(v),
                 AppEvent::Exec(e) => {
                     if matches!(e, exec::Event::Finished(_))
                         && let Some(k) = keepalive.take()
@@ -251,6 +266,9 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                     app.detecting = true;
                     app.checking_latest |= fetch != Fetch::CacheOnly;
                     spawn_detect(&sess, tx.clone(), fetch, app.prefer_system);
+                    if fetch != Fetch::CacheOnly {
+                        spawn_self_check(&sess, tx.clone(), fetch);
+                    }
                 }
                 Cmd::Reload => match sess.reload() {
                     Ok(()) => {
@@ -267,6 +285,17 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         app.notify(format!("{e:#}").lines().next().unwrap_or("").to_string());
                     }
                 },
+                Cmd::SelfUpdate => {
+                    let (msg, updated) = self_update(term, &mut input, &tx).await?;
+                    if updated {
+                        // This process is still the old version; the next start is the new one.
+                        app.self_latest = None;
+                        app.self_updated = true;
+                    }
+                    if let Some(msg) = msg {
+                        app.warn(msg);
+                    }
+                }
                 Cmd::SaveState => {
                     if let Some(st) = &app.state
                         && let Err(e) = st.save(&sess.paths, &sess.facts)
@@ -332,6 +361,67 @@ fn authorize_sudo(
     term.clear()?;
     *input = spawn_input(tx.clone());
     Ok(ok)
+}
+
+/// `envira self-update` on the normal screen (it asks before changing anything), then offers
+/// to restart into the new binary. Returns a toast for when it comes back to the TUI, and
+/// whether the binary was replaced.
+async fn self_update(
+    term: &mut DefaultTerminal,
+    input: &mut JoinHandle<()>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Result<(Option<String>, bool)> {
+    input.abort();
+    restore();
+    let opts = selfupdate::Opts {
+        check: false,
+        version: None,
+        yes: false,
+    };
+    let res = tokio::task::spawn_blocking(move || selfupdate::run(&opts)).await?;
+    let updated = matches!(res, Ok(selfupdate::Outcome::Updated(_)));
+    let toast = match res {
+        Ok(selfupdate::Outcome::Updated(exe)) => {
+            if ask("Restart envira now? [Y/n] ", true) {
+                use std::os::unix::process::CommandExt;
+                // Only returns when the exec failed.
+                let e = std::process::Command::new(&exe)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+                Some(format!("could not restart {}: {e}", exe.display()))
+            } else {
+                Some("envira was updated: restart it to use the new version".into())
+            }
+        }
+        Ok(selfupdate::Outcome::Unchanged(_)) => {
+            ask("Press enter to go back to envira ", true);
+            None
+        }
+        Err(e) => {
+            eprintln!("envira: {e:#}");
+            ask("Press enter to go back to envira ", true);
+            Some("envira was not updated".into())
+        }
+    };
+    *term = init();
+    term.clear()?;
+    *input = spawn_input(tx.clone());
+    Ok((toast, updated))
+}
+
+/// Reads a yes/no answer from the terminal; `default` on a bare enter.
+fn ask(prompt: &str, default: bool) -> bool {
+    use std::io::Write;
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return default;
+    }
+    match answer.trim() {
+        "" => default,
+        a => matches!(a, "y" | "Y" | "yes"),
+    }
 }
 
 fn spawn_keepalive() -> JoinHandle<()> {

@@ -12,6 +12,7 @@ mod latest;
 mod net;
 mod plan;
 mod runner;
+mod selfupdate;
 mod shellenv;
 mod state;
 mod status;
@@ -85,12 +86,40 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             return apt::run(&apt::Paths::default(), max_age);
         }
         Some(Command::Catalog { cmd }) => return commands::catalog_cmd(&cli.global, cmd),
+        // Without the catalog: it must work when the published catalog needs a newer envira.
+        Some(Command::SelfUpdate {
+            check,
+            version,
+            yes,
+        }) => {
+            let opts = selfupdate::Opts {
+                check: *check,
+                version: version.clone(),
+                yes: *yes,
+            };
+            return Ok(match selfupdate::run(&opts)? {
+                selfupdate::Outcome::Unchanged(code) => code,
+                selfupdate::Outcome::Updated(_) => 0,
+            });
+        }
         _ => {}
     }
+    // Commands that end by mentioning a newer envira (on a terminal; see selfupdate::notice).
+    let notice = matches!(
+        cli.command,
+        Some(
+            Command::Status { json: false, .. }
+                | Command::Install { .. }
+                | Command::Update { .. }
+                | Command::Retry { .. }
+                | Command::Adopt { .. }
+        )
+    );
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let sess = app::Session::open(&cli.global)?;
-        match cli.command {
+        let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
+        let code = match cli.command {
             None if std::io::IsTerminal::is_terminal(&std::io::stdout()) => tui::run(sess).await,
             None => commands::status(&sess, false, false, false).await,
             Some(Command::Status {
@@ -132,10 +161,15 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 Command::Fs { .. }
                 | Command::FetchRelease { .. }
                 | Command::AptRefresh { .. }
-                | Command::Catalog { .. },
+                | Command::Catalog { .. }
+                | Command::SelfUpdate { .. },
             ) => {
                 unreachable!()
             }
+        }?;
+        if notice {
+            let _ = tokio::task::spawn_blocking(move || selfupdate::notice(&paths, &facts)).await;
         }
+        Ok(code)
     })
 }

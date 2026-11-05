@@ -126,6 +126,27 @@ pub fn summary_line(snap: &Snapshot) -> String {
 pub async fn doctor(sess: &Session) -> Result<i32> {
     let f = &sess.facts;
     println!("envira {}", env!("CARGO_PKG_VERSION"));
+    let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
+    let install = tokio::task::spawn_blocking(move || {
+        let (exe, channel) = crate::selfupdate::this_install(&facts).ok()?;
+        let latest = crate::selfupdate::latest(
+            &paths,
+            &facts,
+            crate::latest::Fetch::IfStale,
+            crate::selfupdate::NOTICE_TIMEOUT,
+        );
+        Some((exe, channel, latest))
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Some((exe, channel, latest)) = install {
+        let newer = latest
+            .filter(|v| crate::version::is_newer(v, env!("CARGO_PKG_VERSION")))
+            .map(|v| format!(" · {v} is out: envira self-update"))
+            .unwrap_or_default();
+        println!("install    {} · {}{newer}", channel.label(), exe.display());
+    }
     println!(
         "distro     {} (families: {})",
         f.distro_name,

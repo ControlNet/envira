@@ -44,7 +44,7 @@ pub fn pick_asset<'a>(globs: &[String], names: &'a [String]) -> Option<&'a Strin
         .find_map(|g| names.iter().find(|n| glob_match(g, n)))
 }
 
-fn client() -> Result<reqwest::blocking::Client> {
+pub fn client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent(concat!("envira/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(300))
@@ -60,7 +60,11 @@ fn token() -> Option<String> {
 
 /// GET with the token, retrying transient failures (`net::Retry::DOWNLOAD`). Returns the final
 /// status and body; non-transient errors such as 403/404 come back on the first try.
-fn get(c: &reqwest::blocking::Client, url: &str, accept: Option<&str>) -> Result<(u16, Vec<u8>)> {
+pub fn get(
+    c: &reqwest::blocking::Client,
+    url: &str,
+    accept: Option<&str>,
+) -> Result<(u16, Vec<u8>)> {
     let policy = net::Retry::DOWNLOAD;
     let mut n = 1;
     loop {

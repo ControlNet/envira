@@ -308,6 +308,7 @@ envira catalog check|schema|show
 envira update [<item|bundle>...] [--check] [--refresh | --offline] [-y] [--dry-run] [-q]
                             # no items: every outdated managed/adoptable tool
 envira adopt  [<item|bundle>...] [--dry-run]   # record adoptable tools as managed, no reinstall
+envira self-update [--check | --version <v>] [-y]   # update envira itself (see below)
 Global: --catalog <path>, --no-overlay, --scope user|system, --step-timeout <seconds>, --retries <n>,
         -j/--jobs <n>
 Hidden, used by templates: envira fs ..., envira fetch-release ...
@@ -318,6 +319,23 @@ installed what they missed, `install X` installed X once. Now `install` does bot
 given join the kept ones (individual tools and configs do not), and with no arguments it
 installs what the kept bundles miss. `sync` was removed without an alias (user decision
 2026-10-31).
+
+`self-update` (user decisions 2026-11-05): envira only *mentions* a newer release, never updates
+on its own. The latest release is where `github.com/ControlNet/envira/releases/latest` redirects
+(no API call, no rate limit; `ENVIRA_RELEASES_URL` points at a mirror or test server), cached in
+`self-update.toml` in the state dir with the latest-version TTLs (6 h, errors 30 min). The notice
+is one stderr line after status/install/update/retry/adopt on a terminal, the header
+`envira 0.1.2 → 0.1.3` plus one toast in the TUI, and an `install` line in `doctor`; skipped
+with `ENVIRA_NO_UPDATE_CHECK=1`, in CI and for source builds. `self-update` runs before the
+catalog is loaded, so it works when the published catalog needs a newer envira (that error now
+says to run it). It updates the way this copy was installed, from the canonical path of the
+running binary: release binary (download, SHA-256 from the `.sha256` asset, run `--version` on
+the new file, rename over the old one; sudo `install` when the directory is not writable), pipx
+(`pipx upgrade` / `install --force envira==v`), uv tool, pip (venv or `--user`, found by the
+dist-info RECORD), cargo (`binstall envira@v` or `install --version`), and refuses source builds.
+It holds the run lock, so it never swaps the binary under a running install. In the TUI, `U`
+leaves the screen, runs the same flow, then offers to restart into the new binary (`exec` with
+the same arguments). `--check` exits 1 when a newer release exists (unlike `update --check`).
 
 ## TUI
 Visual direction (chosen 2026-10-29, design "BC1"; mockups live in a private design canvas, not in the

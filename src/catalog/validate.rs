@@ -59,7 +59,7 @@ pub fn validate(loaded: &Loaded) -> Report {
         && crate::version::is_newer(min, env!("CARGO_PKG_VERSION"))
     {
         c.report.errors.push(format!(
-            "catalog needs envira >= {min}, this is {}",
+            "catalog needs envira >= {min}, this is {} (run `envira self-update`)",
             env!("CARGO_PKG_VERSION")
         ));
     }
