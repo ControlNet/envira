@@ -80,7 +80,9 @@ steps = [{ use = "ini-set", file = "~/.npmrc", section = "", key = "prefix", val
 
 [tools.pm2]
 desc = "Node.js process manager"
-detect = { cmd = "npm ls -g --depth=0 pm2", version = 'pm2@(\S+)' }
+# The version from the package.json behind the command on PATH: `pm2 --version` may start pm2's
+# daemon, and `npm ls -g pm2` (~110 MiB of Node) sees only the current npm prefix.
+detect = { cmd = '''p=$(command -v pm2) && p=$(readlink -f "$p") && grep -m1 '"version"' "${p%/bin/*}/package.json"''', version = '"version":\s*"([^"]+)"' }
 install = [{ method = "npm", package = "pm2", depends = ["nodejs", "npm-prefix"] }]
 
 [tools.pipx]

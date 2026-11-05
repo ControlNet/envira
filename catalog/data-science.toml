@@ -18,7 +18,9 @@ steps = [{ use = "line", file = "~/.condarc", match = "^changeps1:", line = "cha
 [tools.jupyter]
 desc = "JupyterLab and ipywidgets in the conda base environment"
 depends = ["miniconda"]
-detect = { cmd = '"$HOME/miniconda3/bin/jupyter-lab" --version' }
+# The version from the package's metadata: `jupyter-lab --version` also starts Node (for yarn's
+# config), ~155 MiB in all.
+detect = { cmd = '''test -x "$HOME/miniconda3/bin/jupyter-lab" && "$HOME/miniconda3/bin/python" -c "from importlib.metadata import version; print(version('jupyterlab'))"''' }
 # Accepting the Anaconda channel terms of service is required before installing from them.
 install = [{ run = 'c="$HOME/miniconda3/bin/conda"; for ch in main r msys2; do "$c" tos accept --override-channels --channel "https://repo.anaconda.com/pkgs/$ch" || exit 1; done; "$c" install -y ipywidgets ipykernel jupyterlab jupyter', update = '"$HOME/miniconda3/bin/conda" update -y ipywidgets ipykernel jupyterlab jupyter', latest = { http = "https://api.anaconda.org/package/anaconda/jupyterlab", json = "latest_version" } }]
 
