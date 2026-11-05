@@ -191,6 +191,17 @@ pub fn build_env() -> Vec<(&'static str, String)> {
 
 const GIB: u64 = 1 << 30;
 
+/// envira's own commands (detection, `installed` and latest-version queries) to run at once:
+/// about one per 192 MiB available, 2 to 8. Many are a Node or Python CLI (`--version`,
+/// `npm ls`, `dnf repoquery`) at 30-300 MiB each; eight at once took a small VM's memory.
+pub fn process_jobs() -> usize {
+    jobs_for(available_memory())
+}
+
+fn jobs_for(available: Option<u64>) -> usize {
+    available.map_or(8, |a| (a / (192 << 20)).clamp(2, 8) as usize)
+}
+
 /// Build jobs that fit in `available` bytes (one per GiB, at least one), or `None` when every
 /// core fits (cargo's own default) or the memory is unknown.
 fn build_jobs(available: Option<u64>, cores: usize) -> Option<usize> {
@@ -661,6 +672,16 @@ mod tests {
         assert_eq!(build_jobs(Some(GIB / 2), 4), Some(1));
         assert_eq!(build_jobs(Some(64 * GIB), 16), None);
         assert_eq!(build_jobs(None, 16), None);
+    }
+
+    #[test]
+    fn own_commands_fit_in_memory() {
+        let mib = |m: u64| Some(m << 20);
+        assert_eq!(jobs_for(mib(300)), 2);
+        assert_eq!(jobs_for(mib(700)), 3);
+        assert_eq!(jobs_for(mib(1024)), 5);
+        assert_eq!(jobs_for(mib(64 << 10)), 8);
+        assert_eq!(jobs_for(None), 8);
     }
 
     #[test]

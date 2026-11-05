@@ -284,8 +284,16 @@ pub async fn check(
             to_run.push(q.clone());
         }
     }
+    // HTTP queries are cheap; command queries (dnf, zypper, apt-cache, rustup) are processes
+    // that can take hundreds of MiB each, so fewer of those run at once on a small machine.
+    let procs = tokio::sync::Semaphore::new(crate::runner::process_jobs().min(6));
+    let procs = &procs;
     let answers: BTreeMap<Expanded, Result<String, String>> = futures::stream::iter(to_run)
         .map(|q| async move {
+            let _slot = match q.cmd {
+                Some(_) => procs.acquire().await.ok(),
+                None => None,
+            };
             let r = run_query(&q, runner).await;
             (q, r)
         })

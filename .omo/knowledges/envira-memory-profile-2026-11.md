@@ -49,11 +49,17 @@ envira's runner now sets `RUSTUP_IO_THREADS=1` for every step unless the user se
   every core or the user set it. Measured on a 60-core host: 1 GB container -> 1, 6 GB -> 5,
   no limit -> unset. Only one cargo build runs at a time (the `build` lane).
 
-## Not changed (recommendations)
-
-- Detection runs 8 commands at once; node-based `--version`/`npm ls -g` cost 110-150 MiB each.
-  `npm ls -g --depth=0` (all packages, one call shared by every npm tool) would replace one call
-  per npm tool.
+- Detection (status, the TUI's first scan) ran 8 commands at once, many of them Node/Python CLIs
+  (`opencode --version`, `conda --version`, `npm ls -g`) at 30-150 MiB each. Now
+  `runner::process_jobs` allows about one per 192 MiB available (2 to 8, cgroup-aware), for
+  detection, `installed` queries and command-type latest queries (dnf/zypper/apt-cache; HTTP
+  queries stay at 6). The npm `installed` query is one `npm ls -g --depth=0` shared by every npm
+  tool. Measured on a workstation (many tools installed), peak tree RSS of `envira status`:
+  295 MiB before; under `systemd-run --user --scope -p MemoryMax=768M` (3 jobs) or 512M (2 jobs)
+  ~200 MiB after, 1.8 s -> 2.7-3.5 s. Without a limit nothing changes (8 jobs).
+- Measuring a memory limit on the host without a VM: `systemd-run --user --scope --quiet
+  -p MemoryMax=512M -p MemorySwapMax=0 <cmd>` puts the command in its own cgroup (shown in
+  /proc/self/cgroup), which is also what `available_memory` reads.
 
 ## How to measure
 

@@ -367,6 +367,7 @@ pub async fn snapshot(
     prefer_system: bool,
 ) -> Snapshot {
     let ids = cat.item_ids();
+    let jobs = crate::runner::process_jobs();
     let probes: BTreeMap<String, ToolProbe> = futures::stream::iter(ids.iter().cloned())
         .map(|id| async move {
             let p = if cat.tools.contains_key(&id) {
@@ -379,7 +380,7 @@ pub async fn snapshot(
             };
             (id, p)
         })
-        .buffer_unordered(8)
+        .buffer_unordered(jobs)
         .collect()
         .await;
 
@@ -592,7 +593,7 @@ async fn installed_queries(
             let p = runner.capture(&c, QUERY_TIMEOUT).await;
             (c, if p.ok() { p.output } else { String::new() })
         })
-        .buffer_unordered(4)
+        .buffer_unordered(crate::runner::process_jobs().min(4))
         .collect()
         .await;
     let mut found = BTreeMap::new();
@@ -763,9 +764,9 @@ mod tests {
                 "/home/user/.local/share/fnm/aliases/default/bin/codex\n",
             )
             .rule(
-                "npm ls -g --depth=0 @openai/codex",
+                "npm ls -g --depth=0",
                 0,
-                "/x/lib\n└── @openai/codex@0.47.0\n",
+                "/x/lib\n├── @openai/codex-sdk@9.9.9\n├── corepack@0.34.2\n└── @openai/codex@0.47.0\n",
             )
             .rule("node --version", 0, "v24.11.1\n")
             .rule(

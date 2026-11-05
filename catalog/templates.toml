@@ -134,7 +134,9 @@ expects = ["nodejs"]
 scope = "user"
 install = "npm install -g {package}"
 update = "npm install -g {package}@latest"
-installed = { cmd = "npm ls -g --depth=0 {package}", regex = '{package}@(\S+)' }
+# Every global package at once: one node process shared by all npm tools (each costs 100+ MiB),
+# and listed even when npm reports a problem with another package (exit 1).
+installed = { cmd = "npm ls -g --depth=0 2>/dev/null || true", regex = '(?m)(?:^|\s){package}@(\S+)' }
 latest = { http = "https://registry.npmjs.org/{package}/latest", json = "version" }
 
 [methods.go]
