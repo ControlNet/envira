@@ -148,8 +148,9 @@
   done (a first step can fail after creating the tool); `blocked`/`skipped` ones never ran.
   When the route
   is another now (catalog or machine changed, or a record from an older envira without one),
-  the route runs in full: skipping it as "already present" left the system copy missing. Only
-  a route that got through every step is "already present". The TUI's `r` waits for a fresh detection before planning (its snapshot
+  the route runs in full: skipping it as "already present" left the system copy missing. A
+  route that got through every step (cancelled in, or failing, its detection afterwards) gets a
+  unit without steps: the detection runs again and records the tool as installed (managed). The TUI's `r` waits for a fresh detection before planning (its snapshot
   is from before the run); `t` (retry the last run) splits by action like `envira retry`.
 - state.toml is changed under a short `state.lock` (flock, waits up to 10 s): a run's saves
   (`save_run`, which keeps the selection on disk) and every other writer, which must use

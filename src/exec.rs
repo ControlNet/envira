@@ -1788,6 +1788,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_install_cancelled_in_its_detection_is_recorded_by_the_retry() {
+        let s = setup();
+        s.runner.rule("herdr --version", 0, "herdr 0.3.1");
+        // Every step got through; the detection afterwards was cancelled.
+        let full = plan(&s.ctx, &["herdr"]);
+        let u = &full.units[0];
+        let labels: Vec<String> = u.steps.iter().map(|s| s.label.clone()).collect();
+        let present: BTreeSet<String> = ["curl", "unzip", "libatomic", "herdr"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut p = Planner::new(&s.ctx.catalog, &s.ctx.facts, &present);
+        p.finishing = BTreeMap::from([("herdr".to_string(), (u.route.clone(), labels))]);
+        let retry = p.plan(&["herdr".into()], false);
+        assert!(retry.units[0].steps.is_empty());
+        let (rec, st, _) = run(&s, retry).await;
+        assert_eq!(outcomes(&rec), vec![("herdr", "ok")]);
+        assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
+        assert!(st.is_managed("herdr"));
+    }
+
+    #[tokio::test]
     async fn cancelling_reaches_the_check_after_the_steps() {
         let s = setup();
         s.runner.rule("herdr.dev", 0, "installed");

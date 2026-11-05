@@ -859,7 +859,8 @@ impl<'a> Planner<'a> {
     /// Plans the rest of a failed install of `id` (see `finishing`): the steps it did not get
     /// through, on the very route that ran; the whole route when that is another now (the
     /// catalog or the machine changed since), as what the earlier steps did cannot be told.
-    /// False when the route that ran got through every step.
+    /// A route that got through every step (cancelled or failed in its detection afterwards)
+    /// keeps a unit without steps: its detection runs and records the tool as installed.
     fn finish(&mut self, id: &str, plan: &mut Plan) -> bool {
         let Some((route, done)) = self.finishing.get(id).cloned() else {
             return false;
@@ -871,9 +872,6 @@ impl<'a> Planner<'a> {
         let same = route_id(&choice.via, choice.scope, &choice.steps) == route
             && choice.steps.len() >= done.len()
             && choice.steps.iter().zip(&done).all(|(s, d)| &s.label == d);
-        if same && choice.steps.len() == done.len() {
-            return false;
-        }
         self.commit(id, "requested".into(), plan);
         if same && let Some(u) = plan.units.iter_mut().find(|u| u.id == id) {
             u.steps.drain(..done.len());
@@ -1348,18 +1346,18 @@ mod tests {
             u.steps
         );
         assert_eq!(u.resumed, std::slice::from_ref(&build));
-        // Every step got through (it failed afterwards): nothing is left to do.
+        // Every step got through (then it was cancelled, or failed its detection): only the
+        // detection is left, which records it as installed.
         let mut p = Planner::new(&c, &f, &present);
         let all: Vec<String> = full.units[0]
             .steps
             .iter()
             .map(|s| s.label.clone())
             .collect();
-        p.finishing = BTreeMap::from([("texlab".to_string(), (route.clone(), all))]);
-        assert_eq!(
-            p.plan(&["texlab".into()], false).skipped[0].1,
-            "already present"
-        );
+        p.finishing = BTreeMap::from([("texlab".to_string(), (route.clone(), all.clone()))]);
+        let plan = p.plan(&["texlab".into()], false);
+        assert!(plan.units[0].steps.is_empty());
+        assert_eq!(plan.units[0].resumed, all);
         // Steps that do not match what ran, the same labels by another route (or this one
         // changed in the catalog since), a record without its route (an older envira), or
         // another route on this machine now (no sudo, no copy): what the steps that ran did
