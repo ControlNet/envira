@@ -73,19 +73,88 @@ pub fn query_for(
     })())
 }
 
-/// Value at a dotted path (`crate.max_stable_version`, `0.version`) as a string.
-pub fn json_path(v: &serde_json::Value, path: &str) -> Option<String> {
-    let mut cur = v;
-    for part in path.split('.').filter(|p| !p.is_empty()) {
-        cur = match cur {
-            serde_json::Value::Array(a) => a.get(part.parse::<usize>().ok()?)?,
-            other => other.get(part)?,
-        };
+/// Value at a dotted path (`crate.max_stable_version`, `0.version`) of a JSON text, as a
+/// string. Only the value at the path is built: some answers are large (the anaconda.org
+/// package API returns 11 MB for conda), and a whole `serde_json::Value` of them took ~60 MB.
+pub fn json_path(text: &str, path: &str) -> serde_json::Result<Option<String>> {
+    let parts: Vec<&str> = path.split('.').filter(|p| !p.is_empty()).collect();
+    let mut de = serde_json::Deserializer::from_str(text);
+    let v = serde::de::DeserializeSeed::deserialize(PathSeed(&parts), &mut de)?;
+    de.end()?;
+    Ok(v)
+}
+
+/// Walks one level of the path per JSON level and skips everything else.
+struct PathSeed<'a>(&'a [&'a str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for PathSeed<'_> {
+    type Value = Option<String>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        if !self.0.is_empty() {
+            return d.deserialize_any(self);
+        }
+        Ok(match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(s) => Some(s),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
     }
-    match cur {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        _ => None,
+}
+
+impl<'de> serde::de::Visitor<'de> for PathSeed<'_> {
+    type Value = Option<String>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Self::Value, A::Error> {
+        let mut out = None;
+        while let Some(k) = m.next_key::<std::borrow::Cow<str>>()? {
+            if k == self.0[0] {
+                // The last of duplicate keys wins, as in `serde_json::Value`.
+                out = m.next_value_seed(PathSeed(&self.0[1..]))?;
+            } else {
+                m.next_value::<serde::de::IgnoredAny>()?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut s: A) -> Result<Self::Value, A::Error> {
+        let want = self.0[0].parse::<usize>().ok();
+        let mut out = None;
+        for i in 0.. {
+            if want == Some(i) {
+                match s.next_element_seed(PathSeed(&self.0[1..]))? {
+                    Some(v) => out = v,
+                    None => break,
+                }
+            } else if s.next_element::<serde::de::IgnoredAny>()?.is_none() {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -104,11 +173,9 @@ pub async fn run_query(q: &Expanded, runner: &dyn Runner) -> Result<String, Stri
         (None, None) => return Err("query has no source".into()),
     };
     let text = match &q.json {
-        Some(path) => {
-            let v: serde_json::Value =
-                serde_json::from_str(&text).map_err(|e| format!("invalid JSON: {e}"))?;
-            json_path(&v, path).ok_or_else(|| format!("no value at {path:?}"))?
-        }
+        Some(path) => json_path(&text, path)
+            .map_err(|e| format!("invalid JSON: {e}"))?
+            .ok_or_else(|| format!("no value at {path:?}"))?,
         None => text,
     };
     extract_version(&text, q.regex.as_deref()).ok_or_else(|| "no version in the answer".into())
@@ -258,18 +325,21 @@ mod tests {
 
     #[test]
     fn json_paths() {
-        let v: serde_json::Value = serde_json::from_str(
-            r#"{"crate":{"max_stable_version":"4.3.2"},"list":[{"version":"v1"}],"n":3}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            json_path(&v, "crate.max_stable_version").as_deref(),
-            Some("4.3.2")
-        );
-        assert_eq!(json_path(&v, "list.0.version").as_deref(), Some("v1"));
-        assert_eq!(json_path(&v, "n").as_deref(), Some("3"));
-        assert_eq!(json_path(&v, "crate.missing"), None);
-        assert_eq!(json_path(&v, "crate"), None);
+        let v = r#"{"skip":{"a":[1,{"b":null}],"s":"x"},"crate":{"max_stable_version":"4.3.2"},
+            "list":[{"version":"v0"},{"version":"v1"}],"n":3,"f":1.5,"dup":"a","dup":"b"}"#;
+        let get = |p| json_path(v, p).unwrap();
+        assert_eq!(get("crate.max_stable_version").as_deref(), Some("4.3.2"));
+        assert_eq!(get("list.1.version").as_deref(), Some("v1"));
+        assert_eq!(get("n").as_deref(), Some("3"));
+        assert_eq!(get("f").as_deref(), Some("1.5"));
+        assert_eq!(get("dup").as_deref(), Some("b"));
+        assert_eq!(get("crate.missing"), None);
+        assert_eq!(get("crate"), None);
+        assert_eq!(get("list.7.version"), None);
+        assert_eq!(get("list.x"), None);
+        assert_eq!(get("n.deeper"), None);
+        assert!(json_path("{\"a\":", "a").is_err());
+        assert!(json_path("{} trailing", "a").is_err());
     }
 
     #[test]
