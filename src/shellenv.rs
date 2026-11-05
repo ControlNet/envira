@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::catalog::Catalog;
 use crate::facts::Facts;
@@ -167,7 +167,13 @@ pub fn install(
         // repo), under the rule for links when root writes it.
         let f = crate::fs::edit_target(&paths.config_dir.join(name), true)?;
         if std::fs::read_to_string(&f).ok().as_deref() != Some(text.as_str()) {
-            state::write_atomic(&f, text.as_bytes(), facts)?;
+            // Like an edit too: an existing file keeps its owner; a new one (and the directories
+            // made for it) belongs to the user under `sudo envira`.
+            if let Some(dir) = f.parent() {
+                state::create_dir_all_owned(dir, facts)?;
+            }
+            crate::files::replace(&f, text.as_bytes(), None)
+                .with_context(|| format!("writing {}", f.display()))?;
             changed.push(f);
         }
     }
@@ -175,8 +181,8 @@ pub fn install(
     for (shell, rc) in rc_files(facts) {
         let content = rc_block(shell, paths, facts);
         if !block(&backups, &rc, "envira", "#", Some(&content), true)? {
+            // Ownership as for any edit: kept, or the directory's owner for a new rc.
             block(&backups, &rc, "envira", "#", Some(&content), false)?;
-            state::chown_to_target(&rc, facts);
             changed.push(rc);
         }
     }
