@@ -87,8 +87,14 @@ impl RetryTargets {
         run_dir: Option<&std::path::Path>,
     ) -> Self {
         for r in records {
-            // A record without its route (from an older envira) is installed again in full.
-            if r.action == "install" && self.install.contains(&r.id) && !r.done_steps.is_empty() {
+            // An install that started (or may have: `pending` when envira died) and did not
+            // finish: its tool may be detected already (the build of a portable tool went
+            // through, the copy did not; a first step that failed after creating it) and still
+            // needs the rest. A record without its route (an older envira) runs it in full.
+            if r.action == "install"
+                && self.install.contains(&r.id)
+                && matches!(r.outcome.as_str(), "failed" | "cancelled" | "pending")
+            {
                 self.install_done
                     .insert(r.id.clone(), (r.route.clone(), r.done_steps.clone()));
             }
@@ -699,11 +705,16 @@ impl<'a> Planner<'a> {
         {
             for b in tool.bins(id) {
                 let sv = Vars::new(facts, id, b, bin_dir(cat, Scope::System), true);
-                // Next to the target, then renamed over it: a failed copy leaves the old one.
-                // `mv` onto a directory (or a link to one) would move the copy into it and
-                // succeed, with no binary at the target.
+                // Next to the target, then renamed over it: a failed copy leaves the old one,
+                // and no staged copy. `mv` onto a directory (or a link to one) would move the
+                // copy into it and succeed, with no binary at the target: refused, checked as
+                // the identity that moves (the user may not see behind the link). The path is
+                // printed as data.
                 let c = sv.expand(
-                    "if [ -d {bin_dir}/{bin} ]; then echo \"{bin_dir}/{bin} is a directory\" >&2; false; else {sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/.{bin}.envira-new && {sudo} mv -f {bin_dir}/.{bin}.envira-new {bin_dir}/{bin}; fi",
+                    "if {sudo} test -d {bin_dir}/{bin}; then printf '%s is a directory\\n' {bin_dir}/{bin} >&2; false; \
+                     else {sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/.{bin}.envira-new \
+                     && {sudo} mv -f {bin_dir}/.{bin}.envira-new {bin_dir}/{bin} \
+                     || {{ {sudo} rm -f {bin_dir}/.{bin}.envira-new; false; }}; fi",
                     Ctx::Shell,
                 )?;
                 steps.push(UnitStep {
@@ -1291,9 +1302,10 @@ mod tests {
         assert_eq!(u.steps.len(), 2);
         assert_eq!(
             u.steps[1].cmd.as_deref().unwrap(),
-            "if [ -d /usr/local/bin/texlab ]; then echo \"/usr/local/bin/texlab is a directory\" >&2; \
+            "if sudo -n test -d /usr/local/bin/texlab; then printf '%s is a directory\\n' /usr/local/bin/texlab >&2; \
              false; else sudo -n install -m 755 \"$(command -v texlab)\" /usr/local/bin/.texlab.envira-new \
-             && sudo -n mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab; fi"
+             && sudo -n mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab \
+             || { sudo -n rm -f /usr/local/bin/.texlab.envira-new; false; }; fi"
         );
         // The build runs as the user, the copy as root (under `sudo envira`).
         assert!(!u.steps[0].as_root && u.steps[1].as_root);
@@ -1355,6 +1367,7 @@ mod tests {
         let mut nf = f.clone();
         nf.privilege = Privilege::None;
         let in_full = [
+            (&f, route.clone(), vec![], 2),
             (&f, route.clone(), vec!["other".to_string()], 2),
             (&f, "other route".to_string(), vec![build.clone()], 2),
             (&f, String::new(), vec![build.clone()], 2),
@@ -1508,6 +1521,7 @@ mod tests {
             UnitRecord {
                 id: "bat".into(),
                 action: "install".into(),
+                outcome: "failed".into(),
                 done_steps: vec!["x".into()],
                 route: "r1".into(),
                 ..Default::default()
@@ -1516,7 +1530,24 @@ mod tests {
             UnitRecord {
                 id: "old".into(),
                 action: "install".into(),
+                outcome: "failed".into(),
                 done_steps: vec!["x".into()],
+                ..Default::default()
+            },
+            // Its first step failed (after creating the tool, maybe): the route runs again.
+            UnitRecord {
+                id: "first".into(),
+                action: "install".into(),
+                outcome: "failed".into(),
+                route: "r2".into(),
+                ..Default::default()
+            },
+            // Never started: present now means installed some other way.
+            UnitRecord {
+                id: "blocked".into(),
+                action: "install".into(),
+                outcome: "blocked".into(),
+                route: "r3".into(),
                 ..Default::default()
             },
             // envira died during it: the record has nothing, the progress file has a.
@@ -1558,6 +1589,8 @@ mod tests {
             ("waiting", "revert"),
             ("short", "revert"),
             ("old", "install"),
+            ("first", "install"),
+            ("blocked", "install"),
         ])
         .progress(&records, Some(dir.path()));
         assert_eq!(
@@ -1565,6 +1598,7 @@ mod tests {
             BTreeMap::from([
                 ("bat".to_string(), ("r1".to_string(), vec!["x".to_string()])),
                 ("old".to_string(), (String::new(), vec!["x".to_string()])),
+                ("first".to_string(), ("r2".to_string(), vec![])),
             ])
         );
         assert_eq!(t.revert_done.len(), 4);

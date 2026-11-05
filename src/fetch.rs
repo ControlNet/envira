@@ -279,8 +279,15 @@ fn place(files: &[(String, PathBuf)], to: &Path, via: &[String]) -> Result<Vec<P
     run(&["mkdir".as_ref(), "-p".as_ref(), to.as_os_str()])?;
     for (bin, src) in files {
         let dest = to.join(bin);
-        // `mv` onto a directory (or a link to one) moves the file into it and succeeds.
-        if dest.is_dir() {
+        // `mv` onto a directory (or a link to one) moves the file into it and succeeds. Checked
+        // through `via`, as the move: this process may not see behind a link there.
+        let is_dir = std::process::Command::new(prog)
+            .args(pre)
+            .args(["test", "-d"])
+            .arg(&dest)
+            .status()
+            .is_ok_and(|s| s.success());
+        if is_dir {
             bail!("{} is a directory; not replaced", dest.display());
         }
         let new = to.join(format!(".{bin}.envira-new.{}", std::process::id()));
