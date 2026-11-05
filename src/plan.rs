@@ -88,11 +88,7 @@ impl RetryTargets {
     ) -> Self {
         for r in records {
             // A record without its route (from an older envira) is installed again in full.
-            if r.action == "install"
-                && self.install.contains(&r.id)
-                && !r.done_steps.is_empty()
-                && !r.route.is_empty()
-            {
+            if r.action == "install" && self.install.contains(&r.id) && !r.done_steps.is_empty() {
                 self.install_done
                     .insert(r.id.clone(), (r.route.clone(), r.done_steps.clone()));
             }
@@ -849,8 +845,10 @@ impl<'a> Planner<'a> {
         plan
     }
 
-    /// Plans the steps of `id` that a failed install did not get through (see `finishing`),
-    /// when there are some and the route is still the one that ran.
+    /// Plans the rest of a failed install of `id` (see `finishing`): the steps it did not get
+    /// through, on the very route that ran; the whole route when that is another now (the
+    /// catalog or the machine changed since), as what the earlier steps did cannot be told.
+    /// False when the route that ran got through every step.
     fn finish(&mut self, id: &str, plan: &mut Plan) -> bool {
         let Some((route, done)) = self.finishing.get(id).cloned() else {
             return false;
@@ -858,16 +856,15 @@ impl<'a> Planner<'a> {
         let Ok(choice) = self.choose(id) else {
             return false;
         };
-        // The very route that ran (labels such as `install` are shared by routes), with steps
-        // left to run.
-        let ran = route_id(&choice.via, choice.scope, &choice.steps) == route
-            && choice.steps.len() > done.len()
+        // Labels such as `install` are shared by routes: the id tells them apart.
+        let same = route_id(&choice.via, choice.scope, &choice.steps) == route
+            && choice.steps.len() >= done.len()
             && choice.steps.iter().zip(&done).all(|(s, d)| &s.label == d);
-        if !ran {
+        if same && choice.steps.len() == done.len() {
             return false;
         }
         self.commit(id, "requested".into(), plan);
-        if let Some(u) = plan.units.iter_mut().find(|u| u.id == id) {
+        if same && let Some(u) = plan.units.iter_mut().find(|u| u.id == id) {
             u.steps.drain(..done.len());
             u.resumed = done;
         }
@@ -1339,36 +1336,38 @@ mod tests {
             u.steps
         );
         assert_eq!(u.resumed, std::slice::from_ref(&build));
-        // Steps that do not match what ran (another route): nothing is assumed.
+        // Every step got through (it failed afterwards): nothing is left to do.
         let mut p = Planner::new(&c, &f, &present);
-        p.finishing = BTreeMap::from([(
-            "texlab".to_string(),
-            (route.clone(), vec!["other".to_string()]),
-        )]);
+        let all: Vec<String> = full.units[0]
+            .steps
+            .iter()
+            .map(|s| s.label.clone())
+            .collect();
+        p.finishing = BTreeMap::from([("texlab".to_string(), (route.clone(), all))]);
         assert_eq!(
             p.plan(&["texlab".into()], false).skipped[0].1,
             "already present"
         );
-        // The same step labels by another route (or this one, changed in the catalog since):
-        // nothing is assumed either.
-        let mut p = Planner::new(&c, &f, &present);
-        p.finishing = BTreeMap::from([(
-            "texlab".to_string(),
-            ("other route".to_string(), vec![build.clone()]),
-        )]);
-        assert_eq!(
-            p.plan(&["texlab".into()], false).skipped[0].1,
-            "already present"
-        );
-        // Without the copy (no sudo now), nothing is left to do.
+        // Steps that do not match what ran, the same labels by another route (or this one
+        // changed in the catalog since), a record without its route (an older envira), or
+        // another route on this machine now (no sudo, no copy): what the steps that ran did
+        // cannot be told, so the route runs in full.
         let mut nf = f.clone();
         nf.privilege = Privilege::None;
-        let mut p = Planner::new(&c, &nf, &present);
-        p.finishing = BTreeMap::from([("texlab".to_string(), (route, vec![build]))]);
-        assert_eq!(
-            p.plan(&["texlab".into()], false).skipped[0].1,
-            "already present"
-        );
+        let in_full = [
+            (&f, route.clone(), vec!["other".to_string()], 2),
+            (&f, "other route".to_string(), vec![build.clone()], 2),
+            (&f, String::new(), vec![build.clone()], 2),
+            (&nf, route, vec![build], 1),
+        ];
+        for (facts, route, done, steps) in in_full {
+            let mut p = Planner::new(&c, facts, &present);
+            p.finishing = BTreeMap::from([("texlab".to_string(), (route, done))]);
+            let plan = p.plan(&["texlab".into()], false);
+            assert_eq!(plan.units.len(), 1, "{:?}", plan.skipped);
+            assert_eq!(plan.units[0].steps.len(), steps);
+            assert!(plan.units[0].resumed.is_empty());
+        }
     }
 
     #[test]
@@ -1563,7 +1562,10 @@ mod tests {
         .progress(&records, Some(dir.path()));
         assert_eq!(
             t.install_done,
-            BTreeMap::from([("bat".to_string(), ("r1".to_string(), vec!["x".to_string()]))])
+            BTreeMap::from([
+                ("bat".to_string(), ("r1".to_string(), vec!["x".to_string()])),
+                ("old".to_string(), (String::new(), vec!["x".to_string()])),
+            ])
         );
         assert_eq!(t.revert_done.len(), 4);
         assert_eq!(t.revert_done["short"], ["x", "y"]);

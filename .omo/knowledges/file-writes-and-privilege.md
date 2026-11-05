@@ -133,8 +133,10 @@
   failed) gets only the steps after its `done_steps` (`Planner::finishing`), when the route is
   the very one that ran: `plan::route_id` (sha256 of method, scope and every step in full) is
   kept in the unit and its record. `via` alone is not a route identity (raw entries are all
-  `run`; a catalog changed between failure and retry would copy the old build). Records without
-  a route are installed again in full. The TUI's `r` waits for a fresh detection before planning (its snapshot
+  `run`; a catalog changed between failure and retry would copy the old build). When the route
+  is another now (catalog or machine changed, or a record from an older envira without one),
+  the route runs in full: skipping it as "already present" left the system copy missing. Only
+  a route that got through every step is "already present". The TUI's `r` waits for a fresh detection before planning (its snapshot
   is from before the run); `t` (retry the last run) splits by action like `envira retry`.
 - No unit starts unless the run dir, its pending record and state pointing at it are on disk
   (else every unit is reported "not started" and state keeps the previous run). Once units ran,
