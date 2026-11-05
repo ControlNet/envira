@@ -6,6 +6,8 @@ pub mod theme;
 pub mod ui;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -38,7 +40,32 @@ enum AppEvent {
     Terminate,
 }
 
-fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
+/// What SIGTERM/SIGHUP need besides the UI loop, which can be stuck writing to a terminal that
+/// stopped reading (flow control, a stalled SSH connection): the running plan's control, and
+/// whether its record is final.
+#[derive(Default)]
+struct Shutdown {
+    run: std::sync::Mutex<Option<(watch::Sender<Control>, Arc<AtomicBool>)>>,
+    /// Self-update has the terminal (and may be replacing the binary): wait for it.
+    away: AtomicBool,
+}
+
+impl Shutdown {
+    fn settled(&self) -> bool {
+        let run_done = self
+            .run
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|(_, done)| done.load(Ordering::SeqCst));
+        run_done && !self.away.load(Ordering::SeqCst)
+    }
+}
+
+/// SIGTERM/SIGHUP: cancels the running steps here, then tells the UI loop. Once nothing is left
+/// to record, the UI loop gets a few seconds to restore the terminal and leave; if it is stuck
+/// on the terminal, envira leaves without it (128 + signal).
+fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>, shutdown: Arc<Shutdown>) {
     use tokio::signal::unix::{SignalKind, signal};
     tokio::spawn(async move {
         let (Ok(mut term), Ok(mut hup)) = (
@@ -48,13 +75,25 @@ fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
             return;
         };
         loop {
-            tokio::select! {
-                _ = term.recv() => {}
-                _ = hup.recv() => {}
+            let sig = tokio::select! {
+                _ = term.recv() => libc::SIGTERM,
+                _ = hup.recv() => libc::SIGHUP,
+            };
+            if let Some((ctl, _)) = shutdown.run.lock().unwrap().as_ref() {
+                ctl.send_modify(|c| {
+                    c.stop = true;
+                    c.cancel_seq += 1;
+                });
             }
-            if tx.send(AppEvent::Terminate).is_err() {
-                break;
-            }
+            let _ = tx.send(AppEvent::Terminate);
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                while !shutdown.settled() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                std::process::exit(128 + sig);
+            });
         }
     });
 }
@@ -184,7 +223,8 @@ fn spawn_self_check(sess: &Session, tx: mpsc::UnboundedSender<AppEvent>, fetch: 
 async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme) -> Result<i32> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut input = spawn_input(tx.clone());
-    spawn_signals(tx.clone());
+    let shutdown = Arc::new(Shutdown::default());
+    spawn_signals(tx.clone(), shutdown.clone());
     {
         let tx = tx.clone();
         tokio::spawn(async move {
@@ -314,7 +354,10 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                     }
                 },
                 Cmd::SelfUpdate => {
-                    let (msg, updated) = self_update(term, &mut input, &tx).await?;
+                    shutdown.away.store(true, Ordering::SeqCst);
+                    let r = self_update(term, &mut input, &tx).await;
+                    shutdown.away.store(false, Ordering::SeqCst);
+                    let (msg, updated) = r?;
                     if updated {
                         // This process is still the old version; the next start is the new one.
                         app.self_latest = None;
@@ -361,7 +404,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                             Err(e) => return Err(e),
                         }
                     }
-                    exec_rx = Some(start_run(&sess, &mut app, plan, command, lock));
+                    exec_rx = Some(start_run(&sess, &mut app, plan, command, lock, &shutdown));
                 }
             }
         }
@@ -482,8 +525,11 @@ fn start_run(
     plan: Plan,
     command: String,
     lock: state::RunLock,
+    shutdown: &Shutdown,
 ) -> exec::EventRx {
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+    let done = Arc::new(AtomicBool::new(false));
+    *shutdown.run.lock().unwrap() = Some((ctl_tx.clone(), done.clone()));
     let (etx, erx) = exec::events();
     let ctx = sess.exec_ctx(command, true);
     let run_id = ctx.run_id.clone();
@@ -497,7 +543,9 @@ fn start_run(
     let run = plan.clone();
     tokio::spawn(async move {
         let _lock = lock;
-        exec::execute(run, ctx, st, etx, ctl_rx).await
+        let r = exec::execute(run, ctx, st, etx, ctl_rx).await;
+        done.store(true, Ordering::SeqCst);
+        r
     });
     app.start_run(plan, run_id, Some(ctl_tx));
     erx
