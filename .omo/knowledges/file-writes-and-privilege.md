@@ -45,12 +45,24 @@
   sudo (a failing `sudo -n` lands in the auth log), in a run whenever envira can elevate (the
   unit's own steps already authorized sudo). Non-root goes through
   `sudo -n -- env HOME=… PATH=… ENVIRA_STATE_DIR=… bash -eo pipefail -c '<check>'`, so the check
-  sees the same files. Limitation: a plain user without passwordless sudo still sees a private
+  sees the same files. Root's PATH there is `runner::ROOT_PATH` (system dirs only, as sudo's
+  secure_path gives `{sudo}` steps), not the user's: a `~/.local/bin/grep` must not answer for
+  root. Limitation: a plain user without passwordless sudo still sees a private
   system file as "not applied" (no third "cannot tell" state yet).
 
 ## Process lifetime
 - Cancelling (timeout, `c`, Ctrl-C twice, SIGTERM) sends TERM to the step's process group and
   waits up to 3 s for the whole group, not only the shell, then KILLs what is left.
+- A step's processes can leave its group: `sudo` (use_pty, default on current distros) runs
+  its command in a new session, and a plain user cannot signal root's processes anyway
+  (`kill(-pgid, 0)` then fails with EPERM, which must count as "alive"). Cancel notes the
+  step's descendants from `/proc/*/stat` (ppid walk, pid + start time) before TERM orphans them
+  and again before KILL, then KILLs what is left one by one, through `sudo -n kill -KILL` for
+  EPERM. Only on cancel: a step that exits normally may leave a daemon running. Without /proc
+  (macOS, hidepid=2) this falls back to the group kill.
+- After a run is recorded, the CLI waits for its output thread in `spawn_blocking` and selects
+  on SIGINT/TERM/HUP: a blocked stdout must not make the process unkillable (the run's signal
+  handlers keep the default action off), and exiting then (128+signal) loses nothing.
 - After a step exits, the output pumps get 2 s to drain, then are aborted: a background daemon
   holding stdout does not keep the executor waiting.
 - CLI output after the executor starts ignores write errors (`envira install … | head` must
@@ -80,5 +92,14 @@
   the step that failed runs again as it is (it may have undone part of its change), and the
   steps after it carry `only_if` = their apply check (run only while their change is in place;
   `as_script` writes `if check; then cmd; fi`). Plain `config revert` is unchanged.
+  The retried unit carries the left-out steps (`Unit.resumed`) and counts them as done, so a
+  second failure does not lose them. A revert also appends each finished step to
+  `<run dir>/<id>.steps` (JSON string per line); a unit whose record still says `pending`
+  (envira killed mid-unit) is resumed from that file. A step envira was running when it died
+  may still finish on its own (steps run in their own sessions): reverts should be idempotent
+  (`rm -f`), since the resumed step runs again as it is.
+- A retried install whose tool is present now (the build worked, the portable system copy
+  failed) gets only the steps after its `done_steps` (`Planner::finishing`), when those match
+  the leading steps of the current route; otherwise it is "already present" as before.
 - Open items: a third status for a check root could not run ("cannot tell" for a private
   system file seen by a plain user without passwordless sudo).
