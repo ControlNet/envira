@@ -5,15 +5,17 @@
 //! (`npm ls -g`, `opencode --version`, `agy --version`): the tree took ~300 MiB.
 //!
 //! The budget follows the memory available (`limit_for`): with 1 GiB or more, half of it, which
-//! never holds a scan back; with less, 200 MB.
+//! never holds a scan back; with less, 200 MB. macOS has no budget (no Mac has less than 8 GiB,
+//! and there is no /proc to measure with).
 //!
 //! A command never seen before is estimated from the peak of another command of its program
 //! (`apt-cache policy curl` from `apt-cache policy git`: 92 MiB, the package cache it maps),
 //! else from the programs it names: a script by its interpreter, a native program by its size
-//! (a single-file Bun or Electron build maps most of itself even for `--version`). A program
-//! never measured runs one command at a time until one has ended. Once a command has run, its
-//! own peak is used, and kept in the state directory for the next envira. While one runs, its
-//! process tree is sampled and its reservation grows with what it really takes.
+//! (a single-file Bun or Electron build maps most of itself even for `--version`). Under a
+//! budget of less than 1 GiB, a program never measured runs one command at a time until one has
+//! ended. Once a command has run, its own peak is used, and kept in the state directory for the
+//! next envira. While one runs, its process tree is sampled and its reservation grows with what
+//! it really takes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -37,17 +39,21 @@ pub const SCAN_MEMORY: u64 = 176 * MIB;
 /// Memory available from which a scan is not held back.
 const PLENTY: u64 = 1 << 30;
 
+/// No budget: nothing waits (kept far from `u64::MAX` so that sums cannot overflow).
+const OPEN: u64 = u64::MAX / 4;
+
 /// How often the memory available is read again (when no command runs).
 const RECHECK: Duration = Duration::from_secs(1);
 
 /// The budget for `available` bytes (`MemAvailable`, or what a cgroup limit leaves; not the
 /// machine's total): from `PLENTY` up, half of it, where a scan (~300 MiB at most) runs as
-/// fast as it can; below, `SCAN_MEMORY`, and at most three quarters of what is left. Unknown
-/// (no /proc): `SCAN_MEMORY`.
+/// fast as it can; below, `SCAN_MEMORY`, and at most three quarters of what is left. Unknown:
+/// none on macOS (every Mac has 8 GiB or more), `SCAN_MEMORY` elsewhere.
 pub fn limit_for(available: Option<u64>) -> u64 {
     match available {
         Some(a) if a >= PLENTY => a / 2,
         Some(a) => SCAN_MEMORY.min(a / 4 * 3),
+        None if cfg!(target_os = "macos") => OPEN,
         None => SCAN_MEMORY,
     }
 }
@@ -245,8 +251,10 @@ impl Budget {
                 }
                 let known = s.known(cmd, program.as_deref());
                 let est = reserve(&known, || guess);
-                // A program never measured: one of its commands at a time until one has ended.
-                let first = known == Known::Nothing && program.is_some();
+                // A program never measured, under a limit of less than 1 GiB: one of its
+                // commands at a time until one has ended. Above (and on macOS, where nothing is
+                // measured and it would stay unmeasured), they run side by side.
+                let first = known == Known::Nothing && program.is_some() && s.limit < PLENTY;
                 let held = first && program.as_ref().is_some_and(|p| s.probing.contains(p));
                 let used: u64 = s.running.values().sum();
                 if !held && (s.running.is_empty() || own_rss() + used + est <= s.limit) {
@@ -751,8 +759,13 @@ mod tests {
         // Plenty: a scan is not held back.
         assert_eq!(limit_for(Some(GIB)), GIB / 2);
         assert_eq!(limit_for(Some(3 * GIB)), 3 * GIB / 2);
-        // Unknown: careful.
-        assert_eq!(limit_for(None), SCAN_MEMORY);
+        // Unknown: careful, but not on a Mac (8 GiB or more, and nothing to measure with).
+        let unknown = if cfg!(target_os = "macos") {
+            OPEN
+        } else {
+            SCAN_MEMORY
+        };
+        assert_eq!(limit_for(None), unknown);
     }
 
     #[test]
@@ -774,7 +787,8 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         file(t.path(), "pm", b"\x7fELF", 1024);
         let path = t.path().display().to_string();
-        let b = Arc::new(Budget::new(u64::MAX / 4));
+        // Half a GiB: room for all of them, but short enough to measure a program first.
+        let b = Arc::new(Budget::new(PLENTY / 2));
         let run = |cmd: &'static str| {
             let (b, path, home) = (b.clone(), path.clone(), t.path().to_path_buf());
             async move { b.admit(cmd, &path, &home).await }
@@ -806,6 +820,10 @@ mod tests {
         // A first command dropped before it ended (cancelled) lets the next one go.
         drop(admit(&b, "pq a").await);
         assert!(!pending(admit(&b, "pq b")).await);
+        // With plenty of memory, they run side by side.
+        let open = Arc::new(Budget::new(PLENTY));
+        let _a = admit(&open, "pz a").await;
+        assert!(!pending(admit(&open, "pz b")).await);
     }
 
     #[tokio::test]

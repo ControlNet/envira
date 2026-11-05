@@ -81,9 +81,11 @@ queries; steps are not gated):
   `limit_for(available_memory())`, where available is `MemAvailable` or what a cgroup limit
   leaves (the tightest). From 1 GiB available up: half of it, which never holds a scan back
   (status 1.3-1.4 s, ~210-270 MiB, faster than before thanks to the lighter detects). Under
-  1 GiB: `SCAN_MEMORY` (176 MiB: 200 MB less a margin), at most 3/4 of what is left. Unknown
-  (macOS): `SCAN_MEMORY`. Read again while none of envira's commands runs, at most once a
-  second (the TUI lives long; reading it while ours run would count them against themselves).
+  1 GiB: `SCAN_MEMORY` (176 MiB: 200 MB less a margin), at most 3/4 of what is left. Unknown:
+  no budget on macOS (`OPEN`; the user's call: no Mac has less than 8 GiB, and without /proc
+  nothing is measured anyway), `SCAN_MEMORY` elsewhere. Read again while none of envira's
+  commands runs, at most once a second (the TUI lives long; reading it while ours run would
+  count them against themselves).
 - A command starts only when envira's own RSS + the reservations of the running commands + its
   estimate fit in the limit, or when nothing else runs.
 - Estimate, in order: its own peak seen before (x1.25 + 2 MiB); for a command that ended before
@@ -93,8 +95,11 @@ queries; steps are not gated):
   its file size (8-160), not installed 0, builtins 0. The shell parsing behind it
   (`programs`) is rough on purpose: first word of each simple command, assignments skipped,
   `$(...)` inside double quotes split out.
-- A program never measured runs one command at a time until one has ended: otherwise six
-  `apt-cache policy` started together at a 12 MiB estimate each (seen: 220 MiB tree).
+- Under a limit of less than 1 GiB, a program never measured runs one command at a time until
+  one has ended: otherwise six `apt-cache policy` started together at a 12 MiB estimate each
+  (seen: 220 MiB tree). Not above: with plenty of memory it only slows a first scan, and where
+  nothing can be measured (macOS) the program stays unmeasured, so its commands would queue on
+  every scan.
 - While a command runs, its tree's `VmHWM` (summed over `/proc/<pid>/task/*/children`, which
   needs CONFIG_PROC_CHILDREN; only the pid where missing) is sampled every 10 ms and the
   reservation grows with it. Not at once: a sample right after fork reads the pre-exec process
