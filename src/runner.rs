@@ -34,8 +34,20 @@ pub enum StreamEnd {
 }
 
 pub trait Runner: Send + Sync {
-    /// Runs a command and captures its output (detection, checks).
-    fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe>;
+    /// Runs a command as the user and captures its output (detection, checks).
+    fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe> {
+        self.capture_as(cmd, timeout, false)
+    }
+
+    /// `capture`, as root when `as_root`: directly when envira is root, else through `sudo -n`
+    /// (which fails at once rather than ask for a password). The environment is the user's
+    /// either way, so a check looks at the same files.
+    fn capture_as<'a>(
+        &'a self,
+        cmd: &'a str,
+        timeout: Duration,
+        as_root: bool,
+    ) -> BoxFuture<'a, Probe>;
 
     /// Runs an install or apply step, sending each output line to `lines`, until it exits or
     /// `cancel` becomes true (then the whole process group is killed). `lines` is bounded: a
@@ -364,12 +376,36 @@ impl Runner for RealRunner {
         Box::pin(http_get_text(url, timeout))
     }
 
-    fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe> {
+    fn capture_as<'a>(
+        &'a self,
+        cmd: &'a str,
+        timeout: Duration,
+        as_root: bool,
+    ) -> BoxFuture<'a, Probe> {
         Box::pin(async move {
-            let mut c = self.command(cmd, false);
+            let e = &self.env;
+            // SAFETY: geteuid has no preconditions.
+            let root = unsafe { libc::geteuid() } == 0;
+            let through_sudo;
+            let cmd = if as_root && !root {
+                let q = |s: &str| crate::template::shell_quote(s);
+                through_sudo = format!(
+                    "sudo -n -- env HOME={} PATH={} ENVIRA_STATE_DIR={} bash -eo pipefail -c {}",
+                    q(&e.home.display().to_string()),
+                    q(&e.path),
+                    q(&e.state_dir.display().to_string()),
+                    q(cmd)
+                );
+                through_sudo.as_str()
+            } else {
+                cmd
+            };
+            let mut c = self.command(cmd, as_root && root);
             // Detection must not depend on where envira was started (rust-toolchain.toml,
-            // .nvmrc and similar files change what `rustc` / `node` report).
-            c.current_dir(&self.env.home)
+            // .nvmrc and similar files change what `rustc` / `node` report). As root too, `~`
+            // is the user's: a check looks at the user's files.
+            c.env("HOME", &e.home)
+                .current_dir(&e.home)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             let child = match c.spawn() {
@@ -504,6 +540,10 @@ pub mod fake {
         pub log: Mutex<Vec<String>>,
         /// Streamed commands asked to run as root (system scope).
         pub as_root: Mutex<Vec<String>>,
+        /// Substrings of captured commands that pass only as root (a private system file).
+        pub root_only: Mutex<Vec<String>>,
+        /// Captures asked to run as root.
+        pub root_captures: Mutex<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -571,8 +611,26 @@ pub mod fake {
             })
         }
 
-        fn capture<'a>(&'a self, cmd: &'a str, _t: Duration) -> BoxFuture<'a, Probe> {
-            let (code, output) = self.lookup(cmd);
+        fn capture_as<'a>(
+            &'a self,
+            cmd: &'a str,
+            _t: Duration,
+            as_root: bool,
+        ) -> BoxFuture<'a, Probe> {
+            if as_root {
+                self.root_captures.lock().unwrap().push(cmd.to_string());
+            }
+            let root_only = self
+                .root_only
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|n| cmd.contains(n.as_str()));
+            let (code, output) = if root_only {
+                (if as_root { 0 } else { 1 }, String::new())
+            } else {
+                self.lookup(cmd)
+            };
             Box::pin(async move { Probe { code, output } })
         }
 

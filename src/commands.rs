@@ -289,9 +289,16 @@ pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
             match crate::plan::config_steps(cat, f, id, scope) {
                 Ok(steps) => {
                     for s in steps {
-                        match &s.check {
-                            Some(c) => print_probe(c, &sess.runner.capture(c, timeout).await),
-                            None => println!("  · {} (no check)", s.label),
+                        let Some(c) = &s.check else {
+                            println!("  · {} (no check)", s.label);
+                            continue;
+                        };
+                        let p = sess.runner.capture(c, timeout).await;
+                        print_probe(c, &p);
+                        // As status does: a system file only root can read.
+                        if !p.ok() && scope == state::Scope::System && f.root_without_asking() {
+                            println!("    again as root:");
+                            print_probe(c, &sess.runner.capture_as(c, timeout, true).await);
                         }
                     }
                 }

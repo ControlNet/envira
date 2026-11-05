@@ -23,8 +23,14 @@
   scope steps and steps marked `as_root` (the system copy of a portable build) stay root with
   root's HOME. `{sudo}` expands to nothing for root.
 - Backups made as root for SUDO_USER are chowned to SUDO_UID/SUDO_GID.
-- Detection and config checks (`capture`) always run as the user (a root-only config check
-  cannot pass under sudo envira yet: open item R2).
+- Detection and config checks (`capture`) run as the user. A check of a system-scope config
+  that fails is run again as root (`Runner::capture_as`, `status::check_passes`) when root is at
+  hand without a password prompt: in status/explain only for `Privilege::Root` or passwordless
+  sudo (a failing `sudo -n` lands in the auth log), in a run whenever envira can elevate (the
+  unit's own steps already authorized sudo). Non-root goes through
+  `sudo -n -- env HOME=… PATH=… ENVIRA_STATE_DIR=… bash -eo pipefail -c '<check>'`, so the check
+  sees the same files. Limitation: a plain user without passwordless sudo still sees a private
+  system file as "not applied" (no third "cannot tell" state yet).
 
 ## Process lifetime
 - Cancelling (timeout, `c`, Ctrl-C twice, SIGTERM) sends TERM to the step's process group and
@@ -49,6 +55,6 @@
   --network none` containers with the debug binary mounted read-only) are the fastest way to
   check: they plant symlinks, close stdout mid-run, kill helpers, fake releases. Re-run them
   after changes and compare markers (e.g. `DESCENDANT WROTE AFTER CANCEL`, `TARGET EXISTS`).
-- Open items: R2 root-only config checks, R3 retry of a partially failed revert (needs per-step
+- Open items: R3 retry of a partially failed revert (needs per-step
   progress), cgroup v1/nonstandard mounts, capture output caps, explicit binstall compile policy
   for self-update.

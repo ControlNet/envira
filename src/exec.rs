@@ -21,7 +21,7 @@ use crate::shellenv;
 use crate::state::{
     self, ConfigRecord, LastResult, Paths, RunRecord, Scope, State, ToolRecord, UnitRecord,
 };
-use crate::status::{probe_config, probe_tool};
+use crate::status::{check_passes, probe_config, probe_tool};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default wall-clock limit of one step (source builds such as ripgrep or yazi take minutes).
@@ -539,11 +539,14 @@ where
     };
     state::chown_to_target(tmp.path(), &ctx.facts);
     let base_seq = ctl.borrow().cancel_seq;
+    // A system unit's checks that fail as the user are tried as root: the run has root
+    // (`sudo envira`, or sudo authorized up front for the unit's own steps).
+    let root = unit.scope == Scope::System && ctx.facts.privilege.can_elevate();
 
     for (n, step) in unit.steps.iter().enumerate() {
         let label = format!("step {}/{}", n + 1, unit.steps.len());
         if let Some(check) = &step.check
-            && ctx.runner.capture(check, CHECK_TIMEOUT).await.ok()
+            && check_passes(ctx.runner.as_ref(), check, CHECK_TIMEOUT, root).await
         {
             emit(format!(
                 "[envira] {label} · {} · already in place",
@@ -649,7 +652,15 @@ where
             }
         }
         (Kind::Config, _) => {
-            if probe_config(&ctx.catalog, &ctx.facts, &unit.id, ctx.runner.as_ref()).await {
+            if probe_config(
+                &ctx.catalog,
+                &ctx.facts,
+                &unit.id,
+                ctx.runner.as_ref(),
+                ctx.facts.privilege.can_elevate(),
+            )
+            .await
+            {
                 emit(format!("[envira] verified {}", unit.id));
                 Outcome::Ok { version: None }
             } else {
@@ -1495,6 +1506,25 @@ mod tests {
             *s.runner.as_root.lock().unwrap(),
             ["ok apt-get install -y sys"]
         );
+    }
+
+    #[tokio::test]
+    async fn system_config_checks_fall_back_to_root() {
+        let s = setup();
+        // In place, in a file only root can read: as the user its check fails.
+        s.runner
+            .root_only
+            .lock()
+            .unwrap()
+            .push("fs line --check /etc/sysctl.conf".into());
+        s.runner.rule("/proc/sys/fs/inotify", 0, "");
+        let p = plan(&s.ctx, &["inotify-watches"]);
+        assert_eq!(p.units.len(), 1);
+        let (rec, _, _) = run(&s, p).await;
+        assert_eq!(outcomes(&rec), vec![("inotify-watches", "ok")]);
+        // Both the step's check and the verification asked root; nothing was rewritten.
+        assert_eq!(s.runner.root_captures.lock().unwrap().len(), 2);
+        assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
     }
 
     #[tokio::test]

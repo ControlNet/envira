@@ -335,13 +335,29 @@ async fn probe_tool_full(cat: &Catalog, facts: &Facts, id: &str, runner: &dyn Ru
     }
 }
 
-/// True when every check of a config passes.
-pub async fn probe_config(cat: &Catalog, facts: &Facts, id: &str, runner: &dyn Runner) -> bool {
+/// Runs a config check as the user. When that fails and `root` (a system config, with root at
+/// hand without a password prompt) it runs again as root: a private system file that only root
+/// can read must not look unapplied.
+pub async fn check_passes(runner: &dyn Runner, check: &str, timeout: Duration, root: bool) -> bool {
+    runner.capture(check, timeout).await.ok()
+        || (root && runner.capture_as(check, timeout, true).await.ok())
+}
+
+/// True when every check of a config passes. `root`: root is at hand without asking (see
+/// [`check_passes`]).
+pub async fn probe_config(
+    cat: &Catalog,
+    facts: &Facts,
+    id: &str,
+    runner: &dyn Runner,
+    root: bool,
+) -> bool {
     let scope = if cat.configs[id].scope == Some(crate::catalog::ScopeSpec::System) {
         Scope::System
     } else {
         Scope::User
     };
+    let root = root && scope == Scope::System;
     let Ok(steps) = config_steps(cat, facts, id, scope) else {
         return false;
     };
@@ -350,7 +366,7 @@ pub async fn probe_config(cat: &Catalog, facts: &Facts, id: &str, runner: &dyn R
         return false;
     }
     for c in checks {
-        if !runner.capture(&c, DETECT_TIMEOUT).await.ok() {
+        if !check_passes(runner, &c, DETECT_TIMEOUT, root).await {
             return false;
         }
     }
@@ -374,7 +390,9 @@ pub async fn snapshot(
                 probe_tool_full(cat, facts, &id, runner).await
             } else {
                 ToolProbe {
-                    present: probe_config(cat, facts, &id, runner).await,
+                    // `sudo -n` that would fail is not tried: each attempt lands in the auth log.
+                    present: probe_config(cat, facts, &id, runner, facts.root_without_asking())
+                        .await,
                     ..Default::default()
                 }
             };
@@ -617,6 +635,7 @@ async fn installed_queries(
 mod tests {
     use super::*;
     use crate::catalog::load::{embedded_layer, load};
+    use crate::facts::Privilege;
     use crate::runner::fake::FakeRunner;
     use crate::state::ToolRecord;
     use std::path::Path;
@@ -840,6 +859,35 @@ mod tests {
             Some("HTTP 500")
         );
         assert_eq!(snap.outdated(), vec!["codex"]);
+    }
+
+    #[tokio::test]
+    async fn a_private_system_config_is_checked_as_root_only_without_a_prompt() {
+        let c = cat();
+        let r = FakeRunner::default();
+        // The line is in place, in a file only root can read.
+        r.root_only
+            .lock()
+            .unwrap()
+            .push("fs line --check /etc/sysctl.conf".into());
+        r.rule("/proc/sys/fs/inotify", 0, "");
+        let mut f = Facts::sample(Path::new("/home/user"));
+        f.privilege = Privilege::Sudo {
+            passwordless: false,
+        };
+        assert!(!probe_config(&c, &f, "inotify-watches", &r, f.root_without_asking()).await);
+        // Not tried: `sudo -n` would fail and land in the auth log.
+        assert!(r.root_captures.lock().unwrap().is_empty());
+        for p in [Privilege::Root, Privilege::Sudo { passwordless: true }] {
+            f.privilege = p;
+            assert!(probe_config(&c, &f, "inotify-watches", &r, f.root_without_asking()).await);
+        }
+        assert_eq!(r.root_captures.lock().unwrap().len(), 2);
+        // A user config never asks for root.
+        r.root_captures.lock().unwrap().clear();
+        r.root_only.lock().unwrap().push("codex".into());
+        assert!(!probe_config(&c, &f, "codex-sandbox-network", &r, true).await);
+        assert!(r.root_captures.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

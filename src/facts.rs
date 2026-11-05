@@ -100,6 +100,15 @@ impl Facts {
         self.privilege == Privilege::Root
     }
 
+    /// Root is at hand without asking for a password: envira runs as root, or sudo works
+    /// without one.
+    pub fn root_without_asking(&self) -> bool {
+        matches!(
+            self.privilege,
+            Privilege::Root | Privilege::Sudo { passwordless: true }
+        )
+    }
+
     /// Expands a leading `~/` (or a lone `~`) to the target home.
     pub fn expand_home(&self, s: &str) -> String {
         if s == "~" {
