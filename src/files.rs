@@ -7,7 +7,8 @@
 //! - The temp file is private (0600) while it fills, so a private config is never readable by
 //!   others mid-write; it gets its final mode only when complete.
 //! - As root, the new file keeps the owner of the file it replaces (a user's config edited by
-//!   `sudo envira` stays theirs, a root-owned file stays root's).
+//!   `sudo envira` stays theirs, a root-owned file stays root's); a file that is new belongs to
+//!   the owner of its directory.
 //! - It is renamed over the destination: readers see the old file or the new one, and on any
 //!   failure before the rename the destination is untouched.
 
@@ -46,10 +47,17 @@ pub fn replace_with(
     fill(tmp.as_file_mut())?;
     let f = tmp.as_file();
     // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } == 0
-        && let Some(m) = &old
-    {
-        std::os::unix::fs::fchown(f, Some(m.uid()), Some(m.gid()))?;
+    if unsafe { libc::geteuid() } == 0 {
+        match &old {
+            Some(m) => std::os::unix::fs::fchown(f, Some(m.uid()), Some(m.gid()))?,
+            // A new file in a user's directory is theirs, as if they had made it.
+            None => {
+                let d = std::fs::metadata(dir)?;
+                if d.uid() != 0 {
+                    std::os::unix::fs::fchown(f, Some(d.uid()), Some(d.gid()))?;
+                }
+            }
+        }
     }
     // After chown, which clears set-id bits.
     let mode = mode

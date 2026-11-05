@@ -6,17 +6,25 @@
   binaries). It creates a unique temp name with O_EXCL (a planted symlink at a predictable name
   is never followed), keeps it 0600 while filling (a private config is never readable mid-write),
   gives it the old file's mode (or the umask mode for a new file, probed by creating the temp
-  with 0666 while still empty), as root chowns it to the old file's owner, then renames.
+  with 0666 while still empty), as root chowns it to the old file's owner (a new file: to its
+  directory's owner when that is not root), then renames.
 - Do not write `std::fs::write`, `File::create` or `fs::copy` to a destination that already
   exists or sits in a directory someone else can write; use `files::*`.
 - A destination that is a symlink (a dotfile linked from a dotfiles repo by stow/chezmoi) is
   edited where it points (`fs::edit_target`, used by every `envira fs` edit, `restore` and the
-  rc blocks): the link stays, the repo's file gets the edit, like `>>`. As root a link is
-  followed only if root owns it or its owner owns the file it points to (checked per hop, with
-  lstat through linked directories; for a new file, the directory's owner); otherwise the edit
-  is refused and the link left alone. `restore` first looks for a backup of the path itself
-  (links envira made, older backups), then of the file it points to. `files::replace_with`
-  itself still replaces a link at its destination: callers resolve first.
+  rc blocks): the link stays, the repo's file gets the edit, like `>>`. The path is resolved
+  one component at a time like the kernel (`fs::resolve`): links in parent directories are
+  followed too and `..` goes up from where a link led. As root, every link on the way that
+  root did not make must point at something its owner owns (`metadata`, following; for a
+  missing target, the closest existing ancestor); otherwise the edit is refused and the link
+  left alone. Checking only the final link let `~/.config -> /etc` or a relative `../../etc`
+  link redirect root's edit. `restore` first looks for a backup of the path itself (links envira
+  made, older backups), then of the file it points to. `files::replace_with` itself still
+  replaces a link at its destination: callers resolve first.
+- Accepted risk: a user who swaps a link between the check and the write (TOCTOU) still wins.
+  Closing it needs openat2/O_NOFOLLOW walks for every write. Under `sudo envira` SUDO_USER is
+  root-equivalent anyway (their `~/.config/envira/catalog.d` overlay runs commands as root), so
+  the link rules are defense in depth for mistakes, not a privilege boundary.
 - Restore stages the original first and renames it over; a missing backup leaves the current
   file. Backup dirs: legacy `%`-for-`/` name, or `h-<sha256 prefix>` when the path has `%` or
   the legacy name belongs to another path (meta.toml `path` is checked).

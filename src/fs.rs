@@ -169,40 +169,88 @@ impl Backups {
 /// dotfiles repo and linked into place (stow, chezmoi) stays linked and the repo's file gets the
 /// edit, as `>>` would. Writing as root, a link is followed only when root made it or when its
 /// owner owns what it points to: a user's link must not point root's edit at a file of someone
-/// else (`~/.bashrc -> /etc/shadow`); that is refused, the link left as it is.
+/// else (`~/.bashrc -> /etc/shadow`, `~/.config -> /etc`); that is refused, the link left as it
+/// is. (A user who swaps a link between this check and the write still wins that race: under
+/// `sudo envira` that user can run anything as root through their catalog anyway.)
 pub fn edit_target(path: &Path, writing: bool) -> Result<PathBuf> {
     // SAFETY: geteuid has no preconditions.
-    let guard = writing && unsafe { libc::geteuid() } == 0;
-    let mut cur = path.to_path_buf();
-    for _ in 0..40 {
-        let Ok(m) = std::fs::symlink_metadata(&cur) else {
-            return Ok(cur);
+    resolve(path, writing && unsafe { libc::geteuid() } == 0)
+}
+
+/// Resolves `path` one component at a time, as the kernel does: every link on the way is
+/// followed, in a directory as well as at the end, and `..` goes up from where a link led. With
+/// `guard`, each link root did not make must point at something its owner owns (for a new file,
+/// the closest directory that exists).
+fn resolve(path: &Path, guard: bool) -> Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::path::Component;
+    // Components still to walk, the next one last.
+    fn queue(rest: &mut Vec<OsString>, p: &Path) {
+        for c in p.components().rev() {
+            match c {
+                Component::Normal(n) => rest.push(n.to_owned()),
+                Component::ParentDir => rest.push("..".into()),
+                _ => {}
+            }
+        }
+    }
+    let path_abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut rest = Vec::new();
+    queue(&mut rest, &path_abs);
+    let mut cur = PathBuf::from("/");
+    let (mut links, mut missing) = (0, false);
+    while let Some(c) = rest.pop() {
+        if c == ".." {
+            cur.pop();
+            continue;
+        }
+        let next = cur.join(&c);
+        let m = match std::fs::symlink_metadata(&next) {
+            Ok(m) if !missing => m,
+            _ => {
+                // Nothing to follow from here on.
+                missing = true;
+                cur = next;
+                continue;
+            }
         };
         if !m.file_type().is_symlink() {
-            return Ok(cur);
+            cur = next;
+            continue;
         }
-        let to = std::fs::read_link(&cur).with_context(|| format!("reading {}", cur.display()))?;
-        let next = cur.parent().unwrap_or(Path::new("/")).join(to);
+        links += 1;
+        if links > 40 {
+            bail!("{}: too many levels of links", path.display());
+        }
+        let to =
+            std::fs::read_link(&next).with_context(|| format!("reading {}", next.display()))?;
         if guard && m.uid() != 0 {
-            // The file, or for a new one the directory it goes in (both through any linked
-            // directories on the way).
-            let owner = std::fs::symlink_metadata(&next)
-                .or_else(|_| std::fs::metadata(next.parent().unwrap_or(Path::new("/"))))
-                .map(|t| t.uid())
-                .ok();
+            let target = cur.join(&to);
+            let owner = target
+                .ancestors()
+                .find_map(|a| std::fs::metadata(a).ok())
+                .map(|t| t.uid());
             if owner != Some(m.uid()) {
                 bail!(
                     "refusing to edit {} through the link {}: the link's owner (uid {}) does not \
-                     own it",
+                     own {}",
+                    path.display(),
                     next.display(),
-                    cur.display(),
-                    m.uid()
+                    m.uid(),
+                    target.display()
                 );
             }
         }
-        cur = next;
+        if to.is_absolute() {
+            cur = PathBuf::from("/");
+        }
+        queue(&mut rest, &to);
     }
-    bail!("{}: too many levels of links", path.display())
+    Ok(cur)
 }
 
 fn read_opt(path: &Path) -> Result<Option<String>> {
@@ -905,6 +953,49 @@ mod tests {
         link(&b, "/usr/bin/true", &l, false).unwrap();
         restore(&b, &l, None).unwrap();
         assert!(std::fs::symlink_metadata(&l).is_err());
+    }
+
+    #[test]
+    fn links_anywhere_on_the_path_are_followed_and_checked() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        let ln = |to: &str, at: &str| std::os::unix::fs::symlink(to, d.path().join(at)).unwrap();
+        ln(real.to_str().unwrap(), "dir");
+        ln("real/sub", "rel");
+        ln("/etc", "etc");
+        ln("../../../../../../../../../../etc", "up");
+        ln("real/new", "dangling");
+        ln("/etc/envira-no-such-dir/file", "elsewhere");
+        let p = |s: &str| d.path().join(s);
+        // Links the user made into their own files: followed, in directories too, and `..`
+        // goes up from where a link led.
+        for guard in [false, true] {
+            assert_eq!(
+                resolve(&p("dir/config"), guard).unwrap(),
+                real.join("config")
+            );
+            assert_eq!(resolve(&p("rel/../x"), guard).unwrap(), real.join("x"));
+            assert_eq!(resolve(&p("dangling"), guard).unwrap(), real.join("new"));
+            assert_eq!(
+                resolve(&p("real/./sub/y"), guard).unwrap(),
+                real.join("sub/y")
+            );
+        }
+        // Into root's files: only without the guard (edits as the user, which the kernel stops).
+        assert_eq!(
+            resolve(&p("etc/hosts"), false).unwrap(),
+            Path::new("/etc/hosts")
+        );
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            for at in ["etc/hosts", "up/hosts", "elsewhere"] {
+                let e = resolve(&p(at), true).unwrap_err().to_string();
+                assert!(e.contains("does not own"), "{at}: {e}");
+            }
+        }
+        ln("loop", "loop");
+        assert!(resolve(&p("loop"), false).is_err());
     }
 
     #[test]
