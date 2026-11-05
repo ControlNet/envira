@@ -53,6 +53,12 @@ const RULES: &[Rule] = &[
         transient: true,
     },
     Rule {
+        re: r"linker `cc` not found|needs a C compiler \(cc\)|failed to find tool .cc.|C compiler cannot create executables|no acceptable C compiler found",
+        kind: "no C compiler",
+        hint: "building from source needs a C compiler; install one with `envira install build-tools` (needs sudo), then run `envira retry`",
+        transient: false,
+    },
+    Rule {
         re: r"The requested URL returned error: 404|HTTP 404|has no asset matching|404 Not Found",
         kind: "not found",
         hint: "a download URL or release asset does not exist (renamed upstream?); the catalog entry needs an update",
@@ -166,6 +172,27 @@ mod tests {
             Some(("missing command", false))
         );
         assert_eq!(kind("sudo: a password is required"), Some(("sudo", false)));
+        // cargo install without gcc/build-essential (real output).
+        assert_eq!(
+            kind(
+                "error: linker `cc` not found\n  |\n  = note: No such file or directory (os error 2)\nerror: could not compile `quote` (build script) due to 1 previous error"
+            ),
+            Some(("no C compiler", false))
+        );
+        // The cargo method when binstall found no prebuilt binary and `cc` is missing.
+        assert_eq!(
+            kind(
+                "cargo-binstall: ERROR Fatal error:\n  × For crate du-dust: Fallback to cargo-install is disabled\nenvira: no prebuilt binary was installed, and building from source needs a C compiler (cc)"
+            ),
+            Some(("no C compiler", false))
+        );
+        // A blocked download is still the network's fault, so it is retried.
+        assert_eq!(
+            kind(
+                "cargo-binstall:  WARN resolve: Error while downloading and extracting from fetcher github.com: Failed to download from remote: could not GET https://github.com/bootandy/dust/releases/download/v1.2.7/dust-v1.2.7-x86_64-unknown-linux-gnu.tar.gz: error sending request for url (https://github.com/bootandy/dust/releases/download/v1.2.7/dust-v1.2.7-x86_64-unknown-linux-gnu.tar.gz)\nenvira: no prebuilt binary was installed, and building from source needs a C compiler (cc)"
+            ),
+            Some(("network", true))
+        );
         assert_eq!(kind("error: could not compile `foo`"), None);
     }
 

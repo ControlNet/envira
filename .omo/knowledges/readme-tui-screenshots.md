@@ -24,8 +24,10 @@ re-shot after UI changes.
   `release-assets.githubusercontent.com` and `objects.githubusercontent.com` to `/etc/hosts`.
   fnm fails with network retries, its three dependents show as blocked, the rest succeed.
   Restore `/etc/hosts` right after.
-- Do not pick cargo tools for that run: cargo-binstall falls back to compiling, which fails with
-  `linker cc not found` when build-tools is not installed, giving extra unrelated failures.
+- Do not pick cargo tools for that run: with GitHub blocked they fail too (network, retried),
+  giving extra failures in the picture. Since 2026-11-05 the cargo method no longer lets
+  cargo-binstall compile on its own; it compiles only when `cc` exists and otherwise says a C
+  compiler is needed (diagnosed as `no C compiler`, hint `envira install build-tools`).
 
 ## Rendering
 

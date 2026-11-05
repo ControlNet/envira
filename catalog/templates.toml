@@ -113,7 +113,9 @@ latest = { http = "https://formulae.brew.sh/api/formula/{package}.json", json = 
 desc = "Rust crate (prebuilt via cargo-binstall when available)"
 expects = ["rust-toolchain"]
 scope = "user"
-install = "if command -v cargo-binstall >/dev/null 2>&1; then BINSTALL_DISABLE_TELEMETRY=true cargo binstall -y --force {package}; else cargo install --locked --force {package}; fi"
+# binstall does not compile by itself: a build needs a C compiler, which is a system package
+# (build-tools) and so cannot be a dependency of user-scope cargo tools. Without one, say so.
+install = "{ command -v cargo-binstall >/dev/null 2>&1 && BINSTALL_DISABLE_TELEMETRY=true cargo binstall -y --force --disable-strategies compile {package}; } || if command -v cc >/dev/null 2>&1; then cargo install --locked --force {package}; else echo 'envira: no prebuilt binary was installed, and building from source needs a C compiler (cc)' >&2; false; fi"
 installed = { cmd = "cargo install --list", regex = '(?m)^{package} v(\S+):' }
 latest = { http = "https://crates.io/api/v1/crates/{package}", json = "crate.max_stable_version" }
 
