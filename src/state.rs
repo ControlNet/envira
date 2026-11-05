@@ -356,6 +356,10 @@ pub struct RunRecord {
     pub finished: Option<String>,
     #[serde(default)]
     pub units: Vec<UnitRecord>,
+    /// Set when saving the run failed: why the record on disk (and the state) is behind this
+    /// one, so `retry` may not know what the run did.
+    #[serde(skip)]
+    pub unrecorded: Option<String>,
 }
 
 impl RunRecord {
@@ -397,6 +401,7 @@ impl RunRecord {
                     ..Default::default()
                 })
                 .collect(),
+            unrecorded: None,
         }
     }
 

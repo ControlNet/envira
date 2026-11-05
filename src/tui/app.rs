@@ -1303,6 +1303,7 @@ impl App {
             Event::ShellEnv(r) => run.shell_env = Some(r),
             Event::Notice(m) => self.notify(m),
             Event::Finished(rec) => {
+                let unrecorded = rec.unrecorded.clone();
                 let elapsed = run.started.elapsed();
                 // Jump to the first failure so its log is visible.
                 if let Some(i) = run.units.iter().position(|u| {
@@ -1316,6 +1317,11 @@ impl App {
                 }
                 run.finished = Some((rec, elapsed));
                 run.ctl = None;
+                if let Some(e) = unrecorded {
+                    self.notify(format!(
+                        "the run could not be recorded ({e}): retry may not know what it did"
+                    ));
+                }
             }
         }
     }

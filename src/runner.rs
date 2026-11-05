@@ -441,6 +441,26 @@ fn add_descendants(roots: &[i32], procs: &mut Vec<Proc>) {
 /// through `sudo -n`, which works while envira keeps the sudo ticket fresh during a run and
 /// fails at once otherwise.
 async fn kill_left(procs: &[Proc]) {
+    let denied = kill_own(procs);
+    if denied.is_empty() {
+        return;
+    }
+    let mut c = Command::new("sudo");
+    c.args(["-n", "kill", "-KILL", "--"])
+        .args(&denied)
+        .env("PATH", ROOT_PATH)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Ok(mut ch) = c.spawn() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), ch.wait()).await;
+    }
+}
+
+/// Kills those of `procs` still alive that this process may signal; returns the pids it may
+/// not (root's, when envira is not root).
+fn kill_own(procs: &[Proc]) -> Vec<String> {
     let mut denied = Vec::new();
     for &p in procs {
         if !proc_alive(p) {
@@ -454,19 +474,37 @@ async fn kill_left(procs: &[Proc]) {
         }
     }
     // SAFETY: geteuid has no preconditions.
-    if denied.is_empty() || unsafe { libc::geteuid() } == 0 {
-        return;
+    if unsafe { libc::geteuid() } == 0 {
+        denied.clear();
     }
-    let mut c = Command::new("sudo");
-    c.args(["-n", "kill", "-KILL", "--"])
-        .args(&denied)
-        .env("PATH", ROOT_PATH)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    if let Ok(mut ch) = c.spawn() {
-        let _ = tokio::time::timeout(Duration::from_secs(5), ch.wait()).await;
+    denied
+}
+
+/// Kills a probe's process group, and what it started outside it, when the probe is dropped
+/// before it ends: its caller was cancelled, and the probe must not run on unseen.
+struct ProbeGuard(Option<u32>);
+
+impl Drop for ProbeGuard {
+    fn drop(&mut self) {
+        let Some(pid) = self.0 else { return };
+        let mut procs = Vec::new();
+        add_descendants(&[pid as i32], &mut procs);
+        kill_group(Some(pid), libc::SIGKILL);
+        let denied = kill_own(&procs);
+        if !denied.is_empty() {
+            // Not waited for here (a destructor must not block); `sudo -n` fails at once
+            // without a ticket.
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new("sudo")
+                    .args(["-n", "kill", "-KILL", "--"])
+                    .args(&denied)
+                    .env("PATH", ROOT_PATH)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            });
+        }
     }
 }
 
@@ -616,6 +654,9 @@ impl Runner for RealRunner {
             // SAFETY: geteuid has no preconditions.
             let root = unsafe { libc::geteuid() } == 0;
             let mut c = self.capture_command(cmd, as_root, root);
+            // The guard kills it when dropped: while the shell is alive, so what it started
+            // can still be found by parentage.
+            c.kill_on_drop(false);
             let mut child = match c.spawn() {
                 Ok(ch) => ch,
                 Err(e) => {
@@ -626,12 +667,17 @@ impl Runner for RealRunner {
                 }
             };
             let pid = child.id();
+            let mut guard = ProbeGuard(pid);
             let (out, err) = (child.stdout.take(), child.stderr.take());
             let work = async {
                 let (out, err) = tokio::join!(read_capped(out), read_capped(err));
                 (out, err, child.wait().await)
             };
-            match tokio::time::timeout(timeout, work).await {
+            let ended = tokio::time::timeout(timeout, work).await;
+            if ended.is_ok() {
+                guard.0 = None;
+            }
+            match ended {
                 Ok((out, err, Ok(status))) => {
                     let mut output = String::from_utf8_lossy(&out).into_owned();
                     output.push_str(&String::from_utf8_lossy(&err));
@@ -653,6 +699,7 @@ impl Runner for RealRunner {
                         &mut procs,
                     );
                     kill_group(pid, libc::SIGKILL);
+                    guard.0 = None;
                     kill_left(&procs).await;
                     Probe {
                         code: -1,
@@ -774,6 +821,8 @@ pub mod fake {
         pub root_only: Mutex<Vec<String>>,
         /// Captures asked to run as root.
         pub root_captures: Mutex<Vec<String>>,
+        /// Substrings of captured commands that never end (a check that hangs).
+        pub capture_hangs: Mutex<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -849,6 +898,15 @@ pub mod fake {
         ) -> BoxFuture<'a, Probe> {
             if as_root {
                 self.root_captures.lock().unwrap().push(cmd.to_string());
+            }
+            if self
+                .capture_hangs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|h| cmd.contains(h.as_str()))
+            {
+                return Box::pin(std::future::pending());
             }
             let root_only = self
                 .root_only
@@ -1205,6 +1263,27 @@ mod tests {
         assert_eq!(p.code, -1);
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(!marker.exists(), "a probe's process outlived its timeout");
+    }
+
+    /// A probe dropped before it ends (its unit was cancelled) leaves nothing running either.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_dropped_probe_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("late");
+        let cmd = format!(
+            "setsid bash -c 'trap \"\" TERM HUP; sleep 2; touch {}' & sleep 30",
+            marker.display()
+        );
+        let r = runner();
+        let probe = r.capture(&cmd, Duration::from_secs(60));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), probe)
+                .await
+                .is_err()
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!marker.exists(), "a dropped probe's process ran on");
     }
 
     #[tokio::test]

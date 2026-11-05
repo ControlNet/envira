@@ -1032,6 +1032,7 @@ async fn run_plan(
     }
     let ok = record.units.iter().filter(|u| u.outcome == "ok").count();
     let failed = record.units.len() - ok;
+    let unrecorded = record.unrecorded.clone();
     // The run is recorded; what is left is showing the end of it. A reader that stalls must not
     // keep envira from ending on a signal now: nothing is left to cancel or record.
     let show = tokio::task::spawn_blocking(move || {
@@ -1042,7 +1043,11 @@ async fn run_plan(
             record.id,
             paths.run_dir(&record.id).display()
         ));
-        if failed > 0 {
+        if let Some(e) = &record.unrecorded {
+            say(format_args!(
+                "The run could not be recorded ({e}): `envira retry` may not know what it did."
+            ));
+        } else if failed > 0 {
             say(format_args!(
                 "Retry what did not finish with `envira retry`."
             ));
@@ -1054,7 +1059,11 @@ async fn run_plan(
         _ = int.recv() => std::process::exit(128 + libc::SIGINT),
         _ = term.recv() => std::process::exit(128 + libc::SIGTERM),
     }
-    Ok(if failed > 0 { 1 } else { 0 })
+    Ok(if failed > 0 || unrecorded.is_some() {
+        1
+    } else {
+        0
+    })
 }
 
 /// Writes a line to stdout. Once a run started, a closed stdout (`envira install … | head`) must

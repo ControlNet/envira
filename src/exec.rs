@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{mpsc, watch};
 
@@ -312,6 +313,7 @@ pub async fn execute(
             u.detail = Some(why.clone());
         }
         record.finished = Some(state::now_rfc3339());
+        record.unrecorded = Some(format!("{e:#}"));
         tx.send(Event::Finished(record.clone()));
         return (record, state);
     }
@@ -334,7 +336,12 @@ pub async fn execute(
         while i < waiting.len() {
             let idx = waiting[i];
             let unit = &plan.units[idx];
-            let settled = if ctl.borrow().stop {
+            let settled = if let Some(e) = &record.unrecorded {
+                // Without a record, `retry` would not know what further units did.
+                Some(Outcome::Failed(format!(
+                    "not started: the run cannot be recorded ({e})"
+                )))
+            } else if ctl.borrow().stop {
                 Some(Outcome::Skipped)
             } else {
                 unit.deps
@@ -426,8 +433,14 @@ pub async fn execute(
     state.mark_all_seen(&ctx.catalog);
     state.last_run = Some(ctx.run_id.clone());
     record.finished = Some(state::now_rfc3339());
-    let _ = state.save_run(&ctx.paths, &ctx.facts);
-    let _ = record.save(&ctx.paths, &ctx.facts);
+    if let Err(e) = state
+        .save_run(&ctx.paths, &ctx.facts)
+        .and_then(|_| record.save(&ctx.paths, &ctx.facts))
+        && record.unrecorded.is_none()
+    {
+        tx.send(Event::Notice(format!("the run cannot be recorded: {e:#}")));
+        record.unrecorded = Some(format!("{e:#}"));
+    }
     state::prune_runs(&ctx.paths, KEEP_RUNS);
     tx.send(Event::Finished(record.clone()));
     (record, state)
@@ -442,29 +455,50 @@ struct Progress {
 }
 
 impl Progress {
-    fn new(unit: &Unit, run_dir: &std::path::Path, facts: &Facts) -> Progress {
-        let file = (unit.action == Action::Revert)
-            .then(|| {
-                state::open_run_file(&state::progress_file(run_dir, &unit.id), true, facts).ok()
-            })
-            .flatten();
-        let mut p = Progress {
-            done: Vec::new(),
-            file,
-        };
-        for l in &unit.resumed {
-            p.step(l);
+    /// A revert that cannot keep its progress file does not start: if envira died midway,
+    /// `retry` would undo again what it already undid.
+    fn new(unit: &Unit, run_dir: &std::path::Path, facts: &Facts) -> Result<Progress> {
+        let mut file = None;
+        if unit.action == Action::Revert {
+            let path = state::progress_file(run_dir, &unit.id);
+            let mut f = state::open_run_file(&path, false, facts)
+                .with_context(|| format!("cannot record progress in {}", path.display()))?;
+            // What it inherited, in one write: a crash halfway must not leave a shorter
+            // progress than the record already has.
+            let text: String = unit.resumed.iter().map(|l| journal_line(l)).collect();
+            if !text.is_empty() {
+                f.write_all(text.as_bytes())
+                    .and_then(|_| f.sync_data())
+                    .with_context(|| format!("cannot record progress in {}", path.display()))?;
+            }
+            file = Some(f);
         }
-        p
+        Ok(Progress {
+            done: unit.resumed.clone(),
+            file,
+        })
     }
 
-    fn step(&mut self, label: &str) {
+    /// Adds a step it got through; an error when the progress file cannot take it.
+    fn step(&mut self, label: &str) -> std::io::Result<()> {
         self.done.push(label.to_string());
         if let Some(f) = &mut self.file {
-            let line = serde_json::to_string(label).unwrap_or_default() + "\n";
-            let _ = f.write_all(line.as_bytes()).and_then(|_| f.sync_data());
+            f.write_all(journal_line(label).as_bytes())?;
+            f.sync_data()?;
         }
+        Ok(())
     }
+}
+
+fn journal_line(label: &str) -> String {
+    serde_json::to_string(label).unwrap_or_default() + "\n"
+}
+
+/// A revert whose progress cannot be recorded stops after the step it just got through.
+fn progress_lost<F: Fn(String)>(emit: &F, label: &str, e: std::io::Error) -> Outcome {
+    let m = format!("cannot record progress after {label} ({e}); stopped");
+    emit(format!("[envira] {m}"));
+    Outcome::Failed(m)
 }
 
 /// What a unit leaves for its run record besides its outcome.
@@ -509,11 +543,12 @@ fn finish_unit(
     if let Err(e) = state
         .save_run(&ctx.paths, &ctx.facts)
         .and_then(|_| record.save(&ctx.paths, &ctx.facts))
+        && record.unrecorded.is_none()
     {
-        tx.send(Event::Line(
-            idx,
-            format!("[envira] could not save state: {e:#}"),
-        ));
+        tx.send(Event::Notice(format!(
+            "the run cannot be recorded ({e:#}): no further units start"
+        )));
+        record.unrecorded = Some(format!("{e:#}"));
     }
     tx.send(Event::UnitFinished(idx, outcome, elapsed));
 }
@@ -560,8 +595,13 @@ async fn run_unit(
         );
     }
     let started = Instant::now();
-    let mut done = Progress::new(unit, run_dir, &ctx.facts);
-    let outcome = run_steps(unit, ctx, &emit, ctl, &mut done).await;
+    let (outcome, done) = match Progress::new(unit, run_dir, &ctx.facts) {
+        Ok(mut done) => (run_steps(unit, ctx, &emit, ctl, &mut done).await, done.done),
+        Err(e) => {
+            emit(format!("[envira] not started: {e:#}"));
+            (Outcome::Failed(format!("not started: {e:#}")), Vec::new())
+        }
+    };
     if let Some(f) = log.lock().unwrap().as_mut() {
         let _ = writeln!(
             f,
@@ -579,7 +619,7 @@ async fn run_unit(
         outcome,
         Trail {
             hint,
-            done_steps: done.done,
+            done_steps: done,
         },
     )
 }
@@ -618,24 +658,41 @@ where
 
     for (n, step) in unit.steps.iter().enumerate() {
         let label = format!("step {}/{}", n + 1, unit.steps.len());
-        if let Some(c) = &step.only_if
-            && !check_passes(ctx.runner.as_ref(), c, CHECK_TIMEOUT, root).await
-        {
+        // Cancelled during a check or between steps: no further step starts.
+        let check = async |c: &str, ctl: &mut watch::Receiver<Control>| {
+            let probe = check_passes(ctx.runner.as_ref(), c, CHECK_TIMEOUT, root);
+            unless_cancelled(probe, ctl, base_seq).await
+        };
+        let only_if = match &step.only_if {
+            Some(c) => check(c, ctl).await,
+            None => Some(true),
+        };
+        let in_place = match (&step.check, only_if) {
+            (Some(c), Some(true)) => check(c, ctl).await,
+            (_, o) => o.map(|_| false),
+        };
+        if in_place.is_none() || ctl.borrow().cancel_seq != base_seq {
+            emit("[envira] cancelled".into());
+            return Outcome::Cancelled;
+        }
+        if only_if == Some(false) {
             emit(format!(
                 "[envira] {label} · {} · nothing to undo",
                 step.label
             ));
-            done.step(&step.label);
+            if let Err(e) = done.step(&step.label) {
+                return progress_lost(emit, &step.label, e);
+            }
             continue;
         }
-        if let Some(check) = &step.check
-            && check_passes(ctx.runner.as_ref(), check, CHECK_TIMEOUT, root).await
-        {
+        if in_place == Some(true) {
             emit(format!(
                 "[envira] {label} · {} · already in place",
                 step.label
             ));
-            done.step(&step.label);
+            if let Err(e) = done.step(&step.label) {
+                return progress_lost(emit, &step.label, e);
+            }
             continue;
         }
         let Some(cmd) = &step.cmd else {
@@ -643,7 +700,9 @@ where
                 "[envira] {label} · {} · not described by the catalog, revert manually",
                 step.label
             ));
-            done.step(&step.label);
+            if let Err(e) = done.step(&step.label) {
+                return progress_lost(emit, &step.label, e);
+            }
             continue;
         };
         emit(format!("$ {cmd}"));
@@ -704,7 +763,9 @@ where
                 }
             }
         }
-        done.step(&step.label);
+        if let Err(e) = done.step(&step.label) {
+            return progress_lost(emit, &step.label, e);
+        }
     }
 
     // Post-condition: the item must now be detected.
@@ -825,6 +886,29 @@ fn retry_wait(base: Duration, attempt: u32, kind: &str) -> Duration {
 }
 
 /// Sleeps unless the step is cancelled or the run stopped meanwhile; false when interrupted.
+/// The result of `fut`, or `None` when the unit is cancelled first (`fut` is dropped: a probe
+/// dropped unfinished kills what it started).
+async fn unless_cancelled<T>(
+    fut: impl std::future::Future<Output = T>,
+    ctl: &mut watch::Receiver<Control>,
+    base_seq: u32,
+) -> Option<T> {
+    tokio::pin!(fut);
+    loop {
+        if ctl.borrow().cancel_seq != base_seq {
+            return None;
+        }
+        tokio::select! {
+            v = &mut fut => return Some(v),
+            changed = ctl.changed() => {
+                if changed.is_err() {
+                    return Some(fut.await);
+                }
+            }
+        }
+    }
+}
+
 async fn pause(d: Duration, ctl: &mut watch::Receiver<Control>, base_seq: u32) -> bool {
     let sleep = tokio::time::sleep(d);
     tokio::pin!(sleep);
@@ -1630,6 +1714,93 @@ mod tests {
         assert_eq!(outcomes(&rec), vec![("inotify-watches", "ok")]);
         // Both the step's check and the verification asked root; nothing was rewritten.
         assert_eq!(s.runner.root_captures.lock().unwrap().len(), 2);
+        assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
+    }
+
+    #[tokio::test]
+    async fn a_revert_that_cannot_record_its_progress_does_not_start() {
+        let s = setup();
+        s.runner.rule("undo-", 0, "");
+        let dir = s.ctx.paths.run_dir(&s.ctx.run_id);
+        std::fs::create_dir_all(state::progress_file(&dir, "cfg")).unwrap();
+        let p = Plan {
+            units: vec![unit("cfg", "undo-a", &[])],
+            skipped: vec![],
+        };
+        let (rec, _, _) = run(&s, p).await;
+        assert_eq!(outcomes(&rec), vec![("cfg", "failed")]);
+        let detail = rec.units[0].detail.as_deref().unwrap();
+        assert!(
+            detail.contains("not started: cannot record progress"),
+            "{detail}"
+        );
+        assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
+    }
+
+    #[tokio::test]
+    async fn a_run_that_cannot_be_recorded_starts_nothing_more() {
+        let s = setup();
+        s.runner.hang("undo-a").rule("undo-", 0, "");
+        let units = vec![unit("a", "undo-a", &[]), unit("b", "undo-b", &[])];
+        let mut ctx = ctx_of(&s);
+        ctx.jobs = 1;
+        let (tx, mut rx) = events();
+        let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let plan = Plan {
+            units,
+            skipped: vec![],
+        };
+        let handle = tokio::spawn(execute(plan, ctx, State::default(), tx, ctl_rx));
+        while !matches!(rx.recv().await.unwrap(), Event::UnitStarted(0)) {}
+        // The record can no longer be replaced while a runs.
+        let file = s.ctx.paths.run_dir(&s.ctx.run_id).join("run.toml");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(file.join("x")).unwrap();
+        ctl_tx.send_modify(|c| c.cancel_seq += 1);
+        let (rec, _) = handle.await.unwrap();
+        assert_eq!(outcomes(&rec), vec![("a", "cancelled"), ("b", "failed")]);
+        assert!(rec.unrecorded.is_some());
+        let detail = rec.units[1].detail.as_deref().unwrap();
+        assert!(
+            detail.contains("not started: the run cannot be recorded"),
+            "{detail}"
+        );
+        assert_eq!(s.runner.ran(), ["undo-a"]);
+    }
+
+    #[tokio::test]
+    async fn cancelling_reaches_a_running_check() {
+        let s = setup();
+        s.runner
+            .capture_hangs
+            .lock()
+            .unwrap()
+            .push("slow-check".into());
+        s.runner.rule("undo-", 0, "");
+        let u = Unit {
+            steps: vec![UnitStep {
+                label: "a".into(),
+                cmd: Some("undo-a".into()),
+                only_if: Some("slow-check".into()),
+                ..Default::default()
+            }],
+            ..unit("cfg", "", &[])
+        };
+        let (tx, mut rx) = events();
+        let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let plan = Plan {
+            units: vec![u],
+            skipped: vec![],
+        };
+        let handle = tokio::spawn(execute(plan, ctx_of(&s), State::default(), tx, ctl_rx));
+        while !matches!(rx.recv().await.unwrap(), Event::UnitStarted(0)) {}
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ctl_tx.send_modify(|c| c.cancel_seq += 1);
+        let (rec, _) = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the cancel did not reach the check")
+            .unwrap();
+        assert_eq!(outcomes(&rec), vec![("cfg", "cancelled")]);
         assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
     }
 
