@@ -368,10 +368,106 @@ fn drop_helper() -> &'static str {
     })
 }
 
-/// Whether any process of the group led by `pid` is still alive.
+/// Whether any process of the group led by `pid` is still alive. EPERM: only processes we may
+/// not signal are left (root's, started through the user's `sudo`), which are alive too.
 fn group_alive(pid: Option<u32>) -> bool {
-    // SAFETY: signal 0 only checks that the group exists and may be signalled.
-    pid.is_some_and(|pid| unsafe { libc::kill(-(pid as i32), 0) } == 0)
+    pid.is_some_and(|pid| {
+        // SAFETY: signal 0 only checks that the group exists and may be signalled.
+        let r = unsafe { libc::kill(-(pid as i32), 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    })
+}
+
+/// A process of a cancelled step: pid and start time (a pid taken over by a newer process is
+/// left alone).
+type Proc = (i32, u64);
+
+/// `(state, ppid, start time)` from a `/proc/<pid>/stat` line. The name in parentheses may hold
+/// spaces and `)`.
+fn parse_stat(line: &str) -> Option<(char, i32, u64)> {
+    let f: Vec<&str> = line[line.rfind(')')? + 1..].split_whitespace().collect();
+    Some((
+        f.first()?.chars().next()?,
+        f.get(1)?.parse().ok()?,
+        f.get(19)?.parse().ok()?,
+    ))
+}
+
+fn stat(pid: i32) -> Option<(char, i32, u64)> {
+    parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// Whether `p` is still that process and has not exited (a zombie has).
+fn proc_alive(p: Proc) -> bool {
+    stat(p.0).is_some_and(|(state, _, start)| start == p.1 && state != 'Z')
+}
+
+/// Adds to `procs` every live process descending from `roots` or from those in `procs` (Linux;
+/// nothing where /proc does not show them). A step's processes may leave its process group:
+/// `sudo` runs its command in a session of its own, and root's processes cannot be signalled
+/// through the group by the user anyway. They are tracked by parentage instead, while the
+/// parents are still there to tell.
+fn add_descendants(roots: &[i32], procs: &mut Vec<Proc>) {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    let mut children: std::collections::HashMap<i32, Vec<Proc>> = Default::default();
+    for e in dir.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+            continue;
+        };
+        if let Some((state, ppid, start)) = stat(pid)
+            && state != 'Z'
+        {
+            children.entry(ppid).or_default().push((pid, start));
+        }
+    }
+    let mut todo: Vec<i32> = roots
+        .iter()
+        .copied()
+        .chain(procs.iter().map(|p| p.0))
+        .collect();
+    while let Some(p) = todo.pop() {
+        for &c in children.get(&p).into_iter().flatten() {
+            if !procs.contains(&c) {
+                procs.push(c);
+                todo.push(c.0);
+            }
+        }
+    }
+}
+
+/// Kills what is left of `procs`: directly, else (root's processes a user's `sudo` started)
+/// through `sudo -n`, which works while envira keeps the sudo ticket fresh during a run and
+/// fails at once otherwise.
+async fn kill_left(procs: &[Proc]) {
+    let mut denied = Vec::new();
+    for &p in procs {
+        if !proc_alive(p) {
+            continue;
+        }
+        // SAFETY: plain syscall on a pid just checked to be this process.
+        if unsafe { libc::kill(p.0, libc::SIGKILL) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        {
+            denied.push(p.0.to_string());
+        }
+    }
+    // SAFETY: geteuid has no preconditions.
+    if denied.is_empty() || unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let mut c = Command::new("sudo");
+    c.args(["-n", "kill", "-KILL", "--"])
+        .args(&denied)
+        .env("PATH", ROOT_PATH)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Ok(mut ch) = c.spawn() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), ch.wait()).await;
+    }
 }
 
 fn kill_group(pid: Option<u32>, sig: i32) {
@@ -600,16 +696,25 @@ impl Runner for RealRunner {
                         if *cancel.borrow() {
                             // The whole group gets the grace period, not just the shell: a
                             // shell that exits at once on TERM may leave a child that ignores
-                            // it, still changing the machine after the step "stopped".
+                            // it, still changing the machine after the step "stopped". So do
+                            // the step's processes outside the group (see `add_descendants`),
+                            // noted before TERM orphans them.
+                            let roots: Vec<i32> = pid.map(|p| p as i32).into_iter().collect();
+                            let mut procs = Vec::new();
+                            add_descendants(&roots, &mut procs);
                             kill_group(pid, libc::SIGTERM);
                             let grace = tokio::time::Instant::now() + Duration::from_secs(3);
                             let _ = tokio::time::timeout_at(grace, child.wait()).await;
-                            while group_alive(pid) && tokio::time::Instant::now() < grace {
+                            while (group_alive(pid) || procs.iter().any(|&p| proc_alive(p)))
+                                && tokio::time::Instant::now() < grace
+                            {
                                 tokio::time::sleep(Duration::from_millis(50)).await;
                             }
+                            add_descendants(&roots, &mut procs);
                             if group_alive(pid) {
                                 kill_group(pid, libc::SIGKILL);
                             }
+                            kill_left(&procs).await;
                             let _ = child.wait().await;
                             break StreamEnd::Cancelled;
                         }
@@ -1136,6 +1241,65 @@ mod tests {
         // The child would touch the marker 4 s after it started.
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(!marker.exists(), "a child outlived the cancellation");
+    }
+
+    #[test]
+    fn stat_lines_with_odd_names() {
+        let mut line = "123 (my prog) )) S 77 123 123 0 -1 4194560".to_string();
+        for i in 0..12 {
+            line.push_str(&format!(" {i}"));
+        }
+        line.push_str(" 987654 1 2 3");
+        assert_eq!(parse_stat(&line), Some(('S', 77, 987654)));
+        assert_eq!(parse_stat("1 (x) S"), None);
+    }
+
+    /// A step child that started a session of its own (as `sudo` does for its command) and
+    /// ignores TERM is outside the process group, and is stopped all the same.
+    #[tokio::test]
+    async fn cancel_stops_processes_that_left_the_group() {
+        let r = runner();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("after-cancel");
+        let cmd = format!(
+            "setsid bash -c 'trap \"\" TERM HUP; sleep 4; touch {}' & sleep 30",
+            marker.display()
+        );
+        let (tx, _rx) = mpsc::channel(16);
+        let (ctx, crx) = watch::channel(false);
+        let h = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            ctx.send(true).unwrap();
+            ctx
+        });
+        let end = r.stream(&cmd, dir.path(), false, tx, crx).await;
+        assert_eq!(end, StreamEnd::Cancelled);
+        drop(h.await);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(
+            !marker.exists(),
+            "a process outside the group outlived the cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn descendants_are_found_and_killed() {
+        let mut parent = std::process::Command::new("bash")
+            .args(["-c", "sleep 30 & sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut procs = Vec::new();
+        add_descendants(&[parent.id() as i32], &mut procs);
+        let comm = |p: &Proc| std::fs::read_to_string(format!("/proc/{}/comm", p.0)).unwrap();
+        assert_eq!(
+            procs.iter().filter(|p| comm(p).trim() == "sleep").count(),
+            2,
+            "{procs:?}"
+        );
+        kill_left(&procs).await;
+        let _ = parent.wait();
+        assert!(!procs.iter().any(|&p| proc_alive(p)));
     }
 
     /// A step that leaves a background process holding its stdout: the step ends when its shell
