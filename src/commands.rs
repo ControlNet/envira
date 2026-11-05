@@ -1016,20 +1016,29 @@ async fn run_plan(
     if let Some(k) = keepalive {
         k.abort();
     }
-    // The run is recorded; what is left is showing the end of it.
-    let _ = tokio::task::spawn_blocking(move || printer.join()).await;
     let ok = record.units.iter().filter(|u| u.outcome == "ok").count();
     let failed = record.units.len() - ok;
-    say(format_args!(
-        "{ok}/{} succeeded · run {} · {}",
-        record.units.len(),
-        record.id,
-        paths.run_dir(&record.id).display()
-    ));
-    if failed > 0 {
+    // The run is recorded; what is left is showing the end of it. A reader that stalls must not
+    // keep envira from ending on a signal now: nothing is left to cancel or record.
+    let show = tokio::task::spawn_blocking(move || {
+        let _ = printer.join();
         say(format_args!(
-            "Retry what did not finish with `envira retry`."
+            "{ok}/{} succeeded · run {} · {}",
+            record.units.len(),
+            record.id,
+            paths.run_dir(&record.id).display()
         ));
+        if failed > 0 {
+            say(format_args!(
+                "Retry what did not finish with `envira retry`."
+            ));
+        }
+    });
+    tokio::select! {
+        _ = show => {}
+        _ = hup.recv() => std::process::exit(128 + libc::SIGHUP),
+        _ = int.recv() => std::process::exit(128 + libc::SIGINT),
+        _ = term.recv() => std::process::exit(128 + libc::SIGTERM),
     }
     Ok(if failed > 0 { 1 } else { 0 })
 }
