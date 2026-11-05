@@ -60,6 +60,12 @@ envira's runner now sets `RUSTUP_IO_THREADS=1` for every step unless the user se
 - Measuring a memory limit on the host without a VM: `systemd-run --user --scope --quiet
   -p MemoryMax=512M -p MemorySwapMax=0 <cmd>` puts the command in its own cgroup (shown in
   /proc/self/cgroup), which is also what `available_memory` reads.
+- `available_memory` finds the hierarchies in /proc/self/mountinfo, not at a fixed path: the
+  cgroup2 mount (`memory.max`/`memory.current`, at /sys/fs/cgroup or /sys/fs/cgroup/unified on
+  hybrid systems) and the v1 memory mount (`memory.limit_in_bytes`/`memory.usage_in_bytes`), with
+  the process's path made relative to the mount's root (a v1 container sees its own cgroup as
+  the root), and takes the tightest limit up to each mount point. Checked in Docker (v2):
+  1 GB -> CARGO_BUILD_JOBS=1, 3 GB -> 2, no limit -> unset. v1 is covered by unit tests only.
 
 ## How to measure
 

@@ -55,6 +55,8 @@
   --network none` containers with the debug binary mounted read-only) are the fastest way to
   check: they plant symlinks, close stdout mid-run, kill helpers, fake releases. Re-run them
   after changes and compare markers (e.g. `DESCENDANT WROTE AFTER CANCEL`, `TARGET EXISTS`).
-- Open items: R3 retry of a partially failed revert (needs per-step
-  progress), cgroup v1/nonstandard mounts, capture output caps, explicit binstall compile policy
-  for self-update.
+- Probes (`capture`) keep at most 1 MiB per stream and drain the rest. A terminal error in the
+  TUI during a run cancels the run (like SIGHUP) before envira leaves. A catalog reload rebuilds
+  the runner (PATH from the new catalog).
+- Open items: R3 retry of a partially failed revert (needs per-step progress), explicit binstall
+  compile policy for self-update.

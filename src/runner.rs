@@ -216,41 +216,111 @@ fn build_jobs(available: Option<u64>, cores: usize) -> Option<usize> {
     (jobs < cores).then_some(jobs)
 }
 
-/// Memory this machine can still give, in bytes: `MemAvailable`, or less when a cgroup v2
-/// limits this process (a container, a systemd service or slice). `None` where there is no
-/// /proc (macOS).
+/// Memory this machine can still give, in bytes: `MemAvailable`, or less when a cgroup limits
+/// this process (a container, a systemd service or slice). `None` where there is no /proc
+/// (macOS).
 fn available_memory() -> Option<u64> {
     let read = |p: &Path| std::fs::read_to_string(p).ok();
     let host = mem_available(&read(Path::new("/proc/meminfo"))?)?;
-    let own = read(Path::new("/proc/self/cgroup"))
-        .and_then(|c| cgroup_path(&c))
-        .unwrap_or_default();
-    let cgroup = cgroup_left(Path::new("/sys/fs/cgroup"), &own, read);
-    Some(cgroup.map_or(host, |c| c.min(host)))
+    let cgroups = read(Path::new("/proc/self/cgroup")).unwrap_or_default();
+    let mounts = read(Path::new("/proc/self/mountinfo")).unwrap_or_default();
+    let left = memory_cgroups(&cgroups, &mounts)
+        .iter()
+        .filter_map(|c| cgroup_left(c, read))
+        .min();
+    Some(left.map_or(host, |c| c.min(host)))
 }
 
-/// This process's cgroup v2 path, relative to the mount (the `0::` line of /proc/self/cgroup).
-/// A path outside this cgroup namespace (`/../..`) counts as the mount root.
-fn cgroup_path(proc_cgroup: &str) -> Option<String> {
-    let p = proc_cgroup
+/// Where a memory limit of this process can be read: a hierarchy's mount point, the process's
+/// cgroup in it, and the files of the limit and the usage.
+#[derive(Debug, PartialEq)]
+struct MemCgroup {
+    mount: PathBuf,
+    own: String,
+    files: [&'static str; 2],
+}
+
+/// The cgroup v2 hierarchy (the `0::` line of /proc/self/cgroup) and the v1 memory hierarchy
+/// (`N:…memory…:`), found in /proc/self/mountinfo wherever they are mounted (hybrid systems have
+/// v2 at /sys/fs/cgroup/unified and the memory controller in v1).
+fn memory_cgroups(proc_cgroup: &str, mountinfo: &str) -> Vec<MemCgroup> {
+    // (fs type, mount root, mount point, super options) of each cgroup mount.
+    let mounts: Vec<(&str, &str, PathBuf, &str)> = mountinfo
         .lines()
-        .find_map(|l| l.strip_prefix("0::"))?
-        .trim();
-    Some(if p.split('/').any(|c| c == "..") {
-        String::new()
-    } else {
-        p.trim_start_matches('/').to_string()
-    })
+        .filter_map(|l| {
+            let (pre, post) = l.split_once(" - ")?;
+            let pre: Vec<&str> = pre.split(' ').collect();
+            let post: Vec<&str> = post.split(' ').collect();
+            let point = PathBuf::from(pre.get(4)?.replace("\\040", " "));
+            Some((
+                *post.first()?,
+                *pre.get(3)?,
+                point,
+                *post.get(2).unwrap_or(&""),
+            ))
+        })
+        .filter(|(fs, ..)| matches!(*fs, "cgroup" | "cgroup2"))
+        .collect();
+    let mut found = Vec::new();
+    for line in proc_cgroup.lines() {
+        let mut parts = line.splitn(3, ':');
+        let (Some(id), Some(controllers), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let v2 = id == "0" && controllers.is_empty();
+        if !v2 && !controllers.split(',').any(|c| c == "memory") {
+            continue;
+        }
+        let mount = mounts.iter().find(|(fs, _, _, opts)| {
+            if v2 {
+                *fs == "cgroup2"
+            } else {
+                *fs == "cgroup" && opts.split(',').any(|o| o == "memory")
+            }
+        });
+        let (root, point) = match mount {
+            Some((_, root, point, _)) => (*root, point.clone()),
+            // No mountinfo: where systemd mounts v2.
+            None if v2 && mountinfo.is_empty() => ("/", PathBuf::from("/sys/fs/cgroup")),
+            None => continue,
+        };
+        found.push(MemCgroup {
+            mount: point,
+            own: cgroup_rel(path.trim(), root),
+            files: if v2 {
+                ["memory.max", "memory.current"]
+            } else {
+                ["memory.limit_in_bytes", "memory.usage_in_bytes"]
+            },
+        });
+    }
+    found
 }
 
-/// The least memory left under any limit from the cgroup `own` up to the mount `root`: a limit
-/// on a parent slice binds as much as one on the cgroup itself.
-fn cgroup_left(root: &Path, own: &str, read: impl Fn(&Path) -> Option<String>) -> Option<u64> {
-    let mut dir = root.join(own);
+/// A cgroup path relative to the mount whose root is `root`. One outside it, or outside this
+/// cgroup namespace (`/../..`), counts as the mount point.
+fn cgroup_rel(path: &str, root: &str) -> String {
+    if path.split('/').any(|c| c == "..") {
+        return String::new();
+    }
+    let rel = match root.trim_end_matches('/') {
+        "" => Some(path),
+        r => path
+            .strip_prefix(r)
+            .filter(|p| p.is_empty() || p.starts_with('/')),
+    };
+    rel.unwrap_or("").trim_start_matches('/').to_string()
+}
+
+/// The least memory left under any limit from the process's cgroup up to the mount point: a
+/// limit on a parent slice binds as much as one on the cgroup itself.
+fn cgroup_left(c: &MemCgroup, read: impl Fn(&Path) -> Option<String>) -> Option<u64> {
+    let mut dir = c.mount.join(&c.own);
     let mut left: Option<u64> = None;
-    while dir.starts_with(root) {
-        let here = read(&dir.join("memory.max"))
-            .zip(read(&dir.join("memory.current")))
+    while dir.starts_with(&c.mount) {
+        let here = read(&dir.join(c.files[0]))
+            .zip(read(&dir.join(c.files[1])))
             .and_then(|(max, cur)| cgroup_free(&max, &cur));
         left = match (left, here) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -270,7 +340,8 @@ fn mem_available(meminfo: &str) -> Option<u64> {
     Some(kb * 1024)
 }
 
-/// What a cgroup v2 limit leaves (`memory.max` minus `memory.current`); `None` without a limit.
+/// What a cgroup limit leaves (limit minus usage); `None` without a limit (v2 `max`). v1's
+/// "no limit" is a huge number, which the host's memory caps.
 fn cgroup_free(max: &str, current: &str) -> Option<u64> {
     let max: u64 = max.trim().parse().ok()?;
     let current: u64 = current.trim().parse().ok()?;
@@ -803,14 +874,11 @@ mod tests {
 
     #[test]
     fn the_tightest_cgroup_limit_counts() {
-        assert_eq!(
-            cgroup_path("0::/system.slice/envira.service\n").as_deref(),
-            Some("system.slice/envira.service")
-        );
-        assert_eq!(cgroup_path("0::/\n").as_deref(), Some(""));
-        assert_eq!(cgroup_path("0::/../../x\n").as_deref(), Some(""));
-        assert_eq!(cgroup_path("12:memory:/x\n"), None);
-
+        let v2 = |own: &str| MemCgroup {
+            mount: "/sys/fs/cgroup".into(),
+            own: own.into(),
+            files: ["memory.max", "memory.current"],
+        };
         let root = Path::new("/sys/fs/cgroup");
         // The mount root has no limit, the slice 2 GiB (1.5 used), the service none.
         let files = |p: &Path| -> Option<String> {
@@ -824,11 +892,72 @@ mod tests {
             }
         };
         assert_eq!(
-            cgroup_left(root, "system.slice/envira.service", files),
+            cgroup_left(&v2("system.slice/envira.service"), files),
             Some(GIB / 2)
         );
-        assert_eq!(cgroup_left(root, "", files), None);
-        assert_eq!(cgroup_left(root, "user.slice", files), None);
+        assert_eq!(cgroup_left(&v2(""), files), None);
+        assert_eq!(cgroup_left(&v2("user.slice"), files), None);
+        // v1: limit_in_bytes / usage_in_bytes.
+        let v1 = MemCgroup {
+            mount: "/sys/fs/cgroup/memory".into(),
+            own: "docker/abc".into(),
+            files: ["memory.limit_in_bytes", "memory.usage_in_bytes"],
+        };
+        let files = |p: &Path| -> Option<String> {
+            match p.to_str()? {
+                "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes" => {
+                    Some(format!("{}\n", GIB))
+                }
+                "/sys/fs/cgroup/memory/docker/abc/memory.usage_in_bytes" => {
+                    Some(format!("{}\n", GIB / 4))
+                }
+                _ => None,
+            }
+        };
+        assert_eq!(cgroup_left(&v1, files), Some(3 * GIB / 4));
+    }
+
+    #[test]
+    fn memory_cgroups_are_found_where_they_are_mounted() {
+        // Pure v2, inside a cgroup namespace and outside it.
+        let v2_mounts =
+            "35 25 0:30 / /sys/fs/cgroup rw,nosuid shared:9 - cgroup2 cgroup2 rw,nsdelegate\n";
+        let found = memory_cgroups("0::/system.slice/envira.service\n", v2_mounts);
+        assert_eq!(
+            found,
+            [MemCgroup {
+                mount: "/sys/fs/cgroup".into(),
+                own: "system.slice/envira.service".into(),
+                files: ["memory.max", "memory.current"],
+            }]
+        );
+        assert_eq!(memory_cgroups("0::/../../x\n", v2_mounts)[0].own, "");
+        // Hybrid: v2 at /sys/fs/cgroup/unified, memory in v1; a container without a cgroup
+        // namespace sees its v1 mount rooted at its own cgroup.
+        let hybrid = "\
+30 24 0:26 / /sys/fs/cgroup ro,nosuid shared:9 - tmpfs tmpfs ro,mode=755
+31 30 0:27 / /sys/fs/cgroup/unified rw shared:10 - cgroup2 cgroup2 rw,nsdelegate
+35 30 0:31 /docker/abc /sys/fs/cgroup/memory rw shared:15 - cgroup cgroup rw,memory
+36 30 0:32 / /sys/fs/cgroup/cpu,cpuacct rw shared:16 - cgroup cgroup rw,cpu,cpuacct
+";
+        let cg = "12:cpu,cpuacct:/docker/abc\n9:memory:/docker/abc\n0::/docker/abc\n";
+        let found = memory_cgroups(cg, hybrid);
+        assert_eq!(
+            found
+                .iter()
+                .map(|c| (c.mount.to_str().unwrap(), c.own.as_str(), c.files[0]))
+                .collect::<Vec<_>>(),
+            [
+                ("/sys/fs/cgroup/memory", "", "memory.limit_in_bytes"),
+                ("/sys/fs/cgroup/unified", "docker/abc", "memory.max"),
+            ]
+        );
+        // No mountinfo at all: v2 where systemd puts it.
+        assert_eq!(
+            memory_cgroups("0::/user.slice\n", "")[0].mount,
+            Path::new("/sys/fs/cgroup")
+        );
+        assert!(memory_cgroups("9:memory:/x\n", "").is_empty());
     }
 
     /// Under `sudo envira` (root acting for a user), steps run as the user except system-scope
