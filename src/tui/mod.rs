@@ -211,13 +211,20 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
     // The running plan's events, read here and not forwarded: while the screen is busy they
     // wait in their own bounded queue.
     let mut exec_rx: Option<exec::EventRx> = None;
+    // The terminal failed while a run was going: it is being cancelled, and envira leaves with
+    // this error once the run is recorded.
+    let mut broken: Option<std::io::Error> = None;
 
     loop {
         // After SIGHUP the terminal is gone; keep winding the run down without drawing.
         if let Err(e) = term.draw(|f| ui::draw(f, &app, &theme))
             && !app.quitting
         {
-            return Err(e.into());
+            // Leaving now would drop the run halfway, its steps still running: stop it first.
+            if app.terminate() {
+                return Err(e.into());
+            }
+            broken = Some(e);
         }
         let first = tokio::select! {
             ev = rx.recv() => match ev {
@@ -263,7 +270,10 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                     }
                     app.on_exec(e);
                     if finished && app.quitting {
-                        return Ok(1);
+                        return match broken.take() {
+                            Some(e) => Err(e.into()),
+                            None => Ok(1),
+                        };
                     }
                 }
                 AppEvent::Terminate => {
