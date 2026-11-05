@@ -143,6 +143,12 @@ impl RealRunner {
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .kill_on_drop(true);
+        // rustup unpacks with one thread per core and buffers for them: rustup-init peaked at
+        // 560-670 MiB and was OOM-killed in 512 MiB. One IO thread: ~210 MiB, a few seconds
+        // slower. A value the user set is kept.
+        if std::env::var_os("RUSTUP_IO_THREADS").is_none() {
+            c.env("RUSTUP_IO_THREADS", "1");
+        }
         // New session without a controlling terminal: tools that open /dev/tty (even for
         // `--version`) cannot block on the TUI's terminal, and the session id doubles as the
         // process group that cancellation kills.
@@ -503,6 +509,17 @@ mod tests {
         // macOS: the temp dir is under /var, a symlink to /private/var.
         let home = std::fs::canonicalize(&r.env.home).unwrap();
         assert_eq!(p.output.trim(), home.display().to_string());
+    }
+
+    #[tokio::test]
+    async fn rustup_gets_one_io_thread() {
+        if std::env::var_os("RUSTUP_IO_THREADS").is_some() {
+            return;
+        }
+        let p = runner()
+            .capture("echo \"$RUSTUP_IO_THREADS\"", Duration::from_secs(5))
+            .await;
+        assert_eq!(p.output.trim(), "1");
     }
 
     #[tokio::test]

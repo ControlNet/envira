@@ -17,8 +17,9 @@ release build on a 60-core host unless noted; installs ran only in `envira-it-ub
 | same in the TUI | 243 MiB kept after the run, 8% CPU idle afterwards | – | – |
 
 In a 512 MiB / 2 CPU container rustup-init is OOM-killed ("Killed" in the rust-toolchain log)
-whatever envira does; `RUSTUP_IO_THREADS=1` brings it to ~210 MiB and it succeeds (+3 s).
-`--profile minimal` and `RUSTUP_CONCURRENT_DOWNLOADS=1` do not help.
+whatever envira does; `RUSTUP_IO_THREADS=1` brings it to ~210 MiB and it succeeds (+3 s on
+2 CPUs, +4-9 s on 60). `--profile minimal` and `RUSTUP_CONCURRENT_DOWNLOADS=1` do not help.
+envira's runner now sets `RUSTUP_IO_THREADS=1` for every step unless the user set it.
 
 ## Causes found
 
@@ -35,6 +36,9 @@ whatever envira does; `RUSTUP_IO_THREADS=1` brings it to ~210 MiB and it succeed
   line is one `write_all`: 2M lines take 12 MiB and half the CPU.
 - The TUI kept every line of every unit and scanned the selected log backwards for a hint on
   every frame. It keeps the last 20k lines per unit now.
+- `/tmp` on tmpfs (Fedora, Arch) is still RAM: the staged asset and binaries of a release
+  download sit there until the step ends (`tempfile` honours `TMPDIR`). That is about half the
+  old peak, freed with the temp dir, and swappable.
 
 ## Not changed (recommendations)
 
