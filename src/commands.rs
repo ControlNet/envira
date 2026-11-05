@@ -783,7 +783,8 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     let t = crate::plan::RetryTargets::new(
         rec.unfinished_units()
             .map(|u| (u.id.as_str(), u.action.as_str())),
-    );
+    )
+    .progress(&rec.units);
     if t.is_empty() {
         println!("Nothing failed in run {run_id}.");
         return Ok(0);
@@ -801,7 +802,7 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
         plan.extend(p);
     }
     if !t.revert.is_empty() {
-        plan.extend(sess.revert_plan(&snap.present(), &t.revert));
+        plan.extend(sess.revert_plan(&snap.present(), &t.revert, Some(&t.revert_done)));
     }
     run_plan(sess, plan, state, "retry", opts).await
 }
@@ -810,7 +811,7 @@ pub async fn config(sess: &Session, items: &[String], revert: bool, opts: &RunOp
     let state = sess.state()?;
     let snap = sess.snapshot(state.as_ref()).await;
     let plan = if revert {
-        sess.revert_plan(&snap.present(), items)
+        sess.revert_plan(&snap.present(), items, None)
     } else {
         for i in items {
             if !sess.catalog.configs.contains_key(i) {

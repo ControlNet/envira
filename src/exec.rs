@@ -336,7 +336,7 @@ pub async fn execute(
                     idx,
                     unit,
                     outcome,
-                    None,
+                    Trail::default(),
                     Duration::ZERO,
                 );
                 continue;
@@ -354,12 +354,12 @@ pub async fn execute(
             let mut uctl = ctl.clone();
             running.push(async move {
                 let started = Instant::now();
-                let (outcome, hint) =
+                let (outcome, trail) =
                     run_unit(idx, unit, ctx_ref, tx_ref, &mut uctl, run_dir_ref).await;
-                (idx, outcome, hint, started.elapsed())
+                (idx, outcome, trail, started.elapsed())
             });
         }
-        let Some((idx, outcome, hint, elapsed)) = running.next().await else {
+        let Some((idx, outcome, trail, elapsed)) = running.next().await else {
             // Nothing runs, so nothing waiting can become ready: a dependency outside the plan.
             for idx in waiting.drain(..) {
                 let unit = &plan.units[idx];
@@ -373,7 +373,7 @@ pub async fn execute(
                     idx,
                     unit,
                     outcome,
-                    None,
+                    Trail::default(),
                     Duration::ZERO,
                 );
             }
@@ -396,7 +396,7 @@ pub async fn execute(
             idx,
             unit,
             outcome,
-            hint,
+            trail,
             elapsed,
         );
     }
@@ -416,6 +416,15 @@ pub async fn execute(
     (record, state)
 }
 
+/// What a unit leaves for its run record besides its outcome.
+#[derive(Default)]
+struct Trail {
+    /// The last diagnosis hint.
+    hint: Option<String>,
+    /// Labels of the steps it got through.
+    done_steps: Vec<String>,
+}
+
 /// Records how a unit ended in the state and the run record, saves both, and reports it.
 #[allow(clippy::too_many_arguments)]
 fn finish_unit(
@@ -426,18 +435,20 @@ fn finish_unit(
     idx: usize,
     unit: &Unit,
     outcome: Outcome,
-    hint: Option<String>,
+    trail: Trail,
     elapsed: Duration,
 ) {
     update_state(state, unit, &outcome, &ctx.run_id);
+    let failed = !outcome.succeeded();
     record.units[idx] = UnitRecord {
         id: unit.id.clone(),
         action: unit.action.as_str().into(),
         via: unit.via.clone(),
         outcome: outcome.as_str().into(),
         detail: outcome.detail(),
-        hint: hint.filter(|_| !outcome.succeeded()),
+        hint: trail.hint.filter(|_| failed),
         seconds: (elapsed.as_secs_f64() * 10.0).round() / 10.0,
+        done_steps: if failed { trail.done_steps } else { vec![] },
     };
     if let Err(e) = state
         .save_run(&ctx.paths, &ctx.facts)
@@ -458,7 +469,7 @@ async fn run_unit(
     tx: &EventTx,
     ctl: &mut watch::Receiver<Control>,
     run_dir: &std::path::Path,
-) -> (Outcome, Option<String>) {
+) -> (Outcome, Trail) {
     let log_path = run_dir.join(format!("{}.log", unit.id));
     let log = std::fs::File::create(&log_path).ok();
     if log.is_some() {
@@ -496,7 +507,8 @@ async fn run_unit(
         );
     }
     let started = Instant::now();
-    let outcome = run_steps(unit, ctx, &emit, ctl).await;
+    let mut done = Vec::new();
+    let outcome = run_steps(unit, ctx, &emit, ctl, &mut done).await;
     if let Some(f) = log.lock().unwrap().as_mut() {
         let _ = writeln!(
             f,
@@ -510,14 +522,22 @@ async fn run_unit(
         );
     }
     let hint = hint.lock().unwrap().clone();
-    (outcome, hint)
+    (
+        outcome,
+        Trail {
+            hint,
+            done_steps: done,
+        },
+    )
 }
 
+/// Runs the steps of a unit; `done` gets the label of each step it gets through.
 async fn run_steps<F>(
     unit: &Unit,
     ctx: &ExecCtx,
     emit: &F,
     ctl: &mut watch::Receiver<Control>,
+    done: &mut Vec<String>,
 ) -> Outcome
 where
     F: Fn(String) + Clone + Send + 'static,
@@ -545,6 +565,16 @@ where
 
     for (n, step) in unit.steps.iter().enumerate() {
         let label = format!("step {}/{}", n + 1, unit.steps.len());
+        if let Some(c) = &step.only_if
+            && !check_passes(ctx.runner.as_ref(), c, CHECK_TIMEOUT, root).await
+        {
+            emit(format!(
+                "[envira] {label} · {} · nothing to undo",
+                step.label
+            ));
+            done.push(step.label.clone());
+            continue;
+        }
         if let Some(check) = &step.check
             && check_passes(ctx.runner.as_ref(), check, CHECK_TIMEOUT, root).await
         {
@@ -552,6 +582,7 @@ where
                 "[envira] {label} · {} · already in place",
                 step.label
             ));
+            done.push(step.label.clone());
             continue;
         }
         let Some(cmd) = &step.cmd else {
@@ -559,6 +590,7 @@ where
                 "[envira] {label} · {} · not described by the catalog, revert manually",
                 step.label
             ));
+            done.push(step.label.clone());
             continue;
         };
         emit(format!("$ {cmd}"));
@@ -619,6 +651,7 @@ where
                 }
             }
         }
+        done.push(step.label.clone());
     }
 
     // Post-condition: the item must now be detected.
@@ -1293,9 +1326,8 @@ mod tests {
             scope: Scope::User,
             steps: vec![UnitStep {
                 label: "run".into(),
-                check: None,
                 cmd: Some(cmd.into()),
-                as_root: false,
+                ..Default::default()
             }],
             verify: vec![],
             deps: deps.iter().map(|d| d.to_string()).collect(),
@@ -1525,6 +1557,63 @@ mod tests {
         // Both the step's check and the verification asked root; nothing was rewritten.
         assert_eq!(s.runner.root_captures.lock().unwrap().len(), 2);
         assert!(s.runner.ran().is_empty(), "{:?}", s.runner.ran());
+    }
+
+    #[tokio::test]
+    async fn a_revert_that_stopped_halfway_resumes_where_it_failed() {
+        let s = setup();
+        let step = |l: &str| UnitStep {
+            label: l.into(),
+            cmd: Some(format!("undo-{l}")),
+            only_if: Some(format!("in-place-{l}")),
+            ..Default::default()
+        };
+        let revert = |steps: Vec<UnitStep>| Plan {
+            units: vec![Unit {
+                steps,
+                ..unit("cfg", "", &[])
+            }],
+            skipped: vec![],
+        };
+        // Undoing b fails: the record keeps that a got through.
+        s.runner
+            .rule("undo-b", 1, "error: busy")
+            .rule("undo-", 0, "")
+            .rule("in-place-", 0, "");
+        let plain = |v: Vec<UnitStep>| -> Vec<UnitStep> {
+            v.into_iter()
+                .map(|s| UnitStep { only_if: None, ..s })
+                .collect()
+        };
+        let (rec, _, _) = run(&s, revert(plain(vec![step("a"), step("b"), step("c")]))).await;
+        assert_eq!(outcomes(&rec), vec![("cfg", "failed")]);
+        assert_eq!(rec.units[0].done_steps, ["a"]);
+        // The retry starts at b, as it is (it may have undone part of its change); c only runs
+        // while its change is in place, and it no longer is.
+        s.runner
+            .rules
+            .lock()
+            .unwrap()
+            .retain(|(n, ..)| n != "undo-b");
+        s.runner
+            .rules
+            .lock()
+            .unwrap()
+            .insert(0, ("in-place-c".into(), 1, String::new()));
+        s.runner.log.lock().unwrap().clear();
+        let steps = crate::plan::resume_revert(
+            vec![step("a"), step("b"), step("c")],
+            &rec.units[0].done_steps,
+        );
+        let (rec, _, events) = run(&s, revert(steps)).await;
+        assert_eq!(outcomes(&rec), vec![("cfg", "ok")]);
+        assert_eq!(s.runner.ran(), ["undo-b"]);
+        assert!(rec.units[0].done_steps.is_empty());
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Line(_, l) if l.contains("c · nothing to undo")))
+        );
     }
 
     #[tokio::test]

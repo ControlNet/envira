@@ -1,6 +1,6 @@
 //! Shared session: catalog, facts, paths and runner used by the CLI and the TUI.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,9 +139,17 @@ impl Session {
         p.plan(targets, force)
     }
 
-    pub fn revert_plan(&self, present: &BTreeSet<String>, targets: &[String]) -> Plan {
+    /// Reverts `targets`; `retrying` reverts that stopped halfway, with the steps each got
+    /// through (see `Planner::retrying`).
+    pub fn revert_plan(
+        &self,
+        present: &BTreeSet<String>,
+        targets: &[String],
+        retrying: Option<&BTreeMap<String, Vec<String>>>,
+    ) -> Plan {
         let mut p = Planner::new(&self.catalog, &self.facts, present);
         p.prefer_system = self.prefer_system();
+        p.retrying = retrying.cloned();
         p.revert(targets)
     }
 

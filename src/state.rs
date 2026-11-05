@@ -299,7 +299,7 @@ pub fn chown_to_target(path: &Path, facts: &Facts) {
 }
 
 /// Outcome of one unit in a run record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UnitRecord {
     pub id: String,
     pub action: String,
@@ -310,6 +310,10 @@ pub struct UnitRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
     pub seconds: f64,
+    /// Labels of the steps a unit that did not succeed got through, in order: a retried revert
+    /// does not run them again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -361,9 +365,7 @@ impl RunRecord {
                     action: u.action.as_str().into(),
                     via: u.via.clone(),
                     outcome: "pending".into(),
-                    detail: None,
-                    hint: None,
-                    seconds: 0.0,
+                    ..Default::default()
                 })
                 .collect(),
         }
@@ -629,9 +631,8 @@ mod tests {
                 action: "install".into(),
                 via: "github-release".into(),
                 outcome: "failed".into(),
-                detail: None,
-                hint: None,
                 seconds: 1.0,
+                ..Default::default()
             });
             r.save(&paths, &facts).unwrap();
         }

@@ -564,15 +564,22 @@ impl App {
             plan.extend(p);
         }
         if !t.revert.is_empty() {
-            plan.extend(self.make_revert(&t.revert));
+            plan.extend(self.make_revert(&t.revert, Some(&t.revert_done)));
         }
         plan
     }
 
-    fn make_revert(&self, targets: &[String]) -> Plan {
+    /// Reverts `targets`; `retrying` reverts that stopped halfway, with the steps each got
+    /// through (see `Planner::retrying`).
+    fn make_revert(
+        &self,
+        targets: &[String],
+        retrying: Option<&BTreeMap<String, Vec<String>>>,
+    ) -> Plan {
         let present = self.present();
         let mut p = Planner::new(&self.catalog, &self.facts, &present);
         p.prefer_system = self.prefer_system;
+        p.retrying = retrying.cloned();
         p.revert(targets)
     }
 
@@ -922,7 +929,7 @@ impl App {
                     self.notify("Only configs can be reverted");
                 } else {
                     let n = t.len();
-                    self.open_plan(self.make_revert(&t), format!("revert · {n} configs"));
+                    self.open_plan(self.make_revert(&t, None), format!("revert · {n} configs"));
                 }
             }
             KeyCode::Char('t') => match self.last_run.clone() {
@@ -1146,7 +1153,8 @@ impl App {
                 let t = crate::plan::RetryTargets::new(
                     run.failed_units()
                         .map(|u| (u.id.as_str(), u.action.as_str())),
-                );
+                )
+                .progress(run.finished.iter().flat_map(|(rec, _)| &rec.units));
                 if t.is_empty() {
                     self.notify("Nothing to retry");
                 } else {

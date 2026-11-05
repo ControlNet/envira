@@ -66,5 +66,10 @@
 - Probes (`capture`) keep at most 1 MiB per stream and drain the rest. A terminal error in the
   TUI during a run cancels the run (like SIGHUP) before envira leaves. A catalog reload rebuilds
   the runner (PATH from the new catalog).
-- Open items: R3 retry of a partially failed revert (needs per-step progress), explicit binstall
-  compile policy for self-update.
+- Run records keep `done_steps` (labels of the steps a unit got through) for units that did not
+  succeed. `envira retry` / TUI `r` plan a failed revert even when the config no longer passes
+  its full check (`Planner::retrying`): the leading steps matching `done_steps` are left out,
+  the step that failed runs again as it is (it may have undone part of its change), and the
+  steps after it carry `only_if` = their apply check (run only while their change is in place;
+  `as_script` writes `if check; then cmd; fi`). Plain `config revert` is unchanged.
+- Open items: explicit binstall compile policy for self-update.

@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::catalog::{Catalog, InstallEntry, ScopeSpec};
 use crate::facts::Facts;
-use crate::state::Scope;
+use crate::state::{Scope, UnitRecord};
 use crate::template::{Ctx, Vars, shell_quote, unmet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -44,6 +44,8 @@ pub struct RetryTargets {
     pub install: Vec<String>,
     pub update: Vec<String>,
     pub revert: Vec<String>,
+    /// The steps each revert got through (labels), from the run record.
+    pub revert_done: BTreeMap<String, Vec<String>>,
 }
 
 impl RetryTargets {
@@ -58,6 +60,16 @@ impl RetryTargets {
             }
         }
         t
+    }
+
+    /// Adds how far the reverts got, from the run's records.
+    pub fn progress<'a>(mut self, records: impl IntoIterator<Item = &'a UnitRecord>) -> Self {
+        for r in records {
+            if r.action == "revert" && self.revert.contains(&r.id) && !r.done_steps.is_empty() {
+                self.revert_done.insert(r.id.clone(), r.done_steps.clone());
+            }
+        }
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -76,6 +88,10 @@ pub struct UnitStep {
     /// `sudo envira` it runs as root, not as the user.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub as_root: bool,
+    /// Runs the step only while this check passes, else skips it: in a retried revert, a step
+    /// after the one that failed undoes its change only while the change is in place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub only_if: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -441,6 +457,9 @@ pub struct Planner<'a> {
     facts: &'a Facts,
     present: &'a BTreeSet<String>,
     pub prefer_system: bool,
+    /// Retrying reverts that stopped halfway, with the steps each got through (see
+    /// [`resume_revert`]); a config no longer (fully) applied is reverted too.
+    pub retrying: Option<BTreeMap<String, Vec<String>>>,
     memo: BTreeMap<String, Result<Choice, String>>,
     visiting: BTreeSet<String>,
 }
@@ -452,6 +471,7 @@ impl<'a> Planner<'a> {
             facts,
             present,
             prefer_system: facts.privilege.can_elevate(),
+            retrying: None,
             memo: BTreeMap::new(),
             visiting: BTreeSet::new(),
         }
@@ -612,6 +632,7 @@ impl<'a> Planner<'a> {
             check: None,
             cmd: Some(vars.expand(&tpl, Ctx::Shell)?),
             as_root: false,
+            only_if: None,
         }];
         if entry.portable
             && scope == Scope::User
@@ -630,6 +651,7 @@ impl<'a> Planner<'a> {
                     check: None,
                     cmd: Some(c),
                     as_root: true,
+                    only_if: None,
                 });
             }
         }
@@ -727,6 +749,7 @@ impl<'a> Planner<'a> {
                 check: s.check,
                 cmd: Some(s.apply),
                 as_root: false,
+                only_if: None,
             })
             .collect();
         Ok(Choice {
@@ -805,7 +828,7 @@ impl<'a> Planner<'a> {
                     .push((id.clone(), "only configs can be reverted".into()));
                 continue;
             };
-            if !self.present.contains(id) {
+            if !self.present.contains(id) && self.retrying.is_none() {
                 plan.skipped.push((id.clone(), "not applied".into()));
                 continue;
             }
@@ -821,16 +844,28 @@ impl<'a> Planner<'a> {
                     action: Action::Revert,
                     via: "config".into(),
                     scope,
-                    steps: cs
-                        .into_iter()
-                        .rev()
-                        .map(|s| UnitStep {
-                            label: format!("revert {}", s.label),
-                            check: None,
-                            cmd: s.revert,
-                            as_root: false,
-                        })
-                        .collect(),
+                    steps: {
+                        let steps = cs
+                            .into_iter()
+                            .rev()
+                            .map(|s| UnitStep {
+                                label: format!("revert {}", s.label),
+                                cmd: s.revert,
+                                only_if: s.check,
+                                ..Default::default()
+                            })
+                            .collect();
+                        match &self.retrying {
+                            Some(done) => resume_revert(
+                                steps,
+                                done.get(id).map(Vec::as_slice).unwrap_or_default(),
+                            ),
+                            None => steps
+                                .into_iter()
+                                .map(|s| UnitStep { only_if: None, ..s })
+                                .collect(),
+                        }
+                    },
                     verify: vec![],
                     deps: vec![],
                     reason: "requested".into(),
@@ -841,6 +876,29 @@ impl<'a> Planner<'a> {
         }
         plan
     }
+}
+
+/// The steps of a revert still to run after a run that stopped halfway got through `done`
+/// (labels, in order). Those are left out; the one that failed runs again as it is (it may have
+/// undone part of its change), and the ones after it only while their change is in place.
+pub fn resume_revert(steps: Vec<UnitStep>, done: &[String]) -> Vec<UnitStep> {
+    let skip = steps
+        .iter()
+        .zip(done)
+        .take_while(|(s, d)| &s.label == *d)
+        .count();
+    steps
+        .into_iter()
+        .skip(skip)
+        .enumerate()
+        .map(|(i, s)| {
+            if i == 0 {
+                UnitStep { only_if: None, ..s }
+            } else {
+                s
+            }
+        })
+        .collect()
 }
 
 fn summarize(notes: &[String], facts: &Facts) -> String {
@@ -876,10 +934,11 @@ pub fn as_script(plan: &Plan) -> String {
             u.reason
         ));
         for st in &u.steps {
-            match (&st.check, &st.cmd) {
-                (Some(c), Some(cmd)) => s.push_str(&format!("{c} || {{ {cmd}; }}\n")),
-                (None, Some(cmd)) => s.push_str(&format!("{cmd}\n")),
-                (_, None) => s.push_str(&format!("# {}: manual\n", shell_quote(&st.label))),
+            match (&st.check, &st.only_if, &st.cmd) {
+                (_, Some(c), Some(cmd)) => s.push_str(&format!("if {c}; then {cmd}; fi\n")),
+                (Some(c), None, Some(cmd)) => s.push_str(&format!("{c} || {{ {cmd}; }}\n")),
+                (None, None, Some(cmd)) => s.push_str(&format!("{cmd}\n")),
+                (_, _, None) => s.push_str(&format!("# {}: manual\n", shell_quote(&st.label))),
             }
         }
     }
@@ -1186,6 +1245,7 @@ mod tests {
                 .contains("fs restore /home/user/.config/yazi/theme.toml --key flavor.dark")
         );
         assert!(u.steps[1].cmd.is_none());
+        assert!(u.steps.iter().all(|s| s.only_if.is_none()));
         assert_eq!(
             plan.skipped,
             vec![(
@@ -1193,6 +1253,82 @@ mod tests {
                 "only configs can be reverted".to_string()
             )]
         );
+        // A revert that stopped halfway leaves the config not (fully) applied: only a retry
+        // reverts it again.
+        let none = set(&[]);
+        let plan = Planner::new(&c, &f, &none).revert(&["yazi-theme".into()]);
+        assert!(plan.units.is_empty());
+        let mut p = Planner::new(&c, &f, &none);
+        p.retrying = Some(BTreeMap::new());
+        let plan = p.revert(&["yazi-theme".into()]);
+        assert_eq!(plan.units.len(), 1);
+        // Nothing recorded: the first step runs as it is, the next one if still in place.
+        let steps = &plan.units[0].steps;
+        assert!(steps[0].only_if.is_none());
+        assert!(
+            steps[1]
+                .only_if
+                .as_deref()
+                .unwrap()
+                .contains("flavors/onedark.yazi")
+        );
+    }
+
+    #[test]
+    fn a_retried_revert_starts_at_the_step_that_failed() {
+        let step = |l: &str| UnitStep {
+            label: l.into(),
+            cmd: Some(format!("undo {l}")),
+            only_if: Some(format!("check {l}")),
+            ..Default::default()
+        };
+        let steps = vec![step("a"), step("b"), step("c")];
+        let labels = |v: &[UnitStep]| {
+            v.iter()
+                .map(|s| (s.label.clone(), s.only_if.is_some()))
+                .collect::<Vec<_>>()
+        };
+        let left = resume_revert(steps.clone(), &["a".into()]);
+        assert_eq!(labels(&left), [("b".into(), false), ("c".into(), true)]);
+        let script = as_script(&Plan {
+            units: vec![Unit {
+                id: "cfg".into(),
+                kind: Kind::Config,
+                action: Action::Revert,
+                via: "config".into(),
+                scope: Scope::User,
+                steps: left,
+                verify: vec![],
+                deps: vec![],
+                reason: "retry".into(),
+                expect: None,
+            }],
+            skipped: vec![],
+        });
+        assert!(
+            script.ends_with("undo b\nif check c; then undo c; fi\n"),
+            "{script}"
+        );
+        // Steps that changed since are not skipped past their first difference.
+        let left = resume_revert(steps.clone(), &["x".into(), "b".into()]);
+        assert_eq!(labels(&left).len(), 3);
+        assert!(resume_revert(steps, &["a".into(), "b".into(), "c".into()]).is_empty());
+        let t = RetryTargets::new([("cfg", "revert"), ("bat", "install")]).progress(&[
+            UnitRecord {
+                id: "cfg".into(),
+                action: "revert".into(),
+                done_steps: vec!["a".into()],
+                ..Default::default()
+            },
+            UnitRecord {
+                id: "bat".into(),
+                action: "install".into(),
+                done_steps: vec!["x".into()],
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(t.revert_done.len(), 1);
+        assert_eq!(t.revert_done["cfg"], ["a"]);
     }
 
     #[test]
