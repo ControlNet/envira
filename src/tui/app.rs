@@ -326,7 +326,11 @@ pub struct App {
     /// SIGTERM/SIGHUP arrived during a run: quit once it has wound down.
     pub quitting: bool,
     /// The last run left these units unfinished: `(run id, ids, whether it finished)`.
-    pub last_run: Option<(String, Vec<String>, bool)>,
+    /// The last run, when it left something unfinished: its id, what to retry and how (as
+    /// `envira retry` would), and whether it finished.
+    pub last_run: Option<(String, crate::plan::RetryTargets, bool)>,
+    /// A retry waiting for detection to catch up with the run that just ended (`r`).
+    pending_retry: Option<crate::plan::RetryTargets>,
     /// Mouse targets of the last frame; drawing fills it, later entries lie on top.
     pub hits: RefCell<Vec<(Rect, Hit)>>,
     pub items_view: View,
@@ -375,6 +379,7 @@ impl App {
             tick: 0,
             quitting: false,
             last_run: None,
+            pending_retry: None,
             hits: RefCell::new(Vec::new()),
             items_view: View::default(),
             bundles_view: View::default(),
@@ -425,6 +430,10 @@ impl App {
             }
         }
         self.snap = Some(snap);
+        if let Some(t) = self.pending_retry.take() {
+            let plan = self.retry_plan(&t);
+            self.open_plan(plan, format!("retry · {} unfinished", t.len()));
+        }
         if self.reseed {
             self.reseed = false;
             self.selected = self
@@ -940,10 +949,10 @@ impl App {
                 }
             }
             KeyCode::Char('t') => match self.last_run.clone() {
-                Some((id, left, _)) => {
-                    let n = left.len();
+                Some((id, t, _)) => {
+                    let n = t.len();
                     self.open_plan(
-                        self.make_plan(&left),
+                        self.retry_plan(&t),
                         format!("retry · {n} unfinished from run {id}"),
                     );
                 }
@@ -1125,11 +1134,23 @@ impl App {
         let finished = run.finished.is_some();
         let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c');
         if ctrl_c && !finished {
+            // As on the command line: the first stops after the running steps, the next
+            // cancels them.
+            let again = run.stopping;
             if let Some(ctl) = &run.ctl {
-                ctl.send_modify(|c| c.stop = true);
+                ctl.send_modify(|c| {
+                    c.stop = true;
+                    if again {
+                        c.cancel_seq += 1;
+                    }
+                });
             }
             run.stopping = true;
-            self.notify("Stopping after the running steps");
+            self.notify(if again {
+                "Cancelling the running steps"
+            } else {
+                "Stopping after the running steps (Ctrl-C again cancels them)"
+            });
             return vec![];
         }
         match k.code {
@@ -1165,11 +1186,14 @@ impl App {
                 if t.is_empty() {
                     self.notify("Nothing to retry");
                 } else {
-                    let plan = self.retry_plan(&t);
-                    let n = t.install.len() + t.update.len() + t.revert.len();
+                    // Planned once detection has seen what the run changed: a build that
+                    // went through is not run again for a copy that failed after it.
                     self.run = None;
                     self.screen = Screen::Dashboard;
-                    self.open_plan(plan, format!("retry · {n} unfinished"));
+                    self.pending_retry = Some(t);
+                    self.detecting = true;
+                    self.notify("Checking what the run changed before the retry");
+                    return vec![Cmd::Refresh(Fetch::IfStale)];
                 }
             }
             KeyCode::Enter | KeyCode::Esc if finished => {
@@ -1199,8 +1223,12 @@ impl App {
         let Ok(rec) = RunRecord::load(&self.paths, &id) else {
             return;
         };
-        let left = rec.unfinished();
-        if left.is_empty() {
+        let t = crate::plan::RetryTargets::new(
+            rec.unfinished_units()
+                .map(|u| (u.id.as_str(), u.action.as_str())),
+        )
+        .progress(&rec.units, Some(&self.paths.run_dir(&id)));
+        if t.is_empty() {
             return;
         }
         if rec.finished.is_none()
@@ -1209,13 +1237,13 @@ impl App {
             self.notify(format!("Run {id} is still in progress in another envira"));
             return;
         }
-        let n = left.len();
+        let n = t.len();
         self.notify(if rec.finished.is_none() {
             format!("Run {id} was interrupted and left {n} unfinished · t retries")
         } else {
             format!("Run {id} left {n} unfinished · t retries")
         });
-        self.last_run = Some((id, left, rec.finished.is_some()));
+        self.last_run = Some((id, t, rec.finished.is_some()));
     }
 
     /// SIGTERM or SIGHUP: true when the TUI can exit now; during a run it stops the run and
@@ -1470,7 +1498,12 @@ pub mod tests {
             Duration::from_secs(1),
         ));
         a.on_exec(Event::Finished(RunRecord::default()));
-        a.on_key(key(KeyCode::Char('r')));
+        // Planned once detection has caught up with the run.
+        let cmds = a.on_key(key(KeyCode::Char('r')));
+        assert!(matches!(cmds[..], [Cmd::Refresh(_)]));
+        assert_eq!(a.screen, Screen::Dashboard);
+        let snap = a.snap.clone().unwrap();
+        a.on_snapshot(snap, None);
         assert_eq!(a.screen, Screen::Plan);
         let (plan, title) = a.plan.as_ref().unwrap();
         assert_eq!(title, "retry · 1 unfinished");
@@ -1552,9 +1585,53 @@ pub mod tests {
                 .collect::<Vec<_>>(),
             vec!["fnm", "nodejs", "npm-prefix", "codex"]
         );
-        a.on_key(key(KeyCode::Char('r')));
+        // Planned once detection has caught up with the run.
+        let cmds = a.on_key(key(KeyCode::Char('r')));
+        assert!(matches!(cmds[..], [Cmd::Refresh(_)]));
+        assert_eq!(a.screen, Screen::Dashboard);
+        let snap = a.snap.clone().unwrap();
+        a.on_snapshot(snap, None);
         assert_eq!(a.screen, Screen::Plan);
         assert!(a.plan.as_ref().unwrap().1.starts_with("retry"));
+    }
+
+    #[test]
+    fn ctrl_c_twice_cancels_the_running_steps() {
+        let mut a = app();
+        let plan = a.make_plan(&["herdr".into()]);
+        let (ctl_tx, ctl_rx) = watch::channel(Control::default());
+        a.start_run(plan, "r1".into(), Some(ctl_tx));
+        a.on_exec(Event::UnitStarted(0));
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        a.on_key(ctrl_c);
+        let c = *ctl_rx.borrow();
+        assert!(c.stop && c.cancel_seq == 0);
+        a.on_key(ctrl_c);
+        assert_eq!(ctl_rx.borrow().cancel_seq, 1);
+    }
+
+    #[test]
+    fn the_last_run_is_retried_the_way_it_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.paths = Paths {
+            state_dir: dir.path().join("state"),
+            config_dir: dir.path().join("config"),
+            cache_dir: dir.path().join("cache"),
+        };
+        // An interrupted revert of a config: `t` reverts it again, not apply it.
+        let id = "npm-prefix".to_string();
+        let plan = a.make_revert(std::slice::from_ref(&id), Some(&BTreeMap::new()));
+        assert_eq!(plan.units.len(), 1, "{:?}", plan.skipped);
+        let rec = RunRecord::planned(&plan, "20261029-140500", "config revert");
+        rec.save(&a.paths, &a.facts).unwrap();
+        a.state.as_mut().unwrap().last_run = Some("20261029-140500".into());
+        a.load_last_run();
+        a.on_key(key(KeyCode::Char('t')));
+        assert_eq!(a.screen, Screen::Plan);
+        let (plan, _) = a.plan.as_ref().unwrap();
+        assert_eq!(plan.units[0].id, id);
+        assert_eq!(plan.units[0].action, crate::plan::Action::Revert);
     }
 
     #[test]

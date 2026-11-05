@@ -39,7 +39,7 @@ impl Action {
 /// The unfinished units of a run, split by what they were doing: retrying an update must
 /// update again (an install plan skips a tool still present at its old version), and retrying
 /// a revert must revert again (an install plan would apply the config instead).
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RetryTargets {
     pub install: Vec<String>,
     pub update: Vec<String>,
@@ -95,7 +95,11 @@ impl RetryTargets {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.install.is_empty() && self.update.is_empty() && self.revert.is_empty()
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.install.len() + self.update.len() + self.revert.len()
     }
 }
 

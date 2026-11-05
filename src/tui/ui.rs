@@ -358,7 +358,7 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 failed.len(),
                 t.red,
                 match &app.last_run {
-                    Some((_, left, _)) => format!("failed · last run left {} · t", left.len()),
+                    Some((_, t, _)) => format!("failed · last run left {} · t", t.len()),
                     None if failed.is_empty() => "failed".into(),
                     None => format!("failed · {}", failed.join(" ")),
                 },
