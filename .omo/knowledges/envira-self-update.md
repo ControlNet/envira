@@ -28,9 +28,21 @@ pipx-managed one still counts as pipx (the path decides).
   `self_updated` and `U` only says to restart (otherwise it would download again).
 - `reqwest::blocking` panics inside the tokio runtime: the notice and the TUI check run in
   `spawn_blocking`; `self-update` itself is dispatched before the runtime/session.
-- Write the new binary into the same directory (`.envira.new`) and `rename`: a rename across
-  filesystems fails. For a non-writable directory, stage it in a tempdir as the user, then
-  `sudo install -m 755`.
+- Write the new binary into the same directory and `rename`: a rename across filesystems fails.
+  The temp file has a unique name created with O_EXCL (`tempfile_in`), never a fixed
+  `.envira.new` that a planted symlink could redirect; it is closed (`into_temp_path`) before
+  `--version` runs it, or exec fails with ETXTBSY.
+- Ownership: the new file gets the old file's uid/gid when envira is root (`sudo envira
+  self-update` on a root-owned /usr/local/bin/envira must stay root-owned; the first version
+  chowned it to SUDO_USER).
+- Non-writable directory: stage and check it in a tempdir as the user, then
+  `sudo install -m 755 -o <uid> -g <gid> staged <dir>/.envira.new.<pid>` and `sudo mv -f` over
+  the binary (a rename in one directory: the old binary stays until the swap).
+- A package-manager update that leaves `--version` at the old version returns `Unchanged(1)`, not
+  `Updated` (the TUI would offer a restart into the old version). A pip install outside the
+  home is refused (`pip --user` would install a second copy elsewhere).
+- Only `https://api.github.com/` gets `GITHUB_TOKEN`/`GH_TOKEN` (`net::github_token`), never a
+  mirror set with `ENVIRA_RELEASES_URL`.
 
 ## Testing without a new release
 
@@ -42,6 +54,11 @@ answers `/latest` with `302 Location: …/tag/v9.9.9` and serves
 `ENVIRA_RELEASES_URL=http://127.0.0.1:<port>/rel`, and copy the binary out of `target/` first, or
 it is a source build. On the host use scratch `ENVIRA_STATE_DIR`/`XDG_*` and
 `ENVIRA_NO_REMOTE=1`.
+
+Sudo paths in a `--rm` container (`--user root`, a user `alice` with NOPASSWD sudo, the fake
+server inside the container): `su alice -c 'envira self-update -y'` on a root-owned
+`/usr/local/bin/envira` (sudo install + mv), `su alice -c 'sudo envira self-update -y'` (root
+acting for alice; the file must stay `root:root 755`), and an alice-owned `~/.local/bin/envira`.
 
 Real downloads: in a `--rm` container, `self-update --version 0.1.1 -y` from the dev binary
 exercises the GitHub download, checksum and swap (downgrade uses the same path); a root-owned
