@@ -35,6 +35,10 @@ struct Meta {
     existed: bool,
     /// Original symlink target when the path was a symlink.
     link: Option<String>,
+    /// Owner of the original file: a restore as root gives it back even when the path has been
+    /// replaced meanwhile (by a link, which a new file would not take its owner from).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<(u32, u32)>,
     #[serde(default)]
     keys: BTreeMap<String, KeyRecord>,
 }
@@ -142,6 +146,7 @@ impl Backups {
                     .ok()
                     .map(|p| p.display().to_string());
             } else if m.is_file() {
+                meta.owner = Some((m.uid(), m.gid()));
                 // Same mode as the original: a backup of a private file stays private.
                 crate::files::replace_copy(
                     &slot.join("orig"),
@@ -224,6 +229,8 @@ fn resolve(path: &Path, guard: bool) -> Result<PathBuf> {
     while let Some(c) = rest.pop() {
         if c == ".." {
             cur.pop();
+            // Back in a directory that exists (`missing/../dir`): links count again.
+            missing = missing && std::fs::symlink_metadata(&cur).is_err();
             continue;
         }
         let next = cur.join(&c);
@@ -279,12 +286,43 @@ fn read_opt(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// For an edit that replaces `path` itself (a link envira makes, a restore): as root, the links
+/// on the way to it must pass the rule of `edit_target`; `path` is replaced, not followed.
+fn guard_parent(path: &Path) -> Result<()> {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0
+        && let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+    {
+        resolve(parent, true)?;
+    }
+    Ok(())
+}
+
+/// `create_dir_all`; as root, directories made inside a user's directory belong to that user,
+/// like the file then written there.
+fn create_dirs(dir: &Path) -> Result<()> {
+    let base = dir.ancestors().find(|a| std::fs::metadata(a).is_ok());
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0
+        && let Some(base) = base
+        && let Ok(m) = std::fs::metadata(base)
+        && m.uid() != 0
+    {
+        for d in dir.ancestors().take_while(|a| *a != base) {
+            std::os::unix::fs::lchown(d, Some(m.uid()), Some(m.gid()))
+                .with_context(|| format!("giving {} to uid {}", d.display(), m.uid()))?;
+        }
+    }
+    Ok(())
+}
+
 fn write_atomic(path: &Path, data: &str, mode: Option<u32>) -> Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    create_dirs(dir)?;
     crate::files::replace(path, data.as_bytes(), mode)
         .with_context(|| format!("replacing {}", path.display()))
 }
@@ -605,9 +643,10 @@ pub fn link(b: &Backups, target: &str, link: &Path, check: bool) -> Result<bool>
     if check || ok {
         return Ok(ok);
     }
+    guard_parent(link)?;
     b.ensure(link)?;
     if let Some(parent) = link.parent() {
-        std::fs::create_dir_all(parent)?;
+        create_dirs(parent)?;
     }
     match std::fs::symlink_metadata(link) {
         Ok(m) if m.is_dir() => bail!("{} is a directory", link.display()),
@@ -624,7 +663,10 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
     // A backup of the path itself (a link envira made, an older backup), else of the file an
     // edit through a link changed.
     let path = &match b.load(path) {
-        Some(_) => path.to_path_buf(),
+        Some(_) => {
+            guard_parent(path)?;
+            path.to_path_buf()
+        }
         None => edit_target(path, true)?,
     };
     let Some(mut meta) = b.load(path) else {
@@ -686,6 +728,14 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
             & 0o7777;
         crate::files::replace_copy(path, &orig, Some(mode))
             .with_context(|| format!("restoring {}", path.display()))?;
+        // SAFETY: geteuid has no preconditions.
+        if let Some((uid, gid)) = meta.owner
+            && unsafe { libc::geteuid() } == 0
+        {
+            std::os::unix::fs::lchown(path, Some(uid), Some(gid))?;
+            // chown clears set-id bits.
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        }
     } else if std::fs::symlink_metadata(path).is_ok() {
         std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
     }
@@ -1016,7 +1066,8 @@ mod tests {
         );
         // SAFETY: geteuid has no preconditions.
         if unsafe { libc::geteuid() } != 0 {
-            for at in ["etc/hosts", "up/hosts", "elsewhere"] {
+            // `..` out of a missing directory leads back to links that are checked.
+            for at in ["etc/hosts", "up/hosts", "elsewhere", "nope/../etc/hosts"] {
                 let e = resolve(&p(at), true).unwrap_err().to_string();
                 assert!(e.contains("does not own"), "{at}: {e}");
             }
