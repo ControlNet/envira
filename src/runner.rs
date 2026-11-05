@@ -762,11 +762,7 @@ mod tests {
             (w, home)
         };
         let (user, home) = words(&r.command("id -u", false));
-        let drop = if cfg!(target_os = "macos") {
-            "sudo"
-        } else {
-            "runuser"
-        };
+        let drop = drop_helper();
         assert_eq!(user[..3], [drop, "-u", "alice"]);
         assert!(user.contains(&"HOME=/home/alice".to_string()), "{user:?}");
         assert_eq!(home.as_deref(), Some("/home/alice"));
