@@ -681,8 +681,10 @@ impl<'a> Planner<'a> {
             for b in tool.bins(id) {
                 let sv = Vars::new(facts, id, b, bin_dir(cat, Scope::System), true);
                 // Next to the target, then renamed over it: a failed copy leaves the old one.
+                // `mv` onto a directory (or a link to one) would move the copy into it and
+                // succeed, with no binary at the target.
                 let c = sv.expand(
-                    "{sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/.{bin}.envira-new && {sudo} mv -f {bin_dir}/.{bin}.envira-new {bin_dir}/{bin}",
+                    "if [ -d {bin_dir}/{bin} ]; then echo \"{bin_dir}/{bin} is a directory\" >&2; false; else {sudo} install -m 755 \"$(command -v {bin})\" {bin_dir}/.{bin}.envira-new && {sudo} mv -f {bin_dir}/.{bin}.envira-new {bin_dir}/{bin}; fi",
                     Ctx::Shell,
                 )?;
                 steps.push(UnitStep {
@@ -1264,8 +1266,9 @@ mod tests {
         assert_eq!(u.steps.len(), 2);
         assert_eq!(
             u.steps[1].cmd.as_deref().unwrap(),
-            "sudo -n install -m 755 \"$(command -v texlab)\" /usr/local/bin/.texlab.envira-new \
-             && sudo -n mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab"
+            "if [ -d /usr/local/bin/texlab ]; then echo \"/usr/local/bin/texlab is a directory\" >&2; \
+             false; else sudo -n install -m 755 \"$(command -v texlab)\" /usr/local/bin/.texlab.envira-new \
+             && sudo -n mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab; fi"
         );
         // The build runs as the user, the copy as root (under `sudo envira`).
         assert!(!u.steps[0].as_root && u.steps[1].as_root);

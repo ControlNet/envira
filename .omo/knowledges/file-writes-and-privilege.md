@@ -83,8 +83,8 @@
   run is recorded (and self-update is not using the terminal) gives the UI loop 3 s before
   `exit(128+signal)`. The block_on thread runs the UI loop; spawned tasks run on the workers.
 - Ctrl-C in the TUI: first stops after the running steps, second cancels them (as the CLI).
-- Opening the self-update probe's output: once the binary exited, its output is in the pipe;
-  never wait for EOF (a process it left behind can hold the pipe).
+- The self-update probe (`<new binary> --version`): once the binary exited, its output is in
+  the pipe; never wait for EOF (a process it left behind can hold the pipe).
 - After a step exits, the output pumps get 2 s to drain, then are aborted: a background daemon
   holding stdout does not keep the executor waiting.
 - CLI output after the executor starts ignores write errors (`envira install … | head` must

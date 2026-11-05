@@ -279,6 +279,10 @@ fn place(files: &[(String, PathBuf)], to: &Path, via: &[String]) -> Result<Vec<P
     run(&["mkdir".as_ref(), "-p".as_ref(), to.as_os_str()])?;
     for (bin, src) in files {
         let dest = to.join(bin);
+        // `mv` onto a directory (or a link to one) moves the file into it and succeeds.
+        if dest.is_dir() {
+            bail!("{} is a directory; not replaced", dest.display());
+        }
         let new = to.join(format!(".{bin}.envira-new.{}", std::process::id()));
         let copied = run(&[
             "install".as_ref(),
@@ -522,6 +526,12 @@ mod tests {
         assert!(format!("{err:#}").contains("was not replaced"), "{err:#}");
         assert_eq!(std::fs::read(to.join("a")).unwrap(), b"old");
         assert_eq!(std::fs::read_dir(&to).unwrap().count(), 1);
+        // A directory where the binary goes: an error, not a copy moved into it.
+        let dir_to = d.path().join("dir/bin");
+        std::fs::create_dir_all(dir_to.join("a")).unwrap();
+        let err = place(&files, &dir_to, &["env".to_string()]).unwrap_err();
+        assert!(format!("{err:#}").contains("is a directory"), "{err:#}");
+        assert_eq!(std::fs::read_dir(dir_to.join("a")).unwrap().count(), 0);
     }
 
     #[test]
