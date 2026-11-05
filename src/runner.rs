@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -10,6 +11,9 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
 use crate::net;
+
+mod budget;
+pub use budget::Budget;
 
 /// Result of a captured command.
 #[derive(Debug, Clone, Default)]
@@ -126,9 +130,15 @@ pub struct CmdEnv {
 
 pub struct RealRunner {
     pub env: CmdEnv,
+    /// Memory of the probes running at once (`capture_as`).
+    budget: Arc<Budget>,
 }
 
 impl RealRunner {
+    pub fn new(env: CmdEnv, budget: Arc<Budget>) -> RealRunner {
+        RealRunner { env, budget }
+    }
+
     /// `bash -c cmd` in envira's environment: as `drop_to` when envira acts for a user, unless
     /// `as_root` (a system-scope step).
     fn command(&self, cmd: &str, as_root: bool) -> Command {
@@ -597,6 +607,9 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// How often a running probe's memory is sampled.
+const SAMPLE_EVERY: Duration = Duration::from_millis(10);
+
 /// PATH of a check run as root: the system dirs only. Tools the user installed (and could
 /// swap) do not answer for root; `{sudo}` in a step sees much the same through sudo's
 /// `secure_path`.
@@ -651,6 +664,8 @@ impl Runner for RealRunner {
         as_root: bool,
     ) -> BoxFuture<'a, Probe> {
         Box::pin(async move {
+            // Waits for room in the memory budget; the timeout counts once the command starts.
+            let mut ticket = self.budget.admit(cmd, &self.env.path, &self.env.home).await;
             // SAFETY: geteuid has no preconditions.
             let root = unsafe { libc::geteuid() } == 0;
             let mut c = self.capture_command(cmd, as_root, root);
@@ -673,7 +688,28 @@ impl Runner for RealRunner {
                 let (out, err) = tokio::join!(read_capped(out), read_capped(err));
                 (out, err, child.wait().await)
             };
-            let ended = tokio::time::timeout(timeout, work).await;
+            // Samples what its processes take meanwhile; not at once, when the child may not
+            // have started its program yet.
+            let sampled = async {
+                tokio::pin!(work);
+                let start = tokio::time::Instant::now() + SAMPLE_EVERY;
+                let mut tick = tokio::time::interval_at(start, SAMPLE_EVERY);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        done = &mut work => {
+                            ticket.ended();
+                            break done;
+                        }
+                        _ = tick.tick() => {
+                            if let Some(pid) = pid {
+                                ticket.seen(budget::tree_hwm(pid));
+                            }
+                        }
+                    }
+                }
+            };
+            let ended = tokio::time::timeout(timeout, sampled).await;
             if ended.is_ok() {
                 guard.0 = None;
             }
@@ -991,17 +1027,20 @@ pub mod fake {
 mod tests {
     use super::*;
 
-    fn runner() -> RealRunner {
-        RealRunner {
-            env: CmdEnv {
-                path: std::env::var("PATH").unwrap(),
-                home: std::env::temp_dir(),
-                user: "user".into(),
-                drop_to: None,
-                root_home: "/root".into(),
-                state_dir: std::env::temp_dir(),
-            },
+    fn test_env() -> CmdEnv {
+        CmdEnv {
+            path: std::env::var("PATH").unwrap(),
+            home: std::env::temp_dir(),
+            user: "user".into(),
+            drop_to: None,
+            root_home: "/root".into(),
+            state_dir: std::env::temp_dir(),
         }
+    }
+
+    /// A runner whose probes are not held back by the memory budget (tests run in parallel).
+    fn runner() -> RealRunner {
+        RealRunner::new(test_env(), Arc::new(Budget::new(u64::MAX / 4)))
     }
 
     #[test]
@@ -1238,6 +1277,35 @@ mod tests {
         assert!(p.output.len() < CAPTURE_BYTES + 100, "{}", p.output.len());
         assert!(p.output.starts_with("xxxx"));
         assert!(p.output.ends_with("[envira] output cut at 1 MiB\nerr\n"));
+    }
+
+    /// Start and end of a probe that sleeps, in ns.
+    async fn span(r: &RealRunner, cmd: &str) -> (u128, u128) {
+        let p = r.capture(cmd, Duration::from_secs(10)).await;
+        assert!(p.ok(), "{}", p.output);
+        let v: Vec<u128> = p
+            .output
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        (v[0], v[1])
+    }
+
+    #[tokio::test]
+    async fn probes_wait_for_room_in_the_memory_budget() {
+        let probe =
+            |n: u32| format!("s=$(date +%s%N); sleep 0.3; e=$(date +%s%N); echo $s $e # {n}");
+        let (a, b) = (probe(1), probe(2));
+        // No room for two: one after the other.
+        let tight = RealRunner::new(test_env(), Arc::new(Budget::new(1)));
+        let (x, y) = tokio::join!(span(&tight, &a), span(&tight, &b));
+        assert!(x.1 <= y.0 || y.1 <= x.0, "overlapped: {x:?} {y:?}");
+        // The peak seen is what the next estimate starts from.
+        assert!(tight.budget.learned(&a).is_some_and(|p| p > 0));
+        // Room for both: at once.
+        let r = runner();
+        let (x, y) = tokio::join!(span(&r, &a), span(&r, &b));
+        assert!(x.0 < y.1 && y.0 < x.1, "did not overlap: {x:?} {y:?}");
     }
 
     #[tokio::test]

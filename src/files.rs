@@ -1,5 +1,6 @@
 //! Replacing files safely: every file envira writes (state, backups, configs, caches, installed
-//! binaries) goes through `replace_with`.
+//! binaries) goes through `replace_with` (`replace_cache` for a cache it can rebuild: the same,
+//! without flushing to disk).
 //!
 //! - The new content is written to a uniquely named temp file next to the destination, created
 //!   exclusively (O_EXCL): an existing file or a symlink planted at a predictable name is never
@@ -23,6 +24,21 @@ use std::path::Path;
 pub fn replace_with(
     path: &Path,
     mode: Option<u32>,
+    fill: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    replace_inner(path, mode, true, fill)
+}
+
+/// `replace` for a cache: the same, but not flushed to disk (fsync can take seconds on a busy
+/// disk, and a cache lost in a crash is only rebuilt).
+pub fn replace_cache(path: &Path, data: &[u8]) -> io::Result<()> {
+    replace_inner(path, None, false, |f| io::Write::write_all(f, data))
+}
+
+fn replace_inner(
+    path: &Path,
+    mode: Option<u32>,
+    durable: bool,
     fill: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
     let dir = path
@@ -64,10 +80,12 @@ pub fn replace_with(
         .or(old.as_ref().map(|m| m.permissions().mode() & 0o7777))
         .unwrap_or(umasked);
     f.set_permissions(std::fs::Permissions::from_mode(mode))?;
-    f.sync_all()?;
+    if durable {
+        f.sync_all()?;
+    }
     tmp.persist(path).map_err(|e| e.error)?;
     // The rename survives a power loss only once the directory is on disk too.
-    if let Ok(d) = File::open(dir) {
+    if durable && let Ok(d) = File::open(dir) {
         let _ = d.sync_all();
     }
     Ok(())

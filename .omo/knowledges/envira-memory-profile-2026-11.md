@@ -67,10 +67,67 @@ envira's runner now sets `RUSTUP_IO_THREADS=1` for every step unless the user se
   the root), and takes the tightest limit up to each mount point. Checked in Docker (v2):
   1 GB -> CARGO_BUILD_JOBS=1, 3 GB -> 2, no limit -> unset. v1 is covered by unit tests only.
 
+## Scan memory budget (2026-11-05, second pass)
+
+Target set by the user: the scan (`envira status`, the TUI's first scan) within 200 MB, envira
+plus every process it starts. A cap on the number of commands cannot promise that: `agy
+--version` alone is 125-160 MiB and `opencode --version` 120-130 MiB (single-file builds that
+map most of their 200+ MB binary), `npm ls -g` 110 MiB, `apt-cache policy <pkg>` 92 MiB (it maps
+the package cache), and without a cgroup limit `process_jobs` allows 8 at once (tree ~300 MiB).
+
+`runner/budget.rs` gates every `capture_as` (detection, checks, `installed` and latest command
+queries; steps are not gated):
+- A command starts only when envira's own RSS + the reservations of the running commands + its
+  estimate fit in `SCAN_MEMORY` (176 MiB: 200 MB less a margin), or when nothing else runs.
+- Estimate, in order: its own peak seen before (x1.25 + 2 MiB); for a command that ended before
+  it could be sampled, its static estimate capped at 32 MiB; the highest peak of another command
+  of the same program (`apt-cache policy git` for `apt-cache policy curl`); else static: bash
+  4 MiB + per program a Node/Bun/Deno script or runtime 160, Python/other script 64, native ELF
+  its file size (8-160), not installed 0, builtins 0. The shell parsing behind it
+  (`programs`) is rough on purpose: first word of each simple command, assignments skipped,
+  `$(...)` inside double quotes split out.
+- A program never measured runs one command at a time until one has ended: otherwise six
+  `apt-cache policy` started together at a 12 MiB estimate each (seen: 220 MiB tree).
+- While a command runs, its tree's `VmHWM` (summed over `/proc/<pid>/task/*/children`, which
+  needs CONFIG_PROC_CHILDREN; only the pid where missing) is sampled every 10 ms and the
+  reservation grows with it. Not at once: a sample right after fork reads the pre-exec process
+  (`node --version` was "learned" at 8 KiB; it is 16 MiB).
+- Peaks go to `<state_dir>/probes.toml` (a cache), saved by `main` after the command. Rewritten
+  only when a command is new, outgrew its headroom, or fell under half (then it fades by a
+  quarter per run); peaks vary by about a third between runs (codex 33-46 MiB, gh 25-37), and
+  any-change rewrites happened every run. Written without fsync (`files::replace_cache`): one
+  fsync on the busy workstation disk took 2.2 s and made `status` stall 4-10 s now and then.
+
+Also: the jupyter detect reads the package metadata (`importlib.metadata`, 17 MiB) instead of
+`jupyter-lab --version` (python 57 + node/yarn 98 MiB), and pm2's reads the package.json behind
+the command on PATH instead of `npm ls -g pm2` (110 MiB, and it missed a pm2 installed under an
+older npm prefix: status said "not installed").
+
+Measured on the workstation (summed RSS of the tree, 20 ms samples; old = 26fff17):
+
+| Scenario | old peak / time | now peak / time |
+|---|---|---|
+| `status`, no saved peaks | 279-313 MiB / 1.7-1.8 s | 136-168 MiB / 3.1 s |
+| `status`, peaks saved | – | 134-170 MiB / 2.4-2.6 s |
+| `status` under MemoryMax=256M | 195-205 MiB / 3.6-4.6 s | 135-168 MiB / 3.1 s |
+| TUI first scan (scan only) | 300-303 MiB / 1.6-1.7 s | 134-171 MiB / 2.4-3.0 s |
+| TUI start, no caches at all, latest refresh + update check over the network | 221 MiB | 174 MiB (envira itself at most 54 MiB, during the latest JSON) |
+
+The largest single command bounds what is possible: agy alone is up to 160 MiB plus envira's
+11-20 MiB. Batching every apt package into one `apt-cache policy a b c` (needs a multi-package
+query in the catalog format) would shorten the serialized latest phase (~25 x 0.15 s).
+
 ## How to measure
 
 - Sampler: walk `/proc/*/stat` for the tree from the root pid, read `VmHWM`/`VmRSS`/`Threads`
   and utime+stime every 20 ms; `VmHWM` is monotonic, so the last sample before exit is the peak.
+- The TUI: start the sampler as the parent of envira inside tmux (the sampler keeps the
+  terminal for envira and writes its report to a file) and record a per-100 ms timeline of
+  envira's RSS and the tree's. Attaching to the pid after start misses the first scan's first
+  half second, where the biggest command may run. Record each process's first and last sample
+  too: a stretch with no child alive points at envira itself waiting (that is how the fsync
+  stall showed), confirmed with `strace -T -e trace=fsync`.
+- `/usr/bin/time -f %M` gives the exact peak of a command too short for 20 ms sampling.
 - GitHub's anonymous API limit (60/h per IP, shared with everything else on the network) ran out
   during the first container run. A stand-in for `api.github.com` inside the container avoids it:
   a throwaway CA added with `update-ca-certificates`, a leaf for `api.github.com` (webpki rejects

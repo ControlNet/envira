@@ -12,22 +12,26 @@ use crate::exec::{self, ExecCtx};
 use crate::facts::{Facts, Privilege};
 use crate::latest::{self, Fetch};
 use crate::plan::{Plan, Planner, UpdateTarget};
-use crate::runner::{CmdEnv, RealRunner, Runner};
+use crate::runner::{Budget, CmdEnv, RealRunner, Runner};
 use crate::state::{Paths, State};
 use crate::status::{self, Snapshot};
 
 /// Runs commands with the PATH the catalog's tools need.
-fn real_runner(cat: &Catalog, facts: &Facts, paths: &Paths) -> Arc<dyn Runner> {
-    Arc::new(RealRunner {
-        env: CmdEnv {
-            path: status::effective_path(cat, facts),
-            home: facts.home.clone(),
-            user: facts.user.clone(),
-            drop_to: facts.drop_to.clone(),
-            root_home: crate::facts::home_of(0).unwrap_or_else(|| "/root".into()),
-            state_dir: paths.state_dir.clone(),
-        },
-    })
+fn real_runner(
+    cat: &Catalog,
+    facts: &Facts,
+    paths: &Paths,
+    budget: &Arc<Budget>,
+) -> Arc<dyn Runner> {
+    let env = CmdEnv {
+        path: status::effective_path(cat, facts),
+        home: facts.home.clone(),
+        user: facts.user.clone(),
+        drop_to: facts.drop_to.clone(),
+        root_home: crate::facts::home_of(0).unwrap_or_else(|| "/root".into()),
+        state_dir: paths.state_dir.clone(),
+    };
+    Arc::new(RealRunner::new(env, budget.clone()))
 }
 
 pub struct Session {
@@ -37,6 +41,8 @@ pub struct Session {
     pub facts: Arc<Facts>,
     pub paths: Paths,
     pub runner: Arc<dyn Runner>,
+    /// Memory of envira's own commands, shared by the runners of a reload.
+    pub budget: Arc<Budget>,
 }
 
 impl Session {
@@ -44,7 +50,8 @@ impl Session {
         let facts = Facts::probe();
         let paths = Paths::new(&facts);
         let loaded = load_valid(global, &paths, &facts)?;
-        let runner = real_runner(&loaded.catalog, &facts, &paths);
+        let budget = Arc::new(Budget::for_scans(paths.state_dir.join("probes.toml")));
+        let runner = real_runner(&loaded.catalog, &facts, &paths, &budget);
         Ok(Session {
             global: global.clone(),
             catalog: Arc::new(loaded.catalog.clone()),
@@ -52,6 +59,7 @@ impl Session {
             facts: Arc::new(facts),
             paths,
             runner,
+            budget,
         })
     }
 
@@ -59,7 +67,7 @@ impl Session {
     /// tools' bin dirs); a run going on keeps the runner it started with.
     pub fn reload(&mut self) -> Result<()> {
         let loaded = load_valid(&self.global, &self.paths, &self.facts)?;
-        self.runner = real_runner(&loaded.catalog, &self.facts, &self.paths);
+        self.runner = real_runner(&loaded.catalog, &self.facts, &self.paths, &self.budget);
         self.catalog = Arc::new(loaded.catalog.clone());
         self.loaded = loaded;
         Ok(())

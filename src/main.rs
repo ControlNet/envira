@@ -125,7 +125,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         .build()?;
     rt.block_on(async {
         let sess = app::Session::open(&cli.global)?;
-        let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
+        let (paths, facts, budget) = (sess.paths.clone(), sess.facts.clone(), sess.budget.clone());
         let code = match cli.command {
             None if std::io::IsTerminal::is_terminal(&std::io::stdout()) => tui::run(sess).await,
             None => commands::status(&sess, false, false, false).await,
@@ -173,7 +173,9 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             ) => {
                 unreachable!()
             }
-        }?;
+        };
+        let _ = budget.save(&facts);
+        let code = code?;
         if notice {
             let _ = tokio::task::spawn_blocking(move || selfupdate::notice(&paths, &facts)).await;
         }

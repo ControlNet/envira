@@ -214,6 +214,16 @@ pub fn write_atomic(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
     Ok(())
 }
 
+/// `write_atomic` for a cache: not flushed to disk (`files::replace_cache`).
+pub fn write_cache(path: &Path, data: &[u8], facts: &Facts) -> Result<()> {
+    let dir = path.parent().context("path without parent")?;
+    create_dir_all_owned(dir, facts)?;
+    crate::files::replace_cache(path, data)
+        .with_context(|| format!("writing {}", path.display()))?;
+    chown_to_target(path, facts);
+    Ok(())
+}
+
 /// Held while state.toml is read, changed and saved (milliseconds), so two envira processes do
 /// not interleave and lose one's change.
 struct StateFileLock(#[allow(dead_code)] std::fs::File);
