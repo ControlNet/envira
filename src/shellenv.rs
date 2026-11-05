@@ -163,7 +163,9 @@ pub fn install(
         ("init.zsh", &r.init_zsh),
         ("init.bash", &r.init_bash),
     ] {
-        let f = paths.config_dir.join(name);
+        // Like any edit of the user's files: through a link the user keeps there (a dotfiles
+        // repo), under the rule for links when root writes it.
+        let f = crate::fs::edit_target(&paths.config_dir.join(name), true)?;
         if std::fs::read_to_string(&f).ok().as_deref() != Some(text.as_str()) {
             state::write_atomic(&f, text.as_bytes(), facts)?;
             changed.push(f);
@@ -354,6 +356,28 @@ mod tests {
                 ("bash", ".bash_profile".to_string())
             ]
         );
+    }
+
+    /// env.sh kept in a dotfiles repo and linked into place stays linked; the repo's file is
+    /// what changes.
+    #[test]
+    fn a_linked_generated_file_stays_linked() {
+        let (d, cat, facts, paths) = setup();
+        let repo = d.path().join("dotfiles/env.sh");
+        std::fs::create_dir_all(repo.parent().unwrap()).unwrap();
+        std::fs::write(&repo, "# old\n").unwrap();
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        let env = paths.config_dir.join("env.sh");
+        std::os::unix::fs::symlink(&repo, &env).unwrap();
+        let present: BTreeSet<String> = ["lsd".to_string()].into();
+        install(&cat, &facts, &paths, &present).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&env)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_ne!(std::fs::read_to_string(&repo).unwrap(), "# old\n");
     }
 
     #[test]

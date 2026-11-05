@@ -181,10 +181,10 @@ impl Backups {
 /// The path keeps the form it was given, only links at its end replaced: backups stay keyed by
 /// it, and a system link on the way (macOS's `/var -> /private/var`) does not show up.
 pub fn edit_target(path: &Path, writing: bool) -> Result<PathBuf> {
-    // SAFETY: geteuid has no preconditions.
-    if writing && unsafe { libc::geteuid() } == 0 {
-        // Every link on the way, in a directory as well as at the end.
-        resolve(path, true)?;
+    if writing {
+        // Every link on the way, in a directory as well as at the end (owners: as root).
+        // SAFETY: geteuid has no preconditions.
+        resolve(path, unsafe { libc::geteuid() } == 0)?;
     }
     let mut cur = path.to_path_buf();
     for _ in 0..40 {
@@ -228,9 +228,16 @@ fn resolve(path: &Path, guard: bool) -> Result<PathBuf> {
     let (mut links, mut missing) = (0, false);
     while let Some(c) = rest.pop() {
         if c == ".." {
+            if missing {
+                // The kernel says ENOENT here. Creating the missing directory first would make
+                // the path lead to a file that was not looked at (nor backed up) before.
+                bail!(
+                    "{}: `..` after {}, which does not exist",
+                    path.display(),
+                    cur.display()
+                );
+            }
             cur.pop();
-            // Back in a directory that exists (`missing/../dir`): links count again.
-            missing = missing && std::fs::symlink_metadata(&cur).is_err();
             continue;
         }
         let next = cur.join(&c);
@@ -286,14 +293,13 @@ fn read_opt(path: &Path) -> Result<Option<String>> {
     }
 }
 
-/// For an edit that replaces `path` itself (a link envira makes, a restore): as root, the links
-/// on the way to it must pass the rule of `edit_target`; `path` is replaced, not followed.
+/// For an edit that replaces `path` itself (a link envira makes, a restore): the way to it is
+/// checked as by `edit_target` (as root, the owners of its links too); `path` is replaced, not
+/// followed.
 fn guard_parent(path: &Path) -> Result<()> {
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } == 0
-        && let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
-    {
-        resolve(parent, true)?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        // SAFETY: geteuid has no preconditions.
+        resolve(parent, unsafe { libc::geteuid() } == 0)?;
     }
     Ok(())
 }
@@ -301,6 +307,12 @@ fn guard_parent(path: &Path) -> Result<()> {
 /// `create_dir_all`; as root, directories made inside a user's directory belong to that user,
 /// like the file then written there.
 fn create_dirs(dir: &Path) -> Result<()> {
+    // The directories about to be made: named ones that do not exist yet (never `..`).
+    let made: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|a| std::fs::metadata(a).is_err())
+        .filter(|a| a.file_name().is_some())
+        .collect();
     let base = dir.ancestors().find(|a| std::fs::metadata(a).is_ok());
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     // SAFETY: geteuid has no preconditions.
@@ -309,7 +321,7 @@ fn create_dirs(dir: &Path) -> Result<()> {
         && let Ok(m) = std::fs::metadata(base)
         && m.uid() != 0
     {
-        for d in dir.ancestors().take_while(|a| *a != base) {
+        for d in made {
             std::os::unix::fs::lchown(d, Some(m.uid()), Some(m.gid()))
                 .with_context(|| format!("giving {} to uid {}", d.display(), m.uid()))?;
         }
@@ -676,9 +688,12 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
         let Some(rec) = meta.keys.remove(key) else {
             bail!("no envira record for key {key} in {}", path.display());
         };
+        // A key is put back in the file as it is now: through a link at `path` (relinked by
+        // stow since), under the rule of every edit. The backup stays keyed by `path`.
+        let target = &edit_target(path, true)?;
         match rec.kind.as_str() {
             "toml" => {
-                let text = read_opt(path)?.unwrap_or_default();
+                let text = read_opt(target)?.unwrap_or_default();
                 let mut doc: toml_edit::DocumentMut = text.parse()?;
                 let parts: Vec<&str> = key.split('.').collect();
                 match &rec.prior {
@@ -696,13 +711,13 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
                     }
                     None => remove_toml_key(&mut doc, &parts),
                 }
-                write_atomic(path, &doc.to_string(), None)?;
+                write_atomic(target, &doc.to_string(), None)?;
             }
             "ini" => {
                 let (section, k) = key.rsplit_once('.').unwrap_or(("", key));
-                remove_ini_key(path, section, k, rec.prior.as_deref())?;
+                remove_ini_key(target, section, k, rec.prior.as_deref())?;
             }
-            "line" => restore_line(path, key, rec.prior.as_deref())?,
+            "line" => restore_line(target, key, rec.prior.as_deref())?,
             other => bail!("unknown key record kind {other}"),
         }
         if meta.keys.is_empty() {
@@ -1066,14 +1081,33 @@ mod tests {
         );
         // SAFETY: geteuid has no preconditions.
         if unsafe { libc::geteuid() } != 0 {
-            // `..` out of a missing directory leads back to links that are checked.
-            for at in ["etc/hosts", "up/hosts", "elsewhere", "nope/../etc/hosts"] {
+            for at in ["etc/hosts", "up/hosts", "elsewhere"] {
                 let e = resolve(&p(at), true).unwrap_err().to_string();
                 assert!(e.contains("does not own"), "{at}: {e}");
             }
         }
         ln("loop", "loop");
         assert!(resolve(&p("loop"), false).is_err());
+        // `..` out of a directory that does not exist: ENOENT for the kernel, an error here.
+        for guard in [false, true] {
+            let e = resolve(&p("nope/../etc/hosts"), guard).unwrap_err();
+            assert!(e.to_string().contains("does not exist"), "{e}");
+        }
+    }
+
+    /// `missing/../file` must not create `missing` and then replace `file`, which was neither
+    /// looked at nor backed up (a restore would then delete it).
+    #[test]
+    fn a_path_through_a_missing_directory_is_refused() {
+        let (d, b) = setup();
+        let f = d.path().join("rc");
+        std::fs::write(&f, "ORIGINAL").unwrap();
+        let via = d.path().join("missing/../rc");
+        assert!(write(&b, &via, "CHANGED", None, false).is_err());
+        assert!(block(&b, &via, "envira", "#", Some("x"), false).is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ORIGINAL");
+        assert!(!d.path().join("missing").exists());
+        assert!(link(&b, "/usr/bin/true", &d.path().join("missing/../ln"), false).is_err());
     }
 
     #[test]
