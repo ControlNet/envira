@@ -36,8 +36,19 @@ impl Action {
     }
 }
 
-/// Per install that failed after some of its steps: the route it took (`via`) and those steps.
+/// Per install that failed after some of its steps: the route it took (see [`route_id`]) and
+/// those steps.
 pub type InstallsDone = BTreeMap<String, (String, Vec<String>)>;
+
+/// Identifies a route as planned: method, scope and every step in full. A catalog changed
+/// since (another build command, parameter or step) gives another id, even where the method
+/// name and step labels stay (raw entries are all `run`).
+pub fn route_id(via: &str, scope: Scope, steps: &[UnitStep]) -> String {
+    use sha2::Digest;
+    let text = serde_json::to_string(&(via, scope, steps)).unwrap_or_default();
+    let hash = sha2::Sha256::digest(text.as_bytes());
+    hash[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// The unfinished units of a run, split by what they were doing: retrying an update must
 /// update again (an install plan skips a tool still present at its old version), and retrying
@@ -76,9 +87,14 @@ impl RetryTargets {
         run_dir: Option<&std::path::Path>,
     ) -> Self {
         for r in records {
-            if r.action == "install" && self.install.contains(&r.id) && !r.done_steps.is_empty() {
+            // A record without its route (from an older envira) is installed again in full.
+            if r.action == "install"
+                && self.install.contains(&r.id)
+                && !r.done_steps.is_empty()
+                && !r.route.is_empty()
+            {
                 self.install_done
-                    .insert(r.id.clone(), (r.via.clone(), r.done_steps.clone()));
+                    .insert(r.id.clone(), (r.route.clone(), r.done_steps.clone()));
             }
             if r.action != "revert" || !self.revert.contains(&r.id) {
                 continue;
@@ -149,6 +165,10 @@ pub struct Unit {
     /// record counts them as done too, so a second retry does not run them again.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resumed: Vec<String>,
+    /// [`route_id`] of an install as planned, before steps an earlier run got through were
+    /// left out; empty for other actions.
+    #[serde(skip)]
+    pub route: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -766,6 +786,7 @@ impl<'a> Planner<'a> {
                         reason: t.reason.clone(),
                         expect: t.expect.clone(),
                         resumed: vec![],
+                        route: String::new(),
                     });
                 }
                 Err(e) => plan.skipped.push((t.id.clone(), e)),
@@ -831,14 +852,15 @@ impl<'a> Planner<'a> {
     /// Plans the steps of `id` that a failed install did not get through (see `finishing`),
     /// when there are some and the route is still the one that ran.
     fn finish(&mut self, id: &str, plan: &mut Plan) -> bool {
-        let Some((via, done)) = self.finishing.get(id).cloned() else {
+        let Some((route, done)) = self.finishing.get(id).cloned() else {
             return false;
         };
         let Ok(choice) = self.choose(id) else {
             return false;
         };
-        // The same route (labels such as `install` are shared by routes), the same steps.
-        let ran = choice.via == via
+        // The very route that ran (labels such as `install` are shared by routes), with steps
+        // left to run.
+        let ran = route_id(&choice.via, choice.scope, &choice.steps) == route
             && choice.steps.len() > done.len()
             && choice.steps.iter().zip(&done).all(|(s, d)| &s.label == d);
         if !ran {
@@ -873,6 +895,7 @@ impl<'a> Planner<'a> {
         } else {
             Kind::Tool
         };
+        let route = route_id(&choice.via, choice.scope, &choice.steps);
         plan.units.push(Unit {
             id: id.to_string(),
             kind,
@@ -881,6 +904,7 @@ impl<'a> Planner<'a> {
             } else {
                 Action::Install
             },
+            route,
             via: choice.via,
             scope: choice.scope,
             steps: choice.steps,
@@ -951,6 +975,7 @@ impl<'a> Planner<'a> {
                 reason: "requested".into(),
                 expect: None,
                 resumed,
+                route: String::new(),
             });
         }
         plan
@@ -1278,6 +1303,21 @@ mod tests {
     }
 
     #[test]
+    fn a_route_is_told_apart_by_its_steps() {
+        let step = |cmd: &str| UnitStep {
+            label: "run".into(),
+            cmd: Some(cmd.into()),
+            ..Default::default()
+        };
+        let a = route_id("run", Scope::User, &[step("make OLD")]);
+        assert_eq!(a, route_id("run", Scope::User, &[step("make OLD")]));
+        // Same method and labels, another command, scope or method: another route.
+        assert_ne!(a, route_id("run", Scope::User, &[step("make NEW")]));
+        assert_ne!(a, route_id("run", Scope::System, &[step("make OLD")]));
+        assert_ne!(a, route_id("script", Scope::User, &[step("make OLD")]));
+    }
+
+    #[test]
     fn a_retry_finishes_the_copy_of_a_portable_build() {
         let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
         // The build went through and the copy failed: texlab is present for the user now.
@@ -1286,8 +1326,10 @@ mod tests {
             .plan(&["texlab".into()], false);
         let build = full.units[0].steps[0].label.clone();
         let mut p = Planner::new(&c, &f, &present);
-        let via = full.units[0].via.clone();
-        p.finishing = BTreeMap::from([("texlab".to_string(), (via.clone(), vec![build.clone()]))]);
+        let route = full.units[0].route.clone();
+        assert_eq!(route.len(), 32);
+        p.finishing =
+            BTreeMap::from([("texlab".to_string(), (route.clone(), vec![build.clone()]))]);
         let plan = p.plan(&["texlab".into()], false);
         let u = &plan.units[0];
         assert_eq!(u.steps.len(), 1);
@@ -1301,13 +1343,14 @@ mod tests {
         let mut p = Planner::new(&c, &f, &present);
         p.finishing = BTreeMap::from([(
             "texlab".to_string(),
-            (via.clone(), vec!["other".to_string()]),
+            (route.clone(), vec!["other".to_string()]),
         )]);
         assert_eq!(
             p.plan(&["texlab".into()], false).skipped[0].1,
             "already present"
         );
-        // The same steps by another route: nothing is assumed either.
+        // The same step labels by another route (or this one, changed in the catalog since):
+        // nothing is assumed either.
         let mut p = Planner::new(&c, &f, &present);
         p.finishing = BTreeMap::from([(
             "texlab".to_string(),
@@ -1321,7 +1364,7 @@ mod tests {
         let mut nf = f.clone();
         nf.privilege = Privilege::None;
         let mut p = Planner::new(&c, &nf, &present);
-        p.finishing = BTreeMap::from([("texlab".to_string(), (via, vec![build]))]);
+        p.finishing = BTreeMap::from([("texlab".to_string(), (route, vec![build]))]);
         assert_eq!(
             p.plan(&["texlab".into()], false).skipped[0].1,
             "already present"
@@ -1438,6 +1481,7 @@ mod tests {
                 reason: "retry".into(),
                 expect: None,
                 resumed: vec![],
+                route: String::new(),
             }],
             skipped: vec![],
         });
@@ -1464,6 +1508,14 @@ mod tests {
             },
             UnitRecord {
                 id: "bat".into(),
+                action: "install".into(),
+                done_steps: vec!["x".into()],
+                route: "r1".into(),
+                ..Default::default()
+            },
+            // From an envira that did not record routes: installed again in full.
+            UnitRecord {
+                id: "old".into(),
                 action: "install".into(),
                 done_steps: vec!["x".into()],
                 ..Default::default()
@@ -1506,8 +1558,13 @@ mod tests {
             ("died", "revert"),
             ("waiting", "revert"),
             ("short", "revert"),
+            ("old", "install"),
         ])
         .progress(&records, Some(dir.path()));
+        assert_eq!(
+            t.install_done,
+            BTreeMap::from([("bat".to_string(), ("r1".to_string(), vec!["x".to_string()]))])
+        );
         assert_eq!(t.revert_done.len(), 4);
         assert_eq!(t.revert_done["short"], ["x", "y"]);
         assert_eq!(t.revert_done["waiting"], ["x"]);

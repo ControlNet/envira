@@ -341,6 +341,10 @@ pub struct UnitRecord {
     /// does not run them again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub done_steps: Vec<String>,
+    /// The install's route as planned (see `plan::route_id`): a retry finishes it only along
+    /// the very same route.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub route: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -395,6 +399,7 @@ impl RunRecord {
                     id: u.id.clone(),
                     action: u.action.as_str().into(),
                     via: u.via.clone(),
+                    route: u.route.clone(),
                     outcome: "pending".into(),
                     // What an earlier run got through: still known if this one dies first.
                     done_steps: u.resumed.clone(),

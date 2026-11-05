@@ -529,6 +529,7 @@ fn finish_unit(
         id: unit.id.clone(),
         action: unit.action.as_str().into(),
         via: unit.via.clone(),
+        route: unit.route.clone(),
         outcome: outcome.as_str().into(),
         detail: outcome.detail(),
         hint: trail.hint.filter(|_| failed),
@@ -1491,6 +1492,7 @@ mod tests {
             reason: "requested".into(),
             expect: None,
             resumed: vec![],
+            route: String::new(),
         }
     }
 

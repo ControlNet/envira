@@ -1,4 +1,4 @@
-# File writes, privilege and process lifetime (rules from two deep reviews, 2026-11-05)
+# File writes, privilege and process lifetime (rules from five deep reviews, 2026-11-05)
 
 ## Writing files
 - Every file envira writes goes through `files::replace_with` / `replace` / `replace_copy`
@@ -22,12 +22,14 @@
   made, older backups), then of the file it points to. `files::replace_with` itself still
   replaces a link at its destination: callers resolve first.
 - The walk is for checking only: `edit_target` returns the path as given with only its final
-  links replaced (backup keys stay stable; macOS `/var -> /private/var` must not leak in). A
-  `..` after a missing directory re-enables link checks once back in an existing one. `fs link`
-  and a restore of a path with its own backup check the links on the way to the path
-  (`guard_parent`). Directories created for a new file in a user's directory belong to that
-  user (`create_dirs`), and backups record the original's owner so a restore as root gives it
-  back.
+  links replaced (backup keys stay stable; macOS `/var -> /private/var` must not leak in).
+  `..` after a missing directory is an error (ENOENT, as for the kernel): `missing/../rc` was
+  backed up as absent while the write replaced the existing `rc`, and a restore then deleted
+  it. Every writing edit, `fs link`, a restore (also of an ini/toml key: edited through the
+  link like any edit) and the generated `env.sh`/`init.*` go through the walk
+  (`edit_target(.., true)` / `guard_parent`). Directories envira creates for a new file in a
+  user's directory belong to that user (`create_dirs`: only those it really made, never an
+  existing one), and backups record the original's owner so a restore as root gives it back.
 - Accepted risk: a user who swaps a link between the check and the write (TOCTOU) still wins.
   Closing it needs openat2/O_NOFOLLOW walks for every write. Under `sudo envira` SUDO_USER is
   root-equivalent anyway (their `~/.config/envira/catalog.d` overlay runs commands as root), so
@@ -38,7 +40,8 @@
 - Privileged installs through a command (`sudo install` in self-update and fetch-release
   `--install-with`, the portable copy template): install to `<dir>/.NAME.envira-new[.pid]`,
   then `mv -f` over the target; remove the temp on failure. The fixed name is acceptable only
-  because those directories are not writable by the user.
+  because those directories are not writable by the user. A directory (or link to one) at the
+  target is refused first: `mv -f` would move the binary into it and succeed.
 
 ## Who runs a step
 - `sudo envira` = EUID 0 + SUDO_USER: user-scope steps run as the user via `runuser` (or
@@ -83,6 +86,10 @@
   run is recorded (and self-update is not using the terminal) gives the UI loop 3 s before
   `exit(128+signal)`. The block_on thread runs the UI loop; spawned tasks run on the workers.
 - Ctrl-C in the TUI: first stops after the running steps, second cancels them (as the CLI).
+- A cancel also ends a running check (the probe before a step) and no step starts after it. A
+  probe future dropped before it ends kills its group and its descendants (`ProbeGuard`; the
+  child is spawned without `kill_on_drop`, so the shell is still alive to find them by
+  parentage).
 - The self-update probe (`<new binary> --version`): once the binary exited, its output is in
   the pipe; never wait for EOF (a process it left behind can hold the pipe).
 - After a step exits, the output pumps get 2 s to drain, then are aborted: a background daemon
@@ -115,18 +122,26 @@
   steps after it carry `only_if` = their apply check (run only while their change is in place;
   `as_script` writes `if check; then cmd; fi`). Plain `config revert` is unchanged.
   The retried unit carries the left-out steps (`Unit.resumed`) and counts them as done, so a
-  second failure does not lose them. A revert also appends each finished step to
-  `<run dir>/<id>.steps` (JSON string per line); a unit whose record still says `pending`
-  (envira killed mid-unit) is resumed from that file. A step envira was running when it died
+  second failure does not lose them. A revert also writes each finished step to
+  `<run dir>/<id>.steps` (JSON string per line, inherited ones first in one write); a unit
+  whose record still says `pending` (envira killed mid-unit) is resumed from the longer of that
+  file and the record. A revert whose `.steps` cannot be opened does not start, and one whose
+  step cannot be written there stops after it. A step envira was running when it died
   may still finish on its own (steps run in their own sessions): reverts should be idempotent
   (`rm -f`), since the resumed step runs again as it is.
 - A retried install whose tool is present now (the build worked, the portable system copy
-  failed) gets only the steps after its `done_steps` (`Planner::finishing`), when the route
-  (`via`) is the one that ran and its leading step labels match; otherwise it is "already
-  present" as before. The TUI's `r` waits for a fresh detection before planning (its snapshot
+  failed) gets only the steps after its `done_steps` (`Planner::finishing`), when the route is
+  the very one that ran: `plan::route_id` (sha256 of method, scope and every step in full) is
+  kept in the unit and its record. `via` alone is not a route identity (raw entries are all
+  `run`; a catalog changed between failure and retry would copy the old build). Records without
+  a route are installed again in full. The TUI's `r` waits for a fresh detection before planning (its snapshot
   is from before the run); `t` (retry the last run) splits by action like `envira retry`.
 - No unit starts unless the run dir, its pending record and state pointing at it are on disk
-  (else every unit is reported "not started" and state keeps the previous run). The pending
+  (else every unit is reported "not started" and state keeps the previous run). Once units ran,
+  a failed save of record or state stops further units ("not started: the run cannot be
+  recorded"); `RunRecord.unrecorded` (not saved) carries why, the CLI exits 1, the TUI says so.
+  The CLI reads the state again once it holds the run lock (as the TUI does): a run that
+  finished while it waited at the confirmation prompt keeps its records. The pending
   record already carries each unit's inherited `resumed` steps: a unit that never started
   before envira died has no progress file. Run-dir files (unit logs, `.steps`) open with
   O_NOFOLLOW|O_NONBLOCK, must be regular files, and are fchown'd by descriptor.
