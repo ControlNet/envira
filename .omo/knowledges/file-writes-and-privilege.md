@@ -33,6 +33,14 @@
   holding stdout does not keep the executor waiting.
 - CLI output after the executor starts ignores write errors (`envira install … | head` must
   finish the run and record it).
+- Run events go through `exec::events()`: log lines waiting for a slow reader are capped at
+  4 MiB (then left out, counted, and reported as "N lines not shown here" before the unit's next
+  line or its end); other events always arrive. The executor never waits for the display.
+  The CLI prints from its own thread and handles signals in the async task, so a stalled
+  `| less` holds neither the run nor Ctrl-C. The TUI reads the run's receiver itself (no
+  forwarding into its unbounded app queue), folds at most 2048 events per redraw, and keeps per
+  unit at most 20,000 lines / 2 MiB of log. Measured: RSS flat at ~24 MB while the disk log grew
+  to 89 MB with stdout unread (before: 25 -> 107 MB in 4 s).
 - Runs hold the envira binary with a shared flock (`/proc/self/exe`), self-update takes it
   exclusively: no swap while any run of any user/state dir uses it.
 
@@ -42,6 +50,5 @@
   check: they plant symlinks, close stdout mid-run, kill helpers, fake releases. Re-run them
   after changes and compare markers (e.g. `DESCENDANT WROTE AFTER CANCEL`, `TARGET EXISTS`).
 - Open items: R2 root-only config checks, R3 retry of a partially failed revert (needs per-step
-  progress), R4 end-to-end bounded output events (CLI with a blocked stdout still queues
-  events), cgroup v1/nonstandard mounts, capture output caps, explicit binstall compile policy
+  progress), cgroup v1/nonstandard mounts, capture output caps, explicit binstall compile policy
   for self-update.

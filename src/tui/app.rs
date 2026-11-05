@@ -205,13 +205,17 @@ pub enum UnitState {
 
 /// Lines of a unit's log the run view keeps (the log file has all of them).
 pub const LOG_LINES: usize = 20_000;
+/// Bytes of a unit's log the run view keeps (lines can be up to 64 KiB each).
+pub const LOG_BYTES: usize = 2 << 20;
 
 pub struct RunView {
     pub plan: Plan,
     pub run_id: String,
     pub units: Vec<UnitState>,
-    /// The latest `LOG_LINES` (up to a quarter more) lines of each unit.
+    /// The latest `LOG_LINES` lines or `LOG_BYTES` bytes (up to a quarter more) of each unit.
     pub logs: Vec<Vec<String>>,
+    /// Bytes in each of `logs`.
+    pub log_bytes: Vec<usize>,
     pub sel: usize,
     /// Cursor follows the running unit and the log sticks to the bottom.
     pub follow: bool,
@@ -234,6 +238,7 @@ impl RunView {
             run_id,
             units: vec![UnitState::Queued; n],
             logs: vec![Vec::new(); n],
+            log_bytes: vec![0; n],
             sel: 0,
             follow: true,
             scroll: 0,
@@ -1236,14 +1241,24 @@ impl App {
                 }
             }
             Event::Line(i, l) => {
-                let log = &mut run.logs[i];
-                if log.len() >= LOG_LINES + LOG_LINES / 4 {
-                    log.drain(..LOG_LINES / 4);
-                }
+                let (log, bytes) = (&mut run.logs[i], &mut run.log_bytes[i]);
+                *bytes += l.len();
                 log.push(l);
+                if log.len() > LOG_LINES + LOG_LINES / 4 || *bytes > LOG_BYTES + LOG_BYTES / 4 {
+                    // Drop the oldest lines a chunk at a time (draining moves the rest).
+                    let mut n = log.len().saturating_sub(LOG_LINES);
+                    let mut freed: usize = log[..n].iter().map(String::len).sum();
+                    while *bytes - freed > LOG_BYTES && n + 1 < log.len() {
+                        freed += log[n].len();
+                        n += 1;
+                    }
+                    log.drain(..n);
+                    *bytes -= freed;
+                }
             }
             Event::UnitFinished(i, o, d) => run.units[i] = UnitState::Done(o, d),
             Event::ShellEnv(r) => run.shell_env = Some(r),
+            Event::Notice(m) => self.notify(m),
             Event::Finished(rec) => {
                 let elapsed = run.started.elapsed();
                 // Jump to the first failure so its log is visible.
@@ -1474,6 +1489,16 @@ pub mod tests {
         let log = &a.run.as_ref().unwrap().logs[0];
         assert!((LOG_LINES..=LOG_LINES + LOG_LINES / 4).contains(&log.len()));
         assert_eq!(log.last().unwrap(), &(LOG_LINES * 2 - 1).to_string());
+        // Long lines are kept by bytes.
+        let long = "x".repeat(60 << 10);
+        for n in 0..200 {
+            a.on_exec(Event::Line(0, format!("{n:03}{long}")));
+        }
+        let run = a.run.as_ref().unwrap();
+        let bytes: usize = run.logs[0].iter().map(String::len).sum();
+        assert_eq!(bytes, run.log_bytes[0]);
+        assert!((LOG_BYTES - (64 << 10)..=LOG_BYTES + LOG_BYTES / 4).contains(&bytes));
+        assert!(run.logs[0].last().unwrap().starts_with("199"));
     }
 
     #[test]

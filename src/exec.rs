@@ -2,10 +2,11 @@
 //! the shared resources it uses (see [`lanes`]) are free; a failure blocks only the units that
 //! depend on it. State and the run record are written after every unit.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -32,6 +33,11 @@ pub const JOBS: usize = 4;
 const KEEP_RUNS: usize = 20;
 /// Output lines of a step that may wait to be logged; beyond that the step waits on its pipe.
 const LINE_BUFFER: usize = 1024;
+/// Bytes of log lines that may wait for a slow reader of the events (a stalled pipe or
+/// terminal); past that they are only in the log files.
+const QUEUED_BYTES: usize = 4 << 20;
+/// What a queued line costs besides its text: the event and the string's header.
+const LINE_COST: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
@@ -79,6 +85,125 @@ pub enum Event {
     /// Shell environment regenerated: the files written, or an error.
     ShellEnv(Result<Vec<String>, String>),
     Finished(RunRecord),
+    /// A message for whoever watches the run, from the front end itself (a signal arrived).
+    Notice(String),
+}
+
+/// The sending side of a run's events. Log lines waiting for a slow reader are capped at
+/// `QUEUED_BYTES`: past that a line is left out (it is in the unit's log file) and the reader is
+/// told how many it missed, before the unit's next line or its end. The executor never waits
+/// for the reader. Other events are always delivered: there are a few per unit.
+#[derive(Clone)]
+pub struct EventTx {
+    tx: mpsc::UnboundedSender<Event>,
+    queued: Arc<AtomicUsize>,
+    /// Lines left out per unit, not reported yet.
+    missed: Arc<std::sync::Mutex<BTreeMap<usize, usize>>>,
+    cap: usize,
+}
+
+/// The receiving side of [`EventTx`].
+pub struct EventRx {
+    rx: mpsc::UnboundedReceiver<Event>,
+    queued: Arc<AtomicUsize>,
+}
+
+/// A channel for a run's events.
+pub fn events() -> (EventTx, EventRx) {
+    events_with_cap(QUEUED_BYTES)
+}
+
+fn events_with_cap(cap: usize) -> (EventTx, EventRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    (
+        EventTx {
+            tx,
+            queued: queued.clone(),
+            missed: Default::default(),
+            cap,
+        },
+        EventRx { rx, queued },
+    )
+}
+
+fn line_cost(l: &str) -> usize {
+    l.len() + LINE_COST
+}
+
+impl EventTx {
+    pub fn send(&self, ev: Event) {
+        match ev {
+            Event::Line(i, l) => {
+                let cost = line_cost(&l);
+                if self.queued.load(Ordering::Acquire) + cost > self.cap {
+                    *self.missed.lock().unwrap().entry(i).or_default() += 1;
+                    return;
+                }
+                self.report_missed(i);
+                self.queue_line(i, l);
+            }
+            Event::UnitFinished(i, ..) => {
+                self.report_missed(i);
+                let _ = self.tx.send(ev);
+            }
+            ev => {
+                let _ = self.tx.send(ev);
+            }
+        }
+    }
+
+    fn queue_line(&self, i: usize, l: String) {
+        let cost = line_cost(&l);
+        self.queued.fetch_add(cost, Ordering::AcqRel);
+        if self.tx.send(Event::Line(i, l)).is_err() {
+            self.queued.fetch_sub(cost, Ordering::AcqRel);
+        }
+    }
+
+    /// A line saying how many lines of unit `i` were left out since its last delivered one.
+    fn report_missed(&self, i: usize) {
+        let n = self.missed.lock().unwrap().remove(&i).unwrap_or(0);
+        if n > 0 {
+            self.queue_line(
+                i,
+                format!(
+                    "[envira] {n} lines not shown here (the display fell behind); the log has them"
+                ),
+            );
+        }
+    }
+}
+
+impl EventRx {
+    pub async fn recv(&mut self) -> Option<Event> {
+        let ev = self.rx.recv().await;
+        self.took(ev.as_ref());
+        ev
+    }
+
+    pub fn try_recv(&mut self) -> Result<Event, mpsc::error::TryRecvError> {
+        let ev = self.rx.try_recv();
+        self.took(ev.as_ref().ok());
+        ev
+    }
+
+    pub fn blocking_recv(&mut self) -> Option<Event> {
+        let ev = self.rx.blocking_recv();
+        self.took(ev.as_ref());
+        ev
+    }
+
+    fn took(&self, ev: Option<&Event>) {
+        if let Some(Event::Line(_, l)) = ev {
+            let cost = line_cost(l);
+            let _ = self
+                .queued
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |q| {
+                    Some(q.saturating_sub(cost))
+                });
+        }
+    }
 }
 
 /// Control messages from the UI.
@@ -162,7 +287,7 @@ pub async fn execute(
     plan: Plan,
     ctx: ExecCtx,
     mut state: State,
-    tx: mpsc::UnboundedSender<Event>,
+    tx: EventTx,
     ctl: watch::Receiver<Control>,
 ) -> (RunRecord, State) {
     let run_dir = ctx.paths.run_dir(&ctx.run_id);
@@ -225,7 +350,7 @@ pub async fn execute(
             }
             waiting.remove(i);
             busy.extend(unit_lanes[idx].iter().copied());
-            let _ = tx.send(Event::UnitStarted(idx));
+            tx.send(Event::UnitStarted(idx));
             let mut uctl = ctl.clone();
             running.push(async move {
                 let started = Instant::now();
@@ -279,7 +404,7 @@ pub async fn execute(
 
     if ctx.shell_env {
         let r = regenerate_shell_env(&ctx).await;
-        let _ = tx.send(Event::ShellEnv(r));
+        tx.send(Event::ShellEnv(r));
     }
     state.mark_all_seen(&ctx.catalog);
     state.last_run = Some(ctx.run_id.clone());
@@ -287,7 +412,7 @@ pub async fn execute(
     let _ = state.save_run(&ctx.paths, &ctx.facts);
     let _ = record.save(&ctx.paths, &ctx.facts);
     state::prune_runs(&ctx.paths, KEEP_RUNS);
-    let _ = tx.send(Event::Finished(record.clone()));
+    tx.send(Event::Finished(record.clone()));
     (record, state)
 }
 
@@ -295,7 +420,7 @@ pub async fn execute(
 #[allow(clippy::too_many_arguments)]
 fn finish_unit(
     ctx: &ExecCtx,
-    tx: &mpsc::UnboundedSender<Event>,
+    tx: &EventTx,
     state: &mut State,
     record: &mut RunRecord,
     idx: usize,
@@ -318,19 +443,19 @@ fn finish_unit(
         .save_run(&ctx.paths, &ctx.facts)
         .and_then(|_| record.save(&ctx.paths, &ctx.facts))
     {
-        let _ = tx.send(Event::Line(
+        tx.send(Event::Line(
             idx,
             format!("[envira] could not save state: {e:#}"),
         ));
     }
-    let _ = tx.send(Event::UnitFinished(idx, outcome, elapsed));
+    tx.send(Event::UnitFinished(idx, outcome, elapsed));
 }
 
 async fn run_unit(
     idx: usize,
     unit: &Unit,
     ctx: &ExecCtx,
-    tx: &mpsc::UnboundedSender<Event>,
+    tx: &EventTx,
     ctl: &mut watch::Receiver<Control>,
     run_dir: &std::path::Path,
 ) -> (Outcome, Option<String>) {
@@ -356,7 +481,7 @@ async fn run_unit(
                 let stamped = format!("{} {line}\n", chrono::Local::now().format("%H:%M:%S"));
                 let _ = f.write_all(stamped.as_bytes());
             }
-            let _ = tx.send(Event::Line(idx, line));
+            tx.send(Event::Line(idx, line));
         }
     };
     if let Some(f) = log.lock().unwrap().as_mut() {
@@ -813,7 +938,7 @@ mod tests {
     }
 
     async fn run(s: &Setup, p: Plan) -> (RunRecord, State, Vec<Event>) {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = events();
         let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
         let (rec, st) = execute(p, ctx_of(s), State::default(), tx, ctl_rx).await;
         let mut events = Vec::new();
@@ -887,7 +1012,7 @@ mod tests {
     async fn stopped_runs_leave_skipped_units_for_retry() {
         let s = setup();
         let p = plan(&s.ctx, &["herdr", "bun"]);
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = events();
         let (_ctl_tx, ctl_rx) = watch::channel(Control {
             stop: true,
             ..Default::default()
@@ -1191,7 +1316,7 @@ mod tests {
             units,
             skipped: vec![],
         };
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = events();
         let (ctl_tx, ctl_rx) = watch::channel(Control::default());
         let handle = tokio::spawn(execute(plan, ctx, State::default(), tx, ctl_rx));
         let mut events = Vec::new();
@@ -1209,6 +1334,51 @@ mod tests {
             events.push(e);
         }
         (rec, events)
+    }
+
+    #[test]
+    fn a_slow_reader_gets_a_bounded_queue() {
+        let (tx, mut rx) = events_with_cap(10 * line_cost("line 00"));
+        for n in 0..100 {
+            tx.send(Event::Line(0, format!("line {n:02}")));
+        }
+        tx.send(Event::Line(1, "other".into()));
+        // Nobody read: only what fits is queued, the rest is counted.
+        assert!(rx.queued.load(Ordering::Acquire) <= 10 * line_cost("line 00"));
+        let mut got = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            got.push(e);
+        }
+        assert_eq!(got.len(), 10);
+        assert_eq!(rx.queued.load(Ordering::Acquire), 0);
+        // Once there is room, the next line of the unit comes after a note of what was left out;
+        // a unit that ends reports its count before it ends.
+        tx.send(Event::Line(0, "line 99".into()));
+        tx.send(Event::UnitFinished(1, Outcome::Cancelled, Duration::ZERO));
+        tx.send(Event::Finished(RunRecord::default()));
+        let mut lines = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            lines.push(match e {
+                Event::Line(i, l) => format!("{i}: {l}"),
+                Event::UnitFinished(i, ..) => format!("{i} finished"),
+                Event::Finished(_) => "finished".into(),
+                e => format!("{e:?}"),
+            });
+        }
+        let note = |n: usize| {
+            format!("[envira] {n} lines not shown here (the display fell behind); the log has them")
+        };
+        assert_eq!(
+            lines,
+            vec![
+                format!("0: {}", note(90)),
+                "0: line 99".into(),
+                format!("1: {}", note(1)),
+                "1 finished".into(),
+                "finished".into(),
+            ]
+        );
+        assert_eq!(rx.queued.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -1317,7 +1487,7 @@ mod tests {
             units: vec![sys, unit("usr", "ok pipx install usr", &[])],
             skipped: vec![],
         };
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = events();
         let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
         let (rec, _) = execute(plan, ctx_of(&s), State::default(), tx, ctl_rx).await;
         assert_eq!(outcomes(&rec), vec![("sys", "ok"), ("usr", "ok")]);
@@ -1344,7 +1514,7 @@ mod tests {
             units,
             skipped: vec![],
         };
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = events();
         let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
         let (rec, _) = execute(plan, ctx, State::default(), tx, ctl_rx).await;
         let mut events = Vec::new();

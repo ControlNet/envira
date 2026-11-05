@@ -208,6 +208,9 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
     );
     app.checking_latest = true;
     let mut keepalive: Option<JoinHandle<()>> = None;
+    // The running plan's events, read here and not forwarded: while the screen is busy they
+    // wait in their own bounded queue.
+    let mut exec_rx: Option<exec::EventRx> = None;
 
     loop {
         // After SIGHUP the terminal is gone; keep winding the run down without drawing.
@@ -216,13 +219,27 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
         {
             return Err(e.into());
         }
-        let Some(first) = rx.recv().await else {
-            return Ok(0);
+        let first = tokio::select! {
+            ev = rx.recv() => match ev {
+                Some(ev) => ev,
+                None => return Ok(0),
+            },
+            Some(ev) = next_exec(&mut exec_rx) => AppEvent::Exec(ev),
         };
-        // Fold everything already queued before the next redraw (fast installer output).
+        // Fold what is already queued into one redraw (fast installer output), up to a limit
+        // so keys and redraws keep coming during a flood.
         let mut batch = vec![first];
-        while let Ok(ev) = rx.try_recv() {
+        while batch.len() < BATCH
+            && let Ok(ev) = rx.try_recv()
+        {
             batch.push(ev);
+        }
+        if let Some(erx) = &mut exec_rx {
+            while batch.len() < BATCH
+                && let Ok(ev) = erx.try_recv()
+            {
+                batch.push(AppEvent::Exec(ev));
+            }
         }
         let mut cmds = Vec::new();
         for ev in batch {
@@ -237,12 +254,13 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 AppEvent::Latest(a) => app.on_latest(a),
                 AppEvent::SelfLatest(v) => app.on_self_latest(v),
                 AppEvent::Exec(e) => {
-                    if matches!(e, exec::Event::Finished(_))
-                        && let Some(k) = keepalive.take()
-                    {
-                        k.abort();
-                    }
                     let finished = matches!(e, exec::Event::Finished(_));
+                    if finished {
+                        exec_rx = None;
+                        if let Some(k) = keepalive.take() {
+                            k.abort();
+                        }
+                    }
                     app.on_exec(e);
                     if finished && app.quitting {
                         return Ok(1);
@@ -333,7 +351,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                             Err(e) => return Err(e),
                         }
                     }
-                    start_run(&sess, &mut app, plan, command, lock, tx.clone());
+                    exec_rx = Some(start_run(&sess, &mut app, plan, command, lock));
                 }
             }
         }
@@ -437,16 +455,26 @@ fn spawn_keepalive() -> JoinHandle<()> {
     })
 }
 
+/// Events handled before the next redraw, at most.
+const BATCH: usize = 2048;
+
+async fn next_exec(rx: &mut Option<exec::EventRx>) -> Option<exec::Event> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Starts the plan; returns its events.
 fn start_run(
     sess: &Session,
     app: &mut App,
     plan: Plan,
     command: String,
     lock: state::RunLock,
-    tx: mpsc::UnboundedSender<AppEvent>,
-) {
+) -> exec::EventRx {
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
-    let (etx, mut erx) = mpsc::unbounded_channel();
+    let (etx, erx) = exec::events();
     let ctx = sess.exec_ctx(command, true);
     let run_id = ctx.run_id.clone();
     // The state on disk, read under the run lock: `app.state` is from the last scan, and a
@@ -461,12 +489,6 @@ fn start_run(
         let _lock = lock;
         exec::execute(run, ctx, st, etx, ctl_rx).await
     });
-    tokio::spawn(async move {
-        while let Some(e) = erx.recv().await {
-            if tx.send(AppEvent::Exec(e)).is_err() {
-                break;
-            }
-        }
-    });
     app.start_run(plan, run_id, Some(ctl_tx));
+    erx
 }

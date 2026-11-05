@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 use crate::app::{self, Session};
 use crate::catalog::{self, Catalog, validate};
@@ -949,115 +949,150 @@ async fn run_plan(
         None
     };
 
-    let n = plan.units.len();
     let ids: Vec<String> = plan.units.iter().map(|u| u.id.clone()).collect();
     let actions: Vec<String> = plan
         .units
         .iter()
         .map(|u| format!("{} {} via {}", u.action.as_str(), u.id, u.via))
         .collect();
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, rx) = exec::events();
     let (ctl_tx, ctl_rx) = watch::channel(Control::default());
     let ctx = sess.exec_ctx(command.into(), true);
-    // Output of units running side by side is told apart by the unit's id.
-    let tagged = ctx.jobs > 1;
-    let run_id = ctx.run_id.clone();
+    let printer = Printer {
+        // Output of units running side by side is told apart by the unit's id.
+        tagged: ctx.jobs > 1,
+        quiet: opts.quiet,
+        ids,
+        actions,
+        run_dir: sess.paths.run_dir(&ctx.run_id),
+    };
     let paths = sess.paths.clone();
-    let handle = tokio::spawn(exec::execute(plan, ctx, state, tx, ctl_rx));
-    // From here on a closed stdout (`envira install … | head`) must not end the run halfway:
-    // output errors are ignored, and the run finishes and records its outcome.
-    macro_rules! say {
-        ($($t:tt)*) => {{
-            use std::io::Write;
-            let _ = writeln!(std::io::stdout(), $($t)*);
-        }};
-    }
+    let mut handle = tokio::spawn(exec::execute(plan, ctx, state, tx.clone(), ctl_rx));
+    // Output is written by its own thread: a reader that stalls (`| less` left alone) holds up
+    // only that thread, never the run or Ctrl-C, and lines wait for it in a bounded queue.
+    let printer = std::thread::spawn(move || printer.print(rx));
 
-    let quiet = opts.quiet;
     let mut interrupts = 0;
     // SIGTERM/SIGHUP: cancel the running step and stop, so the run record is completed and no
     // installer keeps running on its own (steps run in their own sessions).
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate())?;
     let mut hup = signal(SignalKind::hangup())?;
-    let mut failed = 0;
-    loop {
+    let mut int = signal(SignalKind::interrupt())?;
+    let record = loop {
         tokio::select! {
-            ev = rx.recv() => {
-                let Some(ev) = ev else { break };
-                match ev {
-                    Event::UnitStarted(i) => say!("==> [{}/{n}] {}", i + 1, actions[i]),
-                    Event::Line(i, l) if !quiet || l.starts_with("[envira]") => {
-                        if tagged {
-                            say!("    │ {} │ {l}", ids[i]);
-                        } else {
-                            say!("    │ {l}");
-                        }
-                    }
-                    Event::Line(..) => {}
-                    Event::UnitFinished(i, o, d) => {
-                        let id = &ids[i];
-                        match &o {
-                            Outcome::Ok { version } => say!("  ✓ {id} {} ({})", version.as_deref().unwrap_or(""), fmt_duration(d)),
-                            Outcome::Blocked(dep) => { failed += 1; say!("  ⊘ {id} blocked: needs {dep}") }
-                            Outcome::Skipped => { failed += 1; say!("  · {id} skipped (run stopped)") }
-                            Outcome::Cancelled => { failed += 1; say!("  ✗ {id} cancelled") }
-                            Outcome::Failed(e) => {
-                                failed += 1;
-                                let log = paths.run_dir(&run_id).join(format!("{id}.log"));
-                                say!("  ✗ {id} failed: {e} · log {}", log.display());
-                                if quiet {
-                                    // Step output was hidden: show the end of the log.
-                                    for l in log_tail(&log, 15) {
-                                        say!("    │ {l}");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Event::ShellEnv(Ok(files)) if !files.is_empty() => {
-                        say!("==> shell environment updated ({} files); open a new shell to use it", files.len())
-                    }
-                    Event::ShellEnv(Ok(_)) => {}
-                    Event::ShellEnv(Err(e)) => say!("==> shell environment not updated: {e}"),
-                    Event::Finished(_) => {}
-                }
-            }
+            r = &mut handle => break r?.0,
             _ = async { tokio::select! { _ = term.recv() => {}, _ = hup.recv() => {} } } => {
-                say!("\n==> terminated: cancelling the running steps and stopping");
                 ctl_tx.send_modify(|c| {
                     c.stop = true;
                     c.cancel_seq += 1;
                 });
+                tx.send(Event::Notice("terminated: cancelling the running steps and stopping".into()));
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = int.recv() => {
                 interrupts += 1;
                 let mut c = *ctl_tx.borrow();
                 if interrupts == 1 {
                     c.stop = true;
-                    say!("\n==> stopping after the running steps (Ctrl-C again cancels them)");
                 } else {
                     c.cancel_seq += 1;
                 }
                 let _ = ctl_tx.send(c);
+                if interrupts == 1 {
+                    tx.send(Event::Notice("stopping after the running steps (Ctrl-C again cancels them)".into()));
+                }
             }
         }
-    }
-    let (record, _) = handle.await?;
+    };
+    drop(tx);
     if let Some(k) = keepalive {
         k.abort();
     }
+    // The run is recorded; what is left is showing the end of it.
+    let _ = tokio::task::spawn_blocking(move || printer.join()).await;
     let ok = record.units.iter().filter(|u| u.outcome == "ok").count();
-    say!(
+    let failed = record.units.len() - ok;
+    say(format_args!(
         "{ok}/{} succeeded · run {} · {}",
         record.units.len(),
         record.id,
         paths.run_dir(&record.id).display()
-    );
+    ));
     if failed > 0 {
-        say!("Retry what did not finish with `envira retry`.");
+        say(format_args!(
+            "Retry what did not finish with `envira retry`."
+        ));
     }
     Ok(if failed > 0 { 1 } else { 0 })
+}
+
+/// Writes a line to stdout. Once a run started, a closed stdout (`envira install … | head`) must
+/// not end it halfway: write errors are ignored, and the run finishes and records its outcome.
+fn say(line: std::fmt::Arguments) {
+    let _ = writeln!(std::io::stdout(), "{line}");
+}
+
+/// Prints a run's events on the command line.
+struct Printer {
+    tagged: bool,
+    quiet: bool,
+    ids: Vec<String>,
+    actions: Vec<String>,
+    run_dir: std::path::PathBuf,
+}
+
+impl Printer {
+    fn print(self, mut rx: exec::EventRx) {
+        let n = self.ids.len();
+        while let Some(ev) = rx.blocking_recv() {
+            match ev {
+                Event::UnitStarted(i) => {
+                    say(format_args!("==> [{}/{n}] {}", i + 1, self.actions[i]))
+                }
+                Event::Line(i, l) if !self.quiet || l.starts_with("[envira]") => {
+                    if self.tagged {
+                        say(format_args!("    │ {} │ {l}", self.ids[i]));
+                    } else {
+                        say(format_args!("    │ {l}"));
+                    }
+                }
+                Event::Line(..) => {}
+                Event::UnitFinished(i, o, d) => {
+                    let id = &self.ids[i];
+                    match &o {
+                        Outcome::Ok { version } => say(format_args!(
+                            "  ✓ {id} {} ({})",
+                            version.as_deref().unwrap_or(""),
+                            fmt_duration(d)
+                        )),
+                        Outcome::Blocked(dep) => say(format_args!("  ⊘ {id} blocked: needs {dep}")),
+                        Outcome::Skipped => say(format_args!("  · {id} skipped (run stopped)")),
+                        Outcome::Cancelled => say(format_args!("  ✗ {id} cancelled")),
+                        Outcome::Failed(e) => {
+                            let log = self.run_dir.join(format!("{id}.log"));
+                            say(format_args!("  ✗ {id} failed: {e} · log {}", log.display()));
+                            if self.quiet {
+                                // Step output was hidden: show the end of the log.
+                                for l in log_tail(&log, 15) {
+                                    say(format_args!("    │ {l}"));
+                                }
+                            }
+                        }
+                    }
+                }
+                Event::ShellEnv(Ok(files)) if !files.is_empty() => say(format_args!(
+                    "==> shell environment updated ({} files); open a new shell to use it",
+                    files.len()
+                )),
+                Event::ShellEnv(Ok(_)) => {}
+                Event::ShellEnv(Err(e)) => {
+                    say(format_args!("==> shell environment not updated: {e}"))
+                }
+                Event::Notice(m) => say(format_args!("\n==> {m}")),
+                Event::Finished(_) => {}
+            }
+        }
+    }
 }
 
 #[cfg(test)]
