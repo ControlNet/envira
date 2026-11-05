@@ -47,6 +47,22 @@ pub fn transient_error(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect() || e.is_request() || e.is_body()
 }
 
+/// The GitHub token (`GITHUB_TOKEN`, else `GH_TOKEN`) to send with `url`: only to the GitHub
+/// API over https, for its rate limit. Release downloads need none, and a mirror
+/// (`ENVIRA_RELEASES_URL`) or any other host must never see it.
+pub fn github_token(url: &str) -> Option<String> {
+    token_for(url, |v| std::env::var(v).ok())
+}
+
+fn token_for(url: &str, env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    if !url.starts_with("https://api.github.com/") {
+        return None;
+    }
+    ["GITHUB_TOKEN", "GH_TOKEN"]
+        .into_iter()
+        .find_map(|v| env(v).filter(|t| !t.is_empty()))
+}
+
 /// `Retry-After` in seconds (the HTTP-date form is not used by the services envira queries).
 pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
@@ -62,6 +78,23 @@ pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_goes_to_the_github_api_only() {
+        // Synthetic value, not a credential.
+        let env = |v: &str| (v == "GH_TOKEN").then(|| "test-token".to_string());
+        let api = "https://api.github.com/repos/o/r/releases/latest";
+        assert_eq!(token_for(api, env).as_deref(), Some("test-token"));
+        for url in [
+            "http://api.github.com/repos/o/r/releases/latest",
+            "https://api.github.com.example.org/x",
+            "https://github.com/o/r/releases/download/v1/a",
+            "https://mirror.example.org/envira/releases/download/v1/a",
+        ] {
+            assert_eq!(token_for(url, env), None, "{url}");
+        }
+        assert_eq!(token_for(api, |_| Some(String::new())), None);
+    }
 
     #[test]
     fn backoff_doubles_and_stops() {

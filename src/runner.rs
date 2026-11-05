@@ -69,10 +69,7 @@ async fn http_get_text(url: &str, timeout: Duration) -> Result<String, String> {
     let mut n = 1;
     loop {
         let mut req = client.get(url);
-        if url.starts_with("https://api.github.com/")
-            && let Ok(t) = std::env::var("GITHUB_TOKEN")
-            && !t.is_empty()
-        {
+        if let Some(t) = net::github_token(url) {
             req = req.bearer_auth(t);
         }
         let (why, after) = match req.send().await {
@@ -143,20 +140,8 @@ impl RealRunner {
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .kill_on_drop(true);
-        // rustup unpacks with one thread per core and buffers for them: rustup-init peaked at
-        // 560-670 MiB and was OOM-killed in 512 MiB. One IO thread: ~210 MiB, a few seconds
-        // slower. A value the user set is kept.
-        if std::env::var_os("RUSTUP_IO_THREADS").is_none() {
-            c.env("RUSTUP_IO_THREADS", "1");
-        }
-        // cargo compiles one crate per core, and one rustc can take ~0.5 GiB: a small VM with
-        // many cores runs out of memory. About one job per GiB available; a value the user set
-        // is kept.
-        if std::env::var_os("CARGO_BUILD_JOBS").is_none() {
-            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-            if let Some(jobs) = build_jobs(available_memory(), cores) {
-                c.env("CARGO_BUILD_JOBS", jobs.to_string());
-            }
+        for (k, v) in build_env() {
+            c.env(k, v);
         }
         // New session without a controlling terminal: tools that open /dev/tty (even for
         // `--version`) cannot block on the TUI's terminal, and the session id doubles as the
@@ -172,6 +157,26 @@ impl RealRunner {
     }
 }
 
+/// Environment that keeps builds within the machine's memory, for steps and for
+/// `self-update`'s package managers. A value the user set is kept.
+/// - rustup unpacks with one thread per core and buffers for them: rustup-init peaked at
+///   560-670 MiB and was OOM-killed in 512 MiB. One IO thread: ~210 MiB, a few seconds slower.
+/// - cargo compiles one crate per core, and one rustc can take ~0.5 GiB: a small VM with many
+///   cores runs out of memory. About one job per GiB available.
+pub fn build_env() -> Vec<(&'static str, String)> {
+    let mut env = Vec::new();
+    if std::env::var_os("RUSTUP_IO_THREADS").is_none() {
+        env.push(("RUSTUP_IO_THREADS", "1".to_string()));
+    }
+    if std::env::var_os("CARGO_BUILD_JOBS").is_none() {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        if let Some(jobs) = build_jobs(available_memory(), cores) {
+            env.push(("CARGO_BUILD_JOBS", jobs.to_string()));
+        }
+    }
+    env
+}
+
 const GIB: u64 = 1 << 30;
 
 /// Build jobs that fit in `available` bytes (one per GiB, at least one), or `None` when every
@@ -181,15 +186,51 @@ fn build_jobs(available: Option<u64>, cores: usize) -> Option<usize> {
     (jobs < cores).then_some(jobs)
 }
 
-/// Memory this machine can still give, in bytes: `MemAvailable`, or less when a cgroup (a
-/// container) limits it. `None` where there is no /proc (macOS).
+/// Memory this machine can still give, in bytes: `MemAvailable`, or less when a cgroup v2
+/// limits this process (a container, a systemd service or slice). `None` where there is no
+/// /proc (macOS).
 fn available_memory() -> Option<u64> {
-    let read = |p: &str| std::fs::read_to_string(p).ok();
-    let host = mem_available(&read("/proc/meminfo")?)?;
-    let cgroup = read("/sys/fs/cgroup/memory.max")
-        .zip(read("/sys/fs/cgroup/memory.current"))
-        .and_then(|(max, cur)| cgroup_free(&max, &cur));
+    let read = |p: &Path| std::fs::read_to_string(p).ok();
+    let host = mem_available(&read(Path::new("/proc/meminfo"))?)?;
+    let own = read(Path::new("/proc/self/cgroup"))
+        .and_then(|c| cgroup_path(&c))
+        .unwrap_or_default();
+    let cgroup = cgroup_left(Path::new("/sys/fs/cgroup"), &own, read);
     Some(cgroup.map_or(host, |c| c.min(host)))
+}
+
+/// This process's cgroup v2 path, relative to the mount (the `0::` line of /proc/self/cgroup).
+/// A path outside this cgroup namespace (`/../..`) counts as the mount root.
+fn cgroup_path(proc_cgroup: &str) -> Option<String> {
+    let p = proc_cgroup
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))?
+        .trim();
+    Some(if p.split('/').any(|c| c == "..") {
+        String::new()
+    } else {
+        p.trim_start_matches('/').to_string()
+    })
+}
+
+/// The least memory left under any limit from the cgroup `own` up to the mount `root`: a limit
+/// on a parent slice binds as much as one on the cgroup itself.
+fn cgroup_left(root: &Path, own: &str, read: impl Fn(&Path) -> Option<String>) -> Option<u64> {
+    let mut dir = root.join(own);
+    let mut left: Option<u64> = None;
+    while dir.starts_with(root) {
+        let here = read(&dir.join("memory.max"))
+            .zip(read(&dir.join("memory.current")))
+            .and_then(|(max, cur)| cgroup_free(&max, &cur));
+        left = match (left, here) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if !dir.pop() {
+            break;
+        }
+    }
+    left
 }
 
 /// `MemAvailable` of /proc/meminfo, in bytes.
@@ -215,10 +256,36 @@ fn kill_group(pid: Option<u32>, sig: i32) {
     }
 }
 
+/// Longest line kept in memory; the rest of a longer line is dropped (the disk log gets the
+/// same). Output without newlines (a progress bar, a binary on stdout) stays bounded.
+const MAX_LINE: usize = 64 * 1024;
+
+/// Sends each line of `r` (lossy UTF-8, at most `MAX_LINE` bytes) until EOF or a read error.
 async fn pump<R: AsyncRead + Unpin>(r: R, tx: mpsc::Sender<String>) {
-    let mut lines = BufReader::new(r).lines();
-    while let Ok(Some(l)) = lines.next_line().await {
-        let _ = tx.send(strip_ansi(&l)).await;
+    let mut r = BufReader::new(r);
+    let mut line = Vec::new();
+    let send = |line: &[u8]| {
+        let l = line.strip_suffix(b"\r").unwrap_or(line);
+        strip_ansi(&String::from_utf8_lossy(l))
+    };
+    loop {
+        let buf = match r.fill_buf().await {
+            Ok([]) | Err(_) => break,
+            Ok(b) => b,
+        };
+        let nl = buf.iter().position(|&b| b == b'\n');
+        let chunk = &buf[..nl.unwrap_or(buf.len())];
+        let room = MAX_LINE.saturating_sub(line.len());
+        line.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        let used = nl.map_or(buf.len(), |i| i + 1);
+        r.consume(used);
+        if nl.is_some() {
+            let _ = tx.send(send(&line)).await;
+            line.clear();
+        }
+    }
+    if !line.is_empty() {
+        let _ = tx.send(send(&line)).await;
     }
 }
 
@@ -343,12 +410,19 @@ impl Runner for RealRunner {
                     }
                 }
             };
-            // A backgrounded grandchild may keep the pipes open; do not wait on it forever.
-            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            // A backgrounded grandchild may keep the pipes open; do not wait on it forever. The
+            // pumps hold senders of `lines`, which the executor drains until every sender is
+            // gone: stop them, not just stop waiting for them.
+            let (abort_out, abort_err) = (out.abort_handle(), err.abort_handle());
+            let drained = tokio::time::timeout(Duration::from_secs(2), async {
                 let _ = out.await;
                 let _ = err.await;
             })
             .await;
+            if drained.is_err() {
+                abort_out.abort();
+                abort_err.abort();
+            }
             end
         })
     }
@@ -569,6 +643,36 @@ mod tests {
         assert_eq!(build_jobs(None, 16), None);
     }
 
+    #[test]
+    fn the_tightest_cgroup_limit_counts() {
+        assert_eq!(
+            cgroup_path("0::/system.slice/envira.service\n").as_deref(),
+            Some("system.slice/envira.service")
+        );
+        assert_eq!(cgroup_path("0::/\n").as_deref(), Some(""));
+        assert_eq!(cgroup_path("0::/../../x\n").as_deref(), Some(""));
+        assert_eq!(cgroup_path("12:memory:/x\n"), None);
+
+        let root = Path::new("/sys/fs/cgroup");
+        // The mount root has no limit, the slice 2 GiB (1.5 used), the service none.
+        let files = |p: &Path| -> Option<String> {
+            let rel = p.strip_prefix(root).ok()?.to_str()?;
+            match rel {
+                "system.slice/memory.max" => Some(format!("{}\n", 2 * GIB)),
+                "system.slice/memory.current" => Some(format!("{}\n", 3 * GIB / 2)),
+                "system.slice/envira.service/memory.max" => Some("max\n".into()),
+                "system.slice/envira.service/memory.current" => Some("1\n".into()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            cgroup_left(root, "system.slice/envira.service", files),
+            Some(GIB / 2)
+        );
+        assert_eq!(cgroup_left(root, "", files), None);
+        assert_eq!(cgroup_left(root, "user.slice", files), None);
+    }
+
     #[tokio::test]
     async fn rustup_gets_one_io_thread() {
         if std::env::var_os("RUSTUP_IO_THREADS").is_some() {
@@ -619,6 +723,46 @@ mod tests {
         assert_eq!(end, StreamEnd::Cancelled);
         assert!(start.elapsed() < Duration::from_secs(6));
         drop(h.await);
+    }
+
+    /// A step that leaves a background process holding its stdout: the step ends when its shell
+    /// exits, and the line channel closes soon after (the executor waits for that).
+    #[tokio::test]
+    async fn a_background_child_does_not_hold_the_step_open() {
+        let r = runner();
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let (_ctx, crx) = watch::channel(false);
+        let start = std::time::Instant::now();
+        let end = r.stream("sleep 8 & echo hi", dir.path(), tx, crx).await;
+        assert_eq!(end, StreamEnd::Exit(0));
+        let closed = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut got = Vec::new();
+            while let Some(l) = rx.recv().await {
+                got.push(l);
+            }
+            got
+        })
+        .await;
+        assert_eq!(closed.as_deref(), Ok(&["hi".to_string()][..]));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn long_or_invalid_lines_stay_bounded() {
+        let mut input = vec![b'x'; 3 * MAX_LINE];
+        input.extend_from_slice(b"\nbad \xff byte\r\nlast");
+        let (tx, mut rx) = mpsc::channel(16);
+        pump(&input[..], tx).await;
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first.len(), MAX_LINE);
+        assert_eq!(rx.recv().await.unwrap(), "bad \u{fffd} byte");
+        assert_eq!(rx.recv().await.unwrap(), "last");
+        assert_eq!(rx.recv().await, None);
     }
 
     #[test]

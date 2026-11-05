@@ -3,7 +3,7 @@
 //! way this copy was installed (release binary, pipx, uv, pip or cargo).
 
 use std::io::{IsTerminal, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -386,6 +386,14 @@ pub fn run(o: &Opts) -> Result<Outcome> {
             exe.display()
         );
     }
+    // `pip install --user` would put a second copy in the user site, not replace this one.
+    if channel == Channel::Pip(None) && !under_home(&facts, &exe) {
+        bail!(
+            "{} was installed by pip outside your home; update it with the pip that installed it \
+             (for example `sudo python3 -m pip install --upgrade envira`)",
+            exe.display()
+        );
+    }
     let binstall = Command::new("cargo-binstall")
         .arg("-V")
         .output()
@@ -423,6 +431,7 @@ pub fn run(o: &Opts) -> Result<Outcome> {
             }
             let st = Command::new(&words[0])
                 .args(&words[1..])
+                .envs(crate::runner::build_env())
                 .status()
                 .with_context(|| format!("cannot run {}", words[0]))?;
             if !st.success() {
@@ -438,13 +447,19 @@ pub fn run(o: &Opts) -> Result<Outcome> {
         .unwrap_or_default();
     if now.split_whitespace().nth(1) == Some(target.as_str()) {
         println!("{now} is installed at {}.", tilde(&facts, &exe));
-    } else {
-        println!(
-            "warning: {} reports {now:?}, not {target} (the package index may not have it yet)",
-            exe.display()
-        );
+        return Ok(Outcome::Updated(exe));
     }
-    Ok(Outcome::Updated(exe))
+    // Not `Updated`: the TUI would offer to restart into the same old version.
+    eprintln!(
+        "warning: {} reports {now:?}, not {target} (the package index may not have it yet)",
+        exe.display()
+    );
+    Ok(Outcome::Unchanged(1))
+}
+
+/// Whether `exe` is in the target user's home (a `pip install --user` lands there).
+fn under_home(facts: &Facts, exe: &Path) -> bool {
+    exe.starts_with(&facts.home) || facts.home.canonicalize().is_ok_and(|h| exe.starts_with(h))
 }
 
 /// Downloads the release binary for this machine, checks its SHA-256 and that it runs, then
@@ -481,11 +496,12 @@ fn replace_binary(facts: &Facts, exe: &Path, version: &str) -> Result<()> {
         bail!("checksum mismatch for {asset} (expected {want}, got {got}); nothing was changed");
     }
     let dir = exe.parent().context("the envira binary has no directory")?;
-    match install_binary(dir, exe, &bin, version) {
-        Ok(()) => {
-            state::chown_to_target(exe, facts);
-            Ok(())
-        }
+    // The new file keeps the old one's owner: `sudo envira self-update` on a root-owned
+    // /usr/local/bin/envira must not hand it to the user (only root can chown).
+    let owner = std::fs::metadata(exe).ok().map(|m| (m.uid(), m.gid()));
+    let as_root = facts.privilege == Privilege::Root;
+    match install_binary(dir, exe, &bin, version, owner.filter(|_| as_root)) {
+        Ok(()) => Ok(()),
         Err(e) if is_permission(&e) => {
             if facts.privilege == Privilege::None {
                 bail!(
@@ -493,25 +509,59 @@ fn replace_binary(facts: &Facts, exe: &Path, version: &str) -> Result<()> {
                     dir.display()
                 );
             }
-            // Check the download as the user, then let sudo copy it.
+            // Check the download as the user, then let sudo put it next to the old one and
+            // rename it over: until that rename, the old binary is untouched.
             let tmp = tempfile::tempdir()?;
             let staged = tmp.path().join("envira");
-            install_binary(tmp.path(), &staged, &bin, version)?;
+            install_binary(tmp.path(), &staged, &bin, version, None)?;
             println!("{} is not writable: using sudo", dir.display());
-            let st = Command::new("sudo")
-                .arg("install")
-                .args(["-m", "755"])
-                .arg(&staged)
-                .arg(exe)
-                .status()
-                .context("cannot run sudo")?;
-            if !st.success() {
-                bail!("sudo install failed ({st}); nothing was changed");
-            }
-            Ok(())
+            sudo_replace(&staged, exe, owner.unwrap_or((0, 0)))
         }
         Err(e) => Err(e),
     }
+}
+
+/// `sudo install` of `staged` as a new file in `exe`'s directory (owned by `owner`, mode 755),
+/// then `sudo mv` over `exe`: a rename in one directory, so `exe` is either the old binary or
+/// the new one. The directory is not writable by the user, so the fixed temp name cannot be
+/// planted by them.
+fn sudo_replace(staged: &Path, exe: &Path, (uid, gid): (u32, u32)) -> Result<()> {
+    let dir = exe.parent().context("the envira binary has no directory")?;
+    let new = dir.join(format!(".envira.new.{}", std::process::id()));
+    let sudo = |args: &[&std::ffi::OsStr]| {
+        Command::new("sudo")
+            .arg("--")
+            .args(args)
+            .status()
+            .context("cannot run sudo")
+    };
+    let (uid, gid) = (uid.to_string(), gid.to_string());
+    let st = sudo(&[
+        "install".as_ref(),
+        "-m".as_ref(),
+        "755".as_ref(),
+        "-o".as_ref(),
+        uid.as_ref(),
+        "-g".as_ref(),
+        gid.as_ref(),
+        staged.as_os_str(),
+        new.as_os_str(),
+    ])?;
+    if !st.success() {
+        let _ = sudo(&["rm".as_ref(), "-f".as_ref(), new.as_os_str()]);
+        bail!("sudo install failed ({st}); nothing was changed");
+    }
+    let st = sudo(&[
+        "mv".as_ref(),
+        "-f".as_ref(),
+        new.as_os_str(),
+        exe.as_os_str(),
+    ])?;
+    if !st.success() {
+        let _ = sudo(&["rm".as_ref(), "-f".as_ref(), new.as_os_str()]);
+        bail!("sudo mv failed ({st}); {} was not replaced", exe.display());
+    }
+    Ok(())
 }
 
 fn is_permission(e: &anyhow::Error) -> bool {
@@ -519,30 +569,40 @@ fn is_permission(e: &anyhow::Error) -> bool {
         .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
 }
 
-/// Writes `bin` next to `exe` (`.envira.new` in `dir`), checks that it runs and reports
-/// `version`, then renames it over `exe`: a running envira keeps its old file.
-pub fn install_binary(dir: &Path, exe: &Path, bin: &[u8], version: &str) -> Result<()> {
-    let new = dir.join(".envira.new");
-    let write = || -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o755)
-            .open(&new)?;
+/// Writes `bin` to a new file in `dir`, checks that it runs and reports `version`, then
+/// renames it over `exe`: a running envira keeps its old file. The temp file has a unique name
+/// and is created exclusively, so an existing file or symlink is never written through.
+/// `owner` (uid, gid) is given to the new file before the rename (root only).
+pub fn install_binary(
+    dir: &Path,
+    exe: &Path,
+    bin: &[u8],
+    version: &str,
+    owner: Option<(u32, u32)>,
+) -> Result<()> {
+    // Keep io::Errors as the source, so a permission problem can fall back to sudo.
+    let mut f = tempfile::Builder::new()
+        .prefix(".envira.new.")
+        .tempfile_in(dir)
+        .map_err(anyhow::Error::new)?;
+    let write = |f: &mut tempfile::NamedTempFile| -> std::io::Result<()> {
         f.write_all(bin)?;
-        f.sync_all()?;
-        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))
+        f.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o755))?;
+        if let Some((uid, gid)) = owner {
+            std::os::unix::fs::fchown(f.as_file(), Some(uid), Some(gid))?;
+        }
+        f.as_file().sync_all()
     };
-    // Keep the io::Error as the source, so a permission problem can fall back to sudo.
-    write().map_err(anyhow::Error::new)?;
-    let out = Command::new(&new).arg("--version").output();
+    write(&mut f).map_err(anyhow::Error::new)?;
+    // Closed before it runs (an open writer makes exec fail with ETXTBSY); removed on drop.
+    let new = f.into_temp_path();
+    let out = run_version(&new);
     let says = out
         .as_ref()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     if says.split_whitespace().nth(1) != Some(version) {
-        let _ = std::fs::remove_file(&new);
         bail!(
             "the downloaded envira does not run here or is not {version} ({}); nothing was changed",
             match &out {
@@ -551,10 +611,22 @@ pub fn install_binary(dir: &Path, exe: &Path, bin: &[u8], version: &str) -> Resu
             }
         );
     }
-    std::fs::rename(&new, exe).map_err(|e| {
-        let _ = std::fs::remove_file(&new);
-        anyhow::Error::new(e)
-    })
+    new.persist(exe).map_err(|e| anyhow::Error::new(e.error))
+}
+
+/// `<exe> --version`, retried briefly while another thread's fork still holds the file open for
+/// writing (ETXTBSY).
+fn run_version(exe: &Path) -> std::io::Result<std::process::Output> {
+    let mut n = 0;
+    loop {
+        match Command::new(exe).arg("--version").output() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && n < 5 => {
+                n += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => return r,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -693,6 +765,16 @@ mod tests {
         format!("#!/bin/sh\necho envira {version}\n").into_bytes()
     }
 
+    /// Temp files `install_binary` left in `dir`.
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".envira.new.") && n != ".envira.new.planted")
+            .collect()
+    }
+
     #[test]
     fn the_binary_is_replaced_only_when_the_download_runs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -700,16 +782,42 @@ mod tests {
         std::fs::write(&exe, fake("0.1.0")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let e = install_binary(tmp.path(), &exe, &fake("0.0.9"), "0.2.0").unwrap_err();
+        let e = install_binary(tmp.path(), &exe, &fake("0.0.9"), "0.2.0", None).unwrap_err();
         assert!(format!("{e:#}").contains("is not 0.2.0"), "{e:#}");
         assert_eq!(std::fs::read(&exe).unwrap(), fake("0.1.0"));
-        assert!(!tmp.path().join(".envira.new").exists());
+        assert!(leftovers(tmp.path()).is_empty());
 
-        install_binary(tmp.path(), &exe, &fake("0.2.0"), "0.2.0").unwrap();
+        let m = std::fs::metadata(&exe).unwrap();
+        install_binary(
+            tmp.path(),
+            &exe,
+            &fake("0.2.0"),
+            "0.2.0",
+            Some((m.uid(), m.gid())),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), fake("0.2.0"));
         let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
-        assert!(!tmp.path().join(".envira.new").exists());
+        assert!(leftovers(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn a_planted_link_is_never_written_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        // The fixed name the first version used, and a pattern-like one.
+        for name in [".envira.new", ".envira.new.planted"] {
+            std::os::unix::fs::symlink(&victim, tmp.path().join(name)).unwrap();
+        }
+        let exe = tmp.path().join("envira");
+        std::fs::write(&exe, fake("0.1.0")).unwrap();
+        install_binary(tmp.path(), &exe, &fake("0.2.0"), "0.2.0", None).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), fake("0.2.0"));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        let m = std::fs::metadata(&victim).unwrap().permissions().mode();
+        assert_ne!(m & 0o111, 0o111, "the victim was made executable");
     }
 
     #[test]

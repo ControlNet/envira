@@ -53,15 +53,9 @@ pub fn client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
-fn token() -> Option<String> {
-    std::env::var("GITHUB_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("GH_TOKEN").ok())
-        .filter(|t| !t.is_empty())
-}
-
-/// GET with the token, retrying transient failures (`net::Retry::DOWNLOAD`). Returns the final
-/// status and body; non-transient errors such as 403/404 come back on the first try.
+/// GET (with the token when it is the GitHub API, `net::github_token`), retrying transient
+/// failures (`net::Retry::DOWNLOAD`). Returns the final status and body; non-transient errors
+/// such as 403/404 come back on the first try.
 pub fn get(
     c: &reqwest::blocking::Client,
     url: &str,
@@ -121,7 +115,7 @@ fn get_with<T>(
         if let Some(a) = accept {
             req = req.header("Accept", a);
         }
-        if let Some(t) = token() {
+        if let Some(t) = net::github_token(url) {
             req = req.bearer_auth(t);
         }
         let sent = req.send().map(|r| {
@@ -184,7 +178,7 @@ pub fn run(args: &FetchArgs) -> Result<()> {
             .ok()
             .and_then(|v| v["message"].as_str().map(String::from))
             .unwrap_or(body);
-        let hint = if status == 403 && token().is_none() {
+        let hint = if status == 403 && net::github_token(&url).is_none() {
             " (set GITHUB_TOKEN to raise the rate limit)"
         } else {
             ""
@@ -381,16 +375,23 @@ fn verify_checksum(
 }
 
 /// Copies the staged `src` to `dest` through a temp file next to it, so `dest` is replaced
-/// atomically.
+/// atomically. The temp file has a unique name and is created exclusively: an existing file or
+/// symlink of that name is never followed, and two installs never share one.
 fn install_file(dest: &Path, src: &Path) -> Result<()> {
     let dir = dest.parent().context("destination without parent")?;
-    let tmp = dir.join(format!(
-        ".{}.envira-tmp",
-        dest.file_name().and_then(|n| n.to_str()).unwrap_or("bin")
-    ));
-    std::fs::copy(src, &tmp).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    std::fs::rename(&tmp, dest).with_context(|| format!("installing {}", dest.display()))?;
+    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("bin");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(".envira-tmp")
+        .tempfile_in(dir)
+        .with_context(|| format!("creating a temp file in {}", dir.display()))?;
+    std::io::copy(&mut File::open(src)?, tmp.as_file_mut())
+        .with_context(|| format!("writing {}", tmp.path().display()))?;
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    tmp.persist(dest)
+        .map_err(|e| e.error)
+        .with_context(|| format!("installing {}", dest.display()))?;
     Ok(())
 }
 
@@ -635,6 +636,29 @@ mod tests {
         let m = std::fs::metadata(d.path().join("pipx")).unwrap();
         assert_eq!(m.permissions().mode() & 0o777, 0o755);
         assert!(extract_bytes("x.tar.xz", b"", &["x".into()]).is_err());
+    }
+
+    #[test]
+    fn install_never_writes_through_a_planted_link() {
+        let d = tempfile::tempdir().unwrap();
+        let victim = d.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        // The temp name the old code used.
+        std::os::unix::fs::symlink(&victim, d.path().join(".bat.envira-tmp")).unwrap();
+        let src = d.path().join("src");
+        std::fs::write(&src, b"BAT").unwrap();
+        let dest = d.path().join("bat");
+        std::fs::write(&dest, b"old").unwrap();
+        install_file(&dest, &src).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"BAT");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        let left: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".envira-tmp") && n != ".bat.envira-tmp")
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]

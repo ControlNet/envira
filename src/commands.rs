@@ -129,12 +129,17 @@ pub async fn doctor(sess: &Session) -> Result<i32> {
     let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
     let install = tokio::task::spawn_blocking(move || {
         let (exe, channel) = crate::selfupdate::this_install(&facts).ok()?;
-        let latest = crate::selfupdate::latest(
-            &paths,
-            &facts,
-            crate::latest::Fetch::IfStale,
-            crate::selfupdate::NOTICE_TIMEOUT,
-        );
+        // Asks the network only where notices would (not in CI, not when opted out, not for a
+        // source build); a cached answer is still shown.
+        let fetch = if crate::selfupdate::check_enabled()
+            && channel != crate::selfupdate::Channel::Source
+        {
+            crate::latest::Fetch::IfStale
+        } else {
+            crate::latest::Fetch::CacheOnly
+        };
+        let latest =
+            crate::selfupdate::latest(&paths, &facts, fetch, crate::selfupdate::NOTICE_TIMEOUT);
         Some((exe, channel, latest))
     })
     .await
