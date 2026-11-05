@@ -30,6 +30,8 @@ pub const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// Default number of units that run at the same time.
 pub const JOBS: usize = 4;
 const KEEP_RUNS: usize = 20;
+/// Output lines of a step that may wait to be logged; beyond that the step waits on its pipe.
+const LINE_BUFFER: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
@@ -350,7 +352,9 @@ async fn run_unit(
                 *hint.lock().unwrap() = Some(h.to_string());
             }
             if let Some(f) = log.lock().unwrap().as_mut() {
-                let _ = writeln!(f, "{} {line}", chrono::Local::now().format("%H:%M:%S"));
+                // One write per line: `writeln!` on the unbuffered file made several.
+                let stamped = format!("{} {line}\n", chrono::Local::now().format("%H:%M:%S"));
+                let _ = f.write_all(stamped.as_bytes());
             }
             let _ = tx.send(Event::Line(idx, line));
         }
@@ -541,7 +545,7 @@ async fn attempt_step<F>(
 where
     F: Fn(String) + Clone + Send + 'static,
 {
-    let (ltx, mut lrx) = mpsc::unbounded_channel::<String>();
+    let (ltx, mut lrx) = mpsc::channel::<String>(LINE_BUFFER);
     let (ctx_cancel, crx) = watch::channel(false);
     let forward = {
         let emit = emit.clone();

@@ -38,12 +38,14 @@ pub trait Runner: Send + Sync {
     fn capture<'a>(&'a self, cmd: &'a str, timeout: Duration) -> BoxFuture<'a, Probe>;
 
     /// Runs an install or apply step, sending each output line to `lines`, until it exits or
-    /// `cancel` becomes true (then the whole process group is killed).
+    /// `cancel` becomes true (then the whole process group is killed). `lines` is bounded: a
+    /// step that prints faster than its lines are logged waits on its pipe instead of queueing
+    /// its output in memory.
     fn stream<'a>(
         &'a self,
         cmd: &'a str,
         cwd: &'a Path,
-        lines: mpsc::UnboundedSender<String>,
+        lines: mpsc::Sender<String>,
         cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, StreamEnd>;
 
@@ -164,10 +166,10 @@ fn kill_group(pid: Option<u32>, sig: i32) {
     }
 }
 
-async fn pump<R: AsyncRead + Unpin>(r: R, tx: mpsc::UnboundedSender<String>) {
+async fn pump<R: AsyncRead + Unpin>(r: R, tx: mpsc::Sender<String>) {
     let mut lines = BufReader::new(r).lines();
     while let Ok(Some(l)) = lines.next_line().await {
-        let _ = tx.send(strip_ansi(&l));
+        let _ = tx.send(strip_ansi(&l)).await;
     }
 }
 
@@ -248,7 +250,7 @@ impl Runner for RealRunner {
         &'a self,
         cmd: &'a str,
         cwd: &'a Path,
-        lines: mpsc::UnboundedSender<String>,
+        lines: mpsc::Sender<String>,
         mut cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, StreamEnd> {
         Box::pin(async move {
@@ -400,7 +402,7 @@ pub mod fake {
             &'a self,
             cmd: &'a str,
             _cwd: &'a Path,
-            lines: mpsc::UnboundedSender<String>,
+            lines: mpsc::Sender<String>,
             mut cancel: watch::Receiver<bool>,
         ) -> BoxFuture<'a, StreamEnd> {
             self.log.lock().unwrap().push(cmd.to_string());
@@ -416,7 +418,7 @@ pub mod fake {
                 });
             if let Some(out) = flaky {
                 for l in out.lines() {
-                    let _ = lines.send(l.to_string());
+                    let _ = lines.try_send(l.to_string());
                 }
                 return Box::pin(async { StreamEnd::Exit(1) });
             }
@@ -431,8 +433,9 @@ pub mod fake {
                 });
             }
             let (code, output) = self.lookup(cmd);
+            // Scripted outputs are a few lines, far below the executor's channel capacity.
             for l in output.lines() {
-                let _ = lines.send(l.to_string());
+                let _ = lines.try_send(l.to_string());
             }
             if code == 0 {
                 let flips: Vec<String> = self
@@ -515,7 +518,7 @@ mod tests {
     async fn stream_lines_and_cancel() {
         let r = runner();
         let dir = tempfile::tempdir().unwrap();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(16);
         let (_ctx, crx) = watch::channel(false);
         let end = r
             .stream(
@@ -529,7 +532,7 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), "a");
         assert_eq!(rx.recv().await.unwrap(), "b");
 
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(16);
         let (ctx, crx) = watch::channel(false);
         let h = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
