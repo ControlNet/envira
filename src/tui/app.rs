@@ -618,7 +618,7 @@ impl App {
             if waiting {
                 let n = snap.outdated().len();
                 self.notify(if n > 0 {
-                    format!("{n} outdated · u updates all")
+                    format!("{n} outdated")
                 } else {
                     "Nothing is outdated".into()
                 });
@@ -1755,7 +1755,7 @@ pub mod tests {
             ("yazi".to_string(), Latest::Version("1.0.0".into())),
         ]));
         assert!(!a.checking_latest);
-        assert_eq!(a.toast_text(), Some("1 outdated · u updates all"));
+        assert_eq!(a.toast_text(), Some("1 outdated"));
         a.filter = Filter::Outdated;
         let rows: Vec<&str> = a.rows().iter().map(|i| i.id.as_str()).collect();
         assert_eq!(rows, vec!["rust-toolchain"]);

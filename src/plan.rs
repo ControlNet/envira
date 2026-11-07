@@ -1244,7 +1244,7 @@ mod tests {
         let mut p = Planner::new(&c, &f, &base);
         assert_eq!(p.choose("lazygit").unwrap().via, "brew");
         let docker = p.choose("docker").unwrap_err();
-        assert!(docker.contains("only on Linux"), "{docker}");
+        assert!(docker.contains("Linux only"), "{docker}");
         assert!(p.choose("docker-group").is_err());
         assert!(p.choose("default-shell").is_err());
     }
@@ -1417,7 +1417,7 @@ mod tests {
         let mut f = Facts::sample(Path::new("/home/user"));
         let present = set(&[]);
         let mut p = Planner::new(&c, &f, &present);
-        assert_eq!(p.choose("yay").unwrap_err(), "only on Arch and alike");
+        assert_eq!(p.choose("yay").unwrap_err(), "Arch-based only");
         f.privilege = Privilege::None;
         let mut p = Planner::new(&c, &f, &present);
         assert_eq!(p.choose("docker").unwrap_err(), "needs sudo");

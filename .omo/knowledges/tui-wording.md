@@ -4,14 +4,14 @@ Words on screen, and what they mean:
 
 | On screen | Meaning | Code |
 |---|---|---|
-| follow (`space follows`, "Following X") | a bundle this machine keeps complete: what it misses is selected now, and later additions show as wanted | `state.bundles` |
+| follow (`space: follow`, "Following X") | what the bundle lacks is selected now and on later starts, and shows as wanted; nothing is installed until Enter | `state.bundles` |
 | `wanted` ◌ (yellow) | in a followed bundle, not installed | `Label::Missing` |
 | `new` ◆ | in the catalog since envira last looked | `Label::New` |
 | `available` · | not installed, not wanted | `Label::Available` |
 | `To do` filter | wanted, new, failed, drifted or outdated | `Filter::Attention` |
 | Selected panel | the selection as Enter would plan it (`+` install, `↑` update, `◇` config, `↺` revert) | `ui::selection` |
 | `via command` | a catalog route with a raw `run` | `ui::via_name` |
-| "only on macOS", "needs an NVIDIA GPU" | an unmet `when` predicate | `template::describe` |
+| "macOS only", "Arch-based only", "not on Linux", "needs an NVIDIA GPU" | an unmet `when` predicate | `template::describe` |
 
 Rules:
 - `status --json` keeps the old label values (`"missing"`). Integration scripts, such as
@@ -21,3 +21,7 @@ Rules:
   freely.
 - The update count is shown in the overview only. A toast reports it only to answer a `u`
   pressed while the check was still running.
+
+Wording rule (second review): a hint names the action and its target ("S → user", "enter: password
+or user mode"), not a bare key or label ("[S]", "Go"). Shortening must not drop a real condition
+("in view", "selected, or this one").

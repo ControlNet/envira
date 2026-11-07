@@ -358,17 +358,16 @@ pub fn unmet<'a>(when: &'a [String], facts: &Facts) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-/// A `when` predicate the way the screens say it: `os:macos` is "only on macOS".
+/// A `when` predicate the way the screens say it: `os:macos` is "macOS only".
 pub fn describe(w: &str) -> String {
     let Ok((neg, p)) = parse_pred(w) else {
         return format!("when {w} holds");
     };
-    let (only, not) = ("only", "not");
     let on = |name: String| {
         if neg {
-            format!("{not} on {name}")
+            format!("not on {name}")
         } else {
-            format!("{only} on {name}")
+            format!("{name} only")
         }
     };
     match p {
@@ -383,7 +382,7 @@ pub fn describe(w: &str) -> String {
         Pred::Root => "only as root".into(),
         Pred::Distro(d) => on(platform_name(&d)),
         Pred::Family(d) if d == "linux" => on("Linux".into()),
-        Pred::Family(d) => on(format!("{} and alike", platform_name(&d))),
+        Pred::Family(d) => on(format!("{}-based", platform_name(&d))),
         Pred::Arch(a) => on(a),
         Pred::Os(o) => on(platform_name(&o)),
         Pred::Shell(sh) if neg => format!("only without {sh}"),
@@ -569,13 +568,14 @@ mod tests {
 
     #[test]
     fn predicates_read_as_words() {
-        assert_eq!(describe("os:macos"), "only on macOS");
+        assert_eq!(describe("os:macos"), "macOS only");
         assert_eq!(describe("!os:linux"), "not on Linux");
-        assert_eq!(describe("family:arch"), "only on Arch and alike");
-        assert_eq!(describe("distro:ubuntu"), "only on Ubuntu");
+        assert_eq!(describe("family:arch"), "Arch-based only");
+        assert_eq!(describe("!family:debian"), "not on Debian-based");
+        assert_eq!(describe("distro:ubuntu"), "Ubuntu only");
         assert_eq!(describe("gpu"), "needs an NVIDIA GPU");
         assert_eq!(describe("!container"), "not in a container");
-        assert_eq!(describe("arch:aarch64"), "only on aarch64");
+        assert_eq!(describe("arch:aarch64"), "aarch64 only");
         assert!(about_platform("family:debian") && about_platform("!os:macos"));
         assert!(!about_platform("gpu") && !about_platform("arch:x86_64"));
     }

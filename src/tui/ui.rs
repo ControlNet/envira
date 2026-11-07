@@ -355,7 +355,8 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     }
     let hint = app.facts.privilege.can_elevate().then_some(what.len());
     if hint.is_some() {
-        what.push(Span::styled(" · S switches", t.s(t.dim)));
+        let other = if app.prefer_system { "user" } else { "system" };
+        what.push(Span::styled(format!(" (S → {other})"), t.s(t.dim)));
     }
     let x = header(f, h, app, t, what.clone());
     if let Some(i) = hint {
@@ -473,8 +474,6 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t.blue,
                 if app.checking_latest {
                     format!("outdated · checking{}", ".".repeat(app.tick as usize % 4))
-                } else if outdated > 0 {
-                    "outdated · u updates all".into()
                 } else {
                     "outdated".into()
                 },
@@ -513,7 +512,7 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         t,
         "Bundles",
         app.focus == Focus::Bundles,
-        vec![Span::styled("space follows", t.s(t.dim))],
+        vec![Span::styled("space: follow", t.s(t.dim))],
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1183,9 +1182,9 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let sudo = if plan.needs_sudo(&app.facts) {
         Span::styled(
             if app.facts.sudo_asks_password() {
-                "! needs sudo: enter asks for its password, or offers user mode"
+                "! needs sudo · enter: password or user mode"
             } else {
-                "! needs sudo (no password needed here)"
+                "! needs sudo (no password needed)"
             },
             t.s(t.yellow),
         )
@@ -1676,9 +1675,12 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("← →  h l", "Bundles · Items"),
     ("↑↓  j k", "move"),
-    ("space", "bundle: follow it and select what it misses"),
+    (
+        "space",
+        "bundle: follow; what it lacks gets selected, now and on later starts",
+    ),
     ("space", "item: select or unselect it"),
-    ("a  n", "select everything not installed in view · nothing"),
+    ("a  n", "select all not installed in view · none"),
     ("enter", "install the selection, update its outdated tools"),
     ("u", "update every outdated tool"),
     ("/  f", "search · cycle status filter"),
@@ -1687,7 +1689,7 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("S", "new installs: system (sudo) or user scope"),
     (
         "A",
-        "let envira manage tools installed without it (selected, else this)",
+        "take over tools installed outside envira (selected, or this one)",
     ),
     ("t", "retry what the last run left unfinished"),
     ("U", "update envira itself (envira self-update)"),
@@ -1695,13 +1697,9 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("esc", "clear the search"),
     ("q", "quit"),
     ("", ""),
-    ("✓ ↑ !", "installed · newer version out · failed or drifted"),
-    (
-        "◌ ◆ ·",
-        "wanted by a followed bundle · new in catalog · available",
-    ),
-    ("–", "not for this machine"),
-    ("+ ↑ ◇ ↺", "Selected: install · update · config · revert"),
+    ("status", "✓ installed  ↑ outdated  ! failed or drifted"),
+    ("", "◌ wanted  ◆ new  · available  – not for this machine"),
+    ("Selected", "+ install  ↑ update  ◇ config  ↺ revert"),
 ];
 
 /// Keys of the current screen.
@@ -1889,7 +1887,8 @@ mod tests {
                 .join(" ");
             let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
             for (_, desc) in DASHBOARD_KEYS {
-                assert!(text.contains(desc), "{w} cols: {desc:?} is cut\n{s}");
+                let desc = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(text.contains(&desc), "{w} cols: {desc:?} is cut\n{s}");
             }
         }
     }
@@ -1950,7 +1949,7 @@ mod tests {
             "{row}"
         );
         assert!(s.contains("latest") && s.contains("Update all: u"), "{s}");
-        assert!(s.contains("outdated · u updates"), "{s}");
+        assert!(!s.contains("u updates"), "{s}");
     }
 
     #[test]
@@ -2199,7 +2198,7 @@ mod tests {
         a.on_snapshot(snap, None);
         a.filter = Filter::All;
         let s = render(&a, 180, 60);
-        for needle in ["new installs → system · S switches", "scope", "1 system"] {
+        for needle in ["new installs → system (S → user)", "scope", "1 system"] {
             assert!(s.contains(needle), "{needle:?} missing in\n{s}");
         }
         let row = |a: &mut App, id: &str| {
@@ -2219,7 +2218,7 @@ mod tests {
         a.search.clear();
         a.prefer_system = false;
         let s = render(&a, 180, 60);
-        assert!(s.contains("new installs → user · S switches"), "{s}");
+        assert!(s.contains("new installs → user (S → system)"), "{s}");
     }
 
     fn area_of(a: &App, h: &Hit) -> Rect {
@@ -2308,7 +2307,7 @@ mod tests {
             .skip(r.x as usize)
             .take(r.width as usize)
             .collect();
-        assert_eq!(text, " · S switches");
+        assert_eq!(text, " (S → system)");
     }
 
     #[test]
