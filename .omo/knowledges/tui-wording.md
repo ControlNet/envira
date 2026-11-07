@@ -30,3 +30,20 @@ Rules:
 Wording rule (second review): a hint names the action and its target ("S → user", "enter: password
 or user mode"), not a bare key or label ("[S]", "Go"). Shortening must not drop a real condition
 ("in view", "selected, or this one").
+
+## Small terminals (checked at 80x24, 100x30 and 120x35)
+
+- Header: the machine facts are dropped first. `new installs → … (S → …)` stays.
+- Items table (`ui::item_columns`): columns are dropped in this order: via, scope, latest, the
+  status word, then version. The glyph still shows the status, and the detail panel shows all of
+  them. Names are 12 to 22 wide. The last column (managed by / note) has at least 17 columns
+  and is cut with `…`.
+- Key bars: the hints listed in `DROP_FIRST` go first, then others from the end. Help, Quit,
+  Back, Install/Update, Cancel running and Dashboard always stay.
+- Help: when the box is taller than the terminal, ↑↓/j k scroll it and the last line says
+  `↓ more · any other key closes`. `App::help_max` is set while drawing.
+- Plan and run tables: via, scope and action columns go before the last column gets too
+  narrow. Cut text gets `…`.
+- Check sizes with tmux (`new-session -x W -y H`), always in the scratch env. Source its env
+  script by absolute path, and check that `ENVIRA_STATE_DIR` is set before launching: a
+  relative path that fails falls back to the real state silently.

@@ -207,19 +207,61 @@ fn keybar(
     let rw = right.width() as u16;
     // Whole key hints only, with a gap before the right side.
     let room = (area.width as usize).saturating_sub(if rw > 0 { rw as usize + 2 } else { 0 });
+    // When they do not all fit, the least needed hints go first; the main action, Help, Quit and
+    // Back stay.
+    let width = |n: &str, k: &str| Span::raw(format!("{n}: {k}")).width();
+    let mut keep: Vec<bool> = vec![true; keys.len()];
+    let total = |keep: &[bool]| -> usize {
+        let shown: Vec<usize> = keys
+            .iter()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .map(|((n, k), _)| width(n, k))
+            .collect();
+        shown.iter().sum::<usize>() + 3 * shown.len().saturating_sub(1)
+    };
+    const DROP_FIRST: [&str; 10] = [
+        "Search",
+        "Filter",
+        "Update all",
+        "Scroll",
+        "Zoom log",
+        "Follow",
+        "Panels",
+        "Select",
+        "Step",
+        "Stop after running",
+    ];
+    let order: Vec<usize> = DROP_FIRST
+        .iter()
+        .filter_map(|n| keys.iter().position(|(k, _)| k == n))
+        .chain((0..keys.len()).rev())
+        .filter(|&i| {
+            !matches!(
+                keys[i].0,
+                "Help" | "Quit" | "Back" | "Install/Update" | "Cancel running" | "Dashboard"
+            )
+        })
+        .collect();
+    for i in order {
+        if total(&keep) <= room {
+            break;
+        }
+        keep[i] = false;
+    }
     let mut spans = Vec::new();
     let mut marks = Vec::new();
     let mut used = 0;
-    for (i, (name, key)) in keys.iter().enumerate() {
+    for (name, key) in keys.iter().zip(&keep).filter(|(_, k)| **k).map(|(x, _)| x) {
         let hint = format!("{name}: {key}");
-        let w = Span::raw(hint.as_str()).width() + if i > 0 { 3 } else { 0 };
+        let w = Span::raw(hint.as_str()).width() + if used > 0 { 3 } else { 0 };
         if used + w > room {
             break;
         }
-        used += w;
-        if i > 0 {
+        if used > 0 {
             spans.push(Span::styled(" | ", t.s(t.dim)));
         }
+        used += w;
         if let Some(k) = bar_key(name, key) {
             marks.push((spans.len(), Hit::Key(k)));
         }
@@ -353,10 +395,23 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         Constraint::Length(1),
     ])
     .areas(area);
-    let mut what = vec![
-        Span::raw(app.facts.summary()),
-        Span::styled(" · new installs → ", t.s(t.dim)),
-    ];
+    // On a narrow terminal the machine facts go first: the scope and its key matter more.
+    let lead = format!(
+        "envira {} · {} · ",
+        env!("CARGO_PKG_VERSION"),
+        app.facts.hostname
+    );
+    let scope_w = " · new installs → system (S → user)".len() + 14;
+    let facts = app.facts.summary();
+    let roomy = lead.chars().count() + facts.chars().count() + scope_w <= h.width as usize;
+    let mut what = if roomy {
+        vec![
+            Span::raw(facts),
+            Span::styled(" · new installs → ", t.s(t.dim)),
+        ]
+    } else {
+        vec![Span::styled("new installs → ", t.s(t.dim))]
+    };
     if app.prefer_system {
         what.push(Span::styled("system", t.s(t.orange)));
     } else {
@@ -436,10 +491,15 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let cols = columns(inner, 4);
     let system = snap.count(|i| i.present && i.scope == Some(Scope::System));
     let user = snap.count(|i| i.present && i.scope == Some(Scope::User));
-    let mut installed = format!("/ {applicable} installed · {system} system {user} user");
-    if installed.chars().count() + present.to_string().len() + 1 > cols[0].width as usize {
-        installed = format!("/ {applicable} installed · {system} system");
-    }
+    let fit = |s: &String| s.chars().count() + present.to_string().len() < cols[0].width as usize;
+    let installed = [
+        format!("/ {applicable} installed · {system} system {user} user"),
+        format!("/ {applicable} installed · {system} system"),
+        format!("/ {applicable} installed"),
+    ]
+    .into_iter()
+    .find(fit)
+    .unwrap_or_else(|| format!("/ {applicable}"));
     let cells: [(Line, Line); 4] = [
         (
             stat(t, present, t.green, installed),
@@ -712,17 +772,41 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             Hit::ItemMark(i),
         );
     }
-    let head = Row::new([
-        "",
-        "",
-        "name",
-        "version",
-        "latest",
-        "status",
-        "via",
-        "scope",
-        "managed by / note",
-    ])
+    let name_w = rows
+        .iter()
+        .map(|i| i.id.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(12, 22) as u16;
+    let cols = item_columns(inner.width, name_w);
+    // What the last column gets: the rest, after the others and a space between each pair.
+    let note_w = cols
+        .iter()
+        .filter_map(|(_, c)| match c {
+            Constraint::Length(w) => Some(*w as usize + 1),
+            _ => None,
+        })
+        .fold(inner.width as usize, |rest, w| rest.saturating_sub(w))
+        .max(1);
+    let pick = |cells: Vec<Cell<'static>>| -> Vec<Cell<'static>> {
+        let mut cells: Vec<Option<Cell>> = cells.into_iter().map(Some).collect();
+        cols.iter().filter_map(|(i, _)| cells[*i].take()).collect()
+    };
+    let head = Row::new(pick(
+        [
+            "",
+            "",
+            "name",
+            "version",
+            "latest",
+            "status",
+            "via",
+            "scope",
+            "managed by / note",
+        ]
+        .map(Cell::from)
+        .to_vec(),
+    ))
     .style(t.s(t.dim));
     let body: Vec<Row> = rows
         .iter()
@@ -784,7 +868,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 ),
                 _ => Span::raw(""),
             };
-            let row = Row::new(vec![
+            let row = Row::new(pick(vec![
                 Cell::from(Span::styled(
                     if sel { "[x]" } else { "[ ]" },
                     t.s(if sel { t.magenta } else { t.dim }),
@@ -794,7 +878,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                     t.s(label_color(t, it.label)),
                 )),
                 Cell::from(Span::styled(
-                    it.id.clone(),
+                    truncate(&it.id, name_w as usize),
                     t.s(if it.label == Label::NotApplicable {
                         t.dim
                     } else {
@@ -806,8 +890,8 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Cell::from(Span::styled(it.label.text(), t.s(label_color(t, it.label)))),
                 Cell::from(Span::styled(via, t.s(t.dim))),
                 Cell::from(scope),
-                Cell::from(Span::styled(note, t.s(note_color))),
-            ]);
+                Cell::from(Span::styled(truncate(&note, note_w), t.s(note_color))),
+            ]));
             if i == app.cursor && app.focus == Focus::Items {
                 row.style(t.cursor())
             } else {
@@ -815,17 +899,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             }
         })
         .collect();
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Length(1),
-        Constraint::Length(22),
-        Constraint::Length(9),
-        Constraint::Length(9),
-        Constraint::Length(9),
-        Constraint::Length(15),
-        Constraint::Length(6),
-        Constraint::Min(8),
-    ];
+    let widths: Vec<Constraint> = cols.iter().map(|(_, c)| *c).collect();
     if rows.is_empty() {
         let msg = if app.snap.is_none() {
             "detecting…"
@@ -1128,6 +1202,36 @@ pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 
+/// Items table columns that fit `width`, as (index, width): on a narrow terminal via, scope,
+/// latest, the status word and the version go, in that order (the detail panel has them all).
+fn item_columns(width: u16, name: u16) -> Vec<(usize, Constraint)> {
+    const NOTE: u16 = 17;
+    let mut cols: Vec<(usize, u16)> = vec![
+        (0, 3),
+        (1, 1),
+        (2, name),
+        (3, 9),
+        (4, 9),
+        (5, 9),
+        (6, 15),
+        (7, 6),
+    ];
+    for drop in [6, 7, 4, 5, 3] {
+        // The note column and one space between each pair of columns.
+        let used = cols.iter().map(|c| c.1).sum::<u16>() + cols.len() as u16 + NOTE;
+        if used <= width {
+            break;
+        }
+        cols.retain(|c| c.0 != drop);
+    }
+    let mut out: Vec<(usize, Constraint)> = cols
+        .into_iter()
+        .map(|(i, w)| (i, Constraint::Length(w)))
+        .collect();
+    out.push((8, Constraint::Min(NOTE)));
+    out
+}
+
 /// Who looks after an installed tool, as the items table says it.
 fn managed_by(o: Ownership) -> &'static str {
     match o {
@@ -1246,7 +1350,39 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let block = panel(t, 2, "Steps", true, vec![]);
     let inner = block.inner(steps);
     f.render_widget(block, steps);
-    let head = Row::new(["#", "action", "item", "via", "scope", "why"]).style(t.s(t.dim));
+    let item_w = plan
+        .units
+        .iter()
+        .map(|u| u.id.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(10, 24) as u16;
+    // (index, width); via, then scope, go when `why` would get under 16 columns.
+    let mut scols: Vec<(usize, u16)> = vec![(0, 3), (1, 8), (2, item_w), (3, 15), (4, 7)];
+    let why_w = |c: &[(usize, u16)]| {
+        inner
+            .width
+            .saturating_sub(c.iter().map(|x| x.1 + 1).sum::<u16>())
+    };
+    for drop in [3, 4] {
+        if why_w(&scols) >= 16 {
+            break;
+        }
+        scols.retain(|c| c.0 != drop);
+    }
+    let why_room = why_w(&scols).max(1) as usize;
+    let spick = |cells: Vec<Cell<'static>>| -> Vec<Cell<'static>> {
+        let mut cells: Vec<Option<Cell>> = cells.into_iter().map(Some).collect();
+        let mut out: Vec<Cell> = scols.iter().filter_map(|(i, _)| cells[*i].take()).collect();
+        out.extend(cells[5].take());
+        out
+    };
+    let head = Row::new(spick(
+        ["#", "action", "item", "via", "scope", "why"]
+            .map(Cell::from)
+            .to_vec(),
+    ))
+    .style(t.s(t.dim));
     let height = inner.height.saturating_sub(1) as usize;
     let offset = app.plan_view.top(app.plan_cursor, plan.units.len(), height);
     app.hit(inner, Hit::Panel(Panel::Plan));
@@ -1267,14 +1403,17 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Action::Apply => t.magenta,
                 Action::Revert => t.yellow,
             };
-            let row = Row::new(vec![
+            let row = Row::new(spick(vec![
                 Cell::from(Span::styled((i + 1).to_string(), t.s(t.dim))),
                 Cell::from(Span::styled(u.action.as_str(), t.s(c))),
-                Cell::from(u.id.clone()),
+                Cell::from(truncate(&u.id, item_w as usize)),
                 Cell::from(Span::styled(via_name(&u.via).to_string(), t.s(t.dim))),
                 Cell::from(Span::styled(u.scope.to_string(), t.s(t.dim))),
-                Cell::from(Span::styled(why(&u.reason), t.s(t.dim))),
-            ]);
+                Cell::from(Span::styled(
+                    truncate(&why(&u.reason), why_room),
+                    t.s(t.dim),
+                )),
+            ]));
             if i == app.plan_cursor {
                 row.style(t.cursor())
             } else {
@@ -1282,21 +1421,18 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             }
         })
         .collect();
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Length(8),
-        Constraint::Length(24),
-        Constraint::Length(15),
-        Constraint::Length(7),
-        Constraint::Min(10),
-    ];
+    let mut widths: Vec<Constraint> = scols.iter().map(|c| Constraint::Length(c.1)).collect();
+    widths.push(Constraint::Min(1));
     f.render_widget(
         Table::new(rows, widths).header(head).column_spacing(1),
         inner,
     );
 
-    let [cmds, skipped] =
-        Layout::horizontal([Constraint::Min(30), Constraint::Length(44)]).areas(bottom);
+    let [cmds, skipped] = Layout::horizontal([
+        Constraint::Min(30),
+        Constraint::Length((bottom.width / 3).min(44)),
+    ])
+    .areas(bottom);
     let u = plan.units.get(app.plan_cursor);
     let block = panel(
         t,
@@ -1385,7 +1521,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         },
         toast.or_else(|| {
             Some(Span::styled(
-                format!("Run {n} steps: enter"),
+                format!("Run {n} {}: enter", plural(n, "step", "steps")),
                 Style::new().fg(t.magenta).add_modifier(Modifier::BOLD),
             ))
         }),
@@ -1515,6 +1651,22 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         let y = inner.y + row as u16;
         app.hit(Rect::new(inner.x, y, inner.width, 1), Hit::StepRow(i));
     }
+    // Narrow: the action column goes before the outcome gets under 12 columns; it is cut with
+    // an ellipsis.
+    let id_w = run
+        .plan
+        .units
+        .iter()
+        .map(|u| u.id.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(8, 18) as u16;
+    let fixed = 1 + 1 + id_w + 1 + 7 + 1 + 6 + 1;
+    let with_action = inner.width.saturating_sub(fixed) >= 12;
+    let info_w = inner
+        .width
+        .saturating_sub(if with_action { fixed } else { fixed - 8 })
+        .max(1) as usize;
     let rows: Vec<Row> = run
         .plan
         .units
@@ -1555,13 +1707,18 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                     Outcome::Skipped => ("–", t.dim, String::new(), "skipped".into(), t.dim),
                 },
             };
-            let row = Row::new(vec![
+            let mut cells = vec![
                 Cell::from(Span::styled(g, t.s(gc))),
-                Cell::from(u.id.clone()),
-                Cell::from(Span::styled(u.action.as_str(), t.s(t.dim))),
+                Cell::from(truncate(&u.id, id_w as usize)),
+            ];
+            if with_action {
+                cells.push(Cell::from(Span::styled(u.action.as_str(), t.s(t.dim))));
+            }
+            cells.extend([
                 Cell::from(Span::styled(time, t.s(t.dim))),
-                Cell::from(Span::styled(info, t.s(ic))),
+                Cell::from(Span::styled(truncate(&info, info_w), t.s(ic))),
             ]);
+            let row = Row::new(cells);
             if i == run.sel {
                 row.style(t.cursor())
             } else {
@@ -1569,13 +1726,11 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             }
         })
         .collect();
-    let widths = [
-        Constraint::Length(1),
-        Constraint::Length(18),
-        Constraint::Length(7),
-        Constraint::Length(6),
-        Constraint::Min(6),
-    ];
+    let mut widths = vec![Constraint::Length(1), Constraint::Length(id_w)];
+    if with_action {
+        widths.push(Constraint::Length(7));
+    }
+    widths.extend([Constraint::Length(6), Constraint::Min(1)]);
     f.render_widget(Table::new(rows, widths).column_spacing(1), inner);
 
     let block = panel(t, 3, "Info", false, vec![]);
@@ -1785,7 +1940,35 @@ fn help(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ]));
         }
     }
-    lines.extend([Line::raw(""), Line::styled("any key closes", t.s(t.dim))]);
+    // Too tall for the terminal: the keys scroll, the last line says so.
+    let room = area.height.saturating_sub(2) as usize;
+    let fits = lines.len() + 2 <= room;
+    let max = if fits {
+        0
+    } else {
+        (lines.len() + 1).saturating_sub(room) as u16
+    };
+    app.help_max.set(max);
+    let scroll = app.help_scroll.min(max);
+    if fits {
+        lines.extend([Line::raw(""), Line::styled("any key closes", t.s(t.dim))]);
+    } else {
+        let body: Vec<Line> = lines
+            .into_iter()
+            .skip(scroll as usize)
+            .take(room.saturating_sub(1))
+            .collect();
+        lines = body;
+        let more = match (scroll > 0, scroll < max) {
+            (true, true) => "↑↓ more",
+            (false, _) => "↓ more",
+            (true, false) => "↑ more",
+        };
+        lines.push(Line::styled(
+            format!("{more} · any other key closes"),
+            t.s(t.dim),
+        ));
+    }
     let h = (lines.len() as u16 + 2).min(area.height);
     let r = Rect {
         x: area.x + (area.width - w) / 2,
@@ -1863,6 +2046,7 @@ mod tests {
             a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         let out = render(&a, 100, 30);
+        assert!(out.contains("Run 1 step: enter"), "{out}");
         assert!(
             out.contains("1 item in this plan needs sudo. Password:"),
             "{out}"
@@ -2026,6 +2210,76 @@ mod tests {
         for hint in keys.split(" | ") {
             assert!(hint.trim().contains(": "), "{bar}");
         }
+    }
+
+    #[test]
+    fn small_terminals_keep_what_matters_readable() {
+        for (w, h) in [(80, 24), (100, 30), (120, 35)] {
+            let mut a = app();
+            a.focus = Focus::Items;
+            let s = render(&a, w, h);
+            let lines: Vec<&str> = s.lines().collect();
+            // The scope and its key, the main action and help are always there.
+            assert!(
+                lines[0].contains("new installs →") && lines[0].contains("(S →"),
+                "{w}x{h}\n{s}"
+            );
+            let bar = lines.last().unwrap();
+            for hint in ["Install/Update: enter", "Help: ?", "Quit: q"] {
+                assert!(bar.contains(hint), "{w}x{h}: {hint:?} missing in {bar:?}");
+            }
+            // Names are whole and the last column's title is not cut.
+            assert!(s.contains(" codex-sandbox-network"), "{w}x{h}\n{s}");
+            assert!(s.contains("managed by / note"), "{w}x{h}\n{s}");
+        }
+    }
+
+    #[test]
+    fn help_scrolls_when_the_terminal_is_too_short() {
+        let mut a = app();
+        a.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        let s = render(&a, 80, 24);
+        assert!(s.contains("↓ more · any other key closes"), "{s}");
+        assert!(!s.contains("Bundles  ● followed"), "{s}");
+        for _ in 0..30 {
+            a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        assert!(a.help, "arrows scroll, they do not close");
+        let s = render(&a, 80, 24);
+        assert!(
+            s.contains("Bundles  ● followed") && s.contains("↑ more"),
+            "{s}"
+        );
+        a.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(!a.help && a.help_scroll == 0);
+        // Tall enough: no scrolling, any key closes.
+        a.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(render(&a, 140, 60).contains("any key closes"));
+        a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(!a.help);
+    }
+
+    #[test]
+    fn a_small_run_screen_keeps_cancel_and_cuts_outcomes_with_an_ellipsis() {
+        let mut a = app();
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let plan = a.plan.clone().unwrap().0;
+        a.start_run(plan, "20261029-140500".into(), None);
+        a.on_exec(crate::exec::Event::UnitStarted(0));
+        let s = render(&a, 80, 24);
+        let bar = s.lines().last().unwrap();
+        assert!(
+            bar.contains("Cancel running: c") && bar.contains("Help: ?"),
+            "{bar}"
+        );
+        assert!(s.contains("running") && !s.contains("runnin│"), "{s}");
+        a.on_exec(crate::exec::Event::UnitFinished(
+            0,
+            Outcome::Failed("exit 22 after a long and winding failure".into()),
+            std::time::Duration::from_secs(3),
+        ));
+        let s = render(&a, 80, 24);
+        assert!(s.contains("exit 22") && s.contains('…'), "{s}");
     }
 
     #[test]

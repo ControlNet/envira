@@ -357,6 +357,10 @@ pub struct App {
     /// The toast is a warning that routine notices (the update count) must not cover.
     pub toast_warns: bool,
     pub help: bool,
+    /// Lines the help box is scrolled down, and how far it can go (set when drawn: a short
+    /// terminal cannot show it all).
+    pub help_scroll: u16,
+    pub help_max: Cell<u16>,
     pub tick: u64,
     /// SIGTERM/SIGHUP arrived during a run: quit once it has wound down.
     pub quitting: bool,
@@ -417,6 +421,8 @@ impl App {
             toast: None,
             toast_warns: false,
             help: false,
+            help_scroll: 0,
+            help_max: Cell::new(0),
             tick: 0,
             quitting: false,
             last_run: None,
@@ -717,7 +723,19 @@ impl App {
             return vec![Cmd::Quit];
         }
         if self.help {
-            self.help = false;
+            let max = self.help_max.get();
+            match k.code {
+                KeyCode::Up | KeyCode::Char('k') if max > 0 => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') if max > 0 => {
+                    self.help_scroll = (self.help_scroll + 1).min(max)
+                }
+                _ => {
+                    self.help = false;
+                    self.help_scroll = 0;
+                }
+            }
             return vec![];
         }
         match self.screen {
