@@ -39,7 +39,7 @@ or user mode"), not a bare key or label ("[S]", "Go"). Shortening must not drop 
   them. Names are 12 to 22 wide. The last column (managed by / note) has at least 17 columns
   and is cut with `…`.
 - Key bars: the hints listed in `DROP_FIRST` go first, then others from the end. Help, Quit,
-  Back, Install/Update, Cancel running and Dashboard always stay.
+  Back, Install, Cancel running and Dashboard always stay.
 - Help: when the box is taller than the terminal, ↑↓/j k scroll it and the last line says
   `↓ more · any other key closes`. `App::help_max` is set while drawing.
 - Plan and run tables: via, scope and action columns go before the last column gets too
@@ -47,3 +47,8 @@ or user mode"), not a bare key or label ("[S]", "Go"). Shortening must not drop 
 - Check sizes with tmux (`new-session -x W -y H`), always in the scratch env. Source its env
   script by absolute path, and check that `ENVIRA_STATE_DIR` is set before launching: a
   relative path that fails falls back to the real state silently.
+- Items title: when not every filter tab fits, only the active filter is shown, followed by
+  `· f` and then the search (`Items Installed · f  /co`). The search is never cut off.
+- Below 80 columns the left column is 26 wide. When fewer than 8 columns are left for the
+  managed by/note column, it goes before the name is squeezed. The header drops the host name
+  when the scope hint would otherwise be cut.

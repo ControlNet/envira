@@ -239,7 +239,7 @@ fn keybar(
         .filter(|&i| {
             !matches!(
                 keys[i].0,
-                "Help" | "Quit" | "Back" | "Install/Update" | "Cancel running" | "Dashboard"
+                "Help" | "Quit" | "Back" | "Install" | "Cancel running" | "Dashboard"
             )
         })
         .collect();
@@ -291,23 +291,25 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u
             Style::new().fg(t.yellow).add_modifier(Modifier::BOLD),
         ));
     }
-    left.push(Span::styled(
-        format!(" · {} · ", app.facts.hostname),
-        t.s(t.dim),
-    ));
-    let what_x = area.x + Line::from(left.clone()).width() as u16;
-    left.extend(what);
     // Where the catalog came from is in `envira doctor`; load warnings show as a toast.
     let right = if app.detecting {
         format!("{} detecting…", SPINNER[(app.tick % 10) as usize])
     } else {
         String::new()
     };
-    let [l, r] = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(right.chars().count() as u16 + 1),
-    ])
-    .areas(area);
+    let right_w = right.chars().count() + 1;
+    // The host name goes when the rest would not fit.
+    let host = format!(" · {} · ", app.facts.hostname);
+    let rest = Line::from(left.clone()).width() + Line::from(what.clone()).width();
+    if rest + host.chars().count() + right_w <= area.width as usize {
+        left.push(Span::styled(host, t.s(t.dim)));
+    } else {
+        left.push(Span::styled(" · ", t.s(t.dim)));
+    }
+    let what_x = area.x + Line::from(left.clone()).width() as u16;
+    left.extend(what);
+    let [l, r] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_w as u16)]).areas(area);
     f.render_widget(Paragraph::new(Line::from(left)), l);
     f.render_widget(
         Paragraph::new(Span::styled(right, t.s(t.dim))).alignment(Alignment::Right),
@@ -429,7 +431,11 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         hit_spans(app, row, &what, vec![(i, Hit::Key(s))]);
     }
     overview(f, ov, app, t);
-    let left_w = if area.width >= 110 { 36 } else { 30 };
+    let left_w = match area.width {
+        110.. => 36,
+        80.. => 30,
+        _ => 26,
+    };
     let [left, right] =
         Layout::horizontal([Constraint::Length(left_w), Constraint::Min(30)]).areas(main);
     let nb = app.catalog.bundles.len() as u16;
@@ -454,7 +460,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         let mut k = vec![
             ("Panels", "← →"),
             ("Select", "space"),
-            ("Install/Update", "enter"),
+            ("Install", "enter"),
             ("Update all", "u"),
         ];
         if app.last_run.is_some() {
@@ -750,13 +756,30 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         marks.push((tabs.len(), Hit::Filter(*fl)));
         tabs.push(Span::styled(fl.name(), st));
     }
-    hit_title(app, area, "Items", &tabs, marks);
+    let mut search: Vec<Span> = Vec::new();
     if !app.search.is_empty() || app.searching {
-        tabs.push(Span::styled(format!("  /{}", app.search), t.s(t.yellow)));
+        search.push(Span::styled(format!("  /{}", app.search), t.s(t.yellow)));
         if app.searching {
-            tabs.push(Span::styled("▏", t.s(t.yellow)));
+            search.push(Span::styled("▏", t.s(t.yellow)));
         }
     }
+    // Too narrow for every tab: the active filter and its key, so the filter (and the search)
+    // never fall off the edge.
+    let room = area.width.saturating_sub(2 + 6) as usize;
+    let wide = |v: &[Span]| v.iter().map(|s| s.width()).sum::<usize>();
+    if wide(&tabs) + wide(&search) > room {
+        let f_key = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
+        tabs = vec![
+            Span::styled(
+                app.filter.name(),
+                Style::new().fg(t.focus).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · f", t.s(t.dim)),
+        ];
+        marks = vec![(0, Hit::Key(f_key))];
+    }
+    hit_title(app, area, "Items", &tabs, marks);
+    tabs.extend(search);
     let block = pane(t, "Items", app.focus == Focus::Items, tabs);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1224,11 +1247,15 @@ fn item_columns(width: u16, name: u16) -> Vec<(usize, Constraint)> {
         }
         cols.retain(|c| c.0 != drop);
     }
+    let rest = width.saturating_sub(cols.iter().map(|c| c.1 + 1).sum::<u16>());
     let mut out: Vec<(usize, Constraint)> = cols
         .into_iter()
         .map(|(i, w)| (i, Constraint::Length(w)))
         .collect();
-    out.push((8, Constraint::Min(NOTE)));
+    // On a very small terminal the note gives way to the name.
+    if rest >= 8 {
+        out.push((8, Constraint::Min(rest.min(NOTE))));
+    }
     out
 }
 
@@ -2129,7 +2156,7 @@ mod tests {
             "◆",
             "herdr",
             "Panels: ← →",
-            "Install/Update: enter",
+            "Install: enter",
             "Update all: u",
         ] {
             assert!(s.contains(needle), "missing {needle:?} in\n{s}");
@@ -2225,13 +2252,42 @@ mod tests {
                 "{w}x{h}\n{s}"
             );
             let bar = lines.last().unwrap();
-            for hint in ["Install/Update: enter", "Help: ?", "Quit: q"] {
+            for hint in ["Install: enter", "Help: ?", "Quit: q"] {
                 assert!(bar.contains(hint), "{w}x{h}: {hint:?} missing in {bar:?}");
             }
             // Names are whole and the last column's title is not cut.
             assert!(s.contains(" codex-sandbox-network"), "{w}x{h}\n{s}");
             assert!(s.contains("managed by / note"), "{w}x{h}\n{s}");
         }
+    }
+
+    #[test]
+    fn a_narrow_items_title_shows_the_active_filter_and_the_search() {
+        let mut a = app();
+        a.filter = Filter::Installed;
+        a.search = "co".into();
+        let s = render(&a, 80, 24);
+        assert!(s.contains("Items Installed · f  /co"), "{s}");
+        // Wide enough: every tab.
+        let s = render(&a, 150, 40);
+        assert!(
+            s.contains("All - To do - Outdated") && s.contains("/co"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn a_tiny_terminal_keeps_the_header_hint_and_the_names() {
+        let mut a = app();
+        // A host name that, with the rest, just fills 60 columns.
+        a.facts = std::sync::Arc::new(crate::facts::Facts {
+            hostname: "devbox-a01".into(),
+            ..(*a.facts).clone()
+        });
+        let s = render(&a, 60, 20);
+        let top = s.lines().next().unwrap();
+        assert!(top.contains("(S → user)"), "{top}");
+        assert!(s.contains(" antigravity "), "{s}");
     }
 
     #[test]
@@ -2471,7 +2527,7 @@ mod tests {
         assert!(
             s.contains("Bundles")
                 && s.contains("Nothing selected.")
-                && s.contains("Install/Update: enter"),
+                && s.contains("Install: enter"),
             "{s}"
         );
         render(&a, 70, 20);
