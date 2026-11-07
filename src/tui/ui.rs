@@ -14,6 +14,7 @@ use crate::exec::Outcome;
 use crate::plan::{Action, Kind, Planner};
 use crate::state::Scope;
 use crate::status::{ItemStatus, Label, Ownership};
+use unicode_width::UnicodeWidthStr;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -38,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
 fn sudo_dialog(f: &mut Frame, area: Rect, app: &App, p: &crate::sudo_prompt::Prompt, t: &Theme) {
     use crate::sudo_prompt::Focus;
     let title = p.title();
-    let w = ((title.chars().count() + 4).max(44) as u16).min(area.width);
+    let w = ((title.width() + 4).max(44) as u16).min(area.width);
     let h = 7.min(area.height);
     let r = Rect {
         x: area.x + (area.width - w) / 2,
@@ -193,10 +194,18 @@ fn keybar(
     right: Option<Span>,
     right_key: Option<KeyEvent>,
 ) {
-    // A right side wider than the bar would not be drawn at all: cut it to fit instead.
+    // The essential hints get their room first; the right side is cut to what is left.
+    let essential: Vec<usize> = keys
+        .iter()
+        .filter(|(n, _)| is_essential_key(n))
+        .map(|(n, k)| Span::raw(format!("{n}: {k}")).width() + 3)
+        .collect();
+    let essential_w = essential.iter().sum::<usize>().saturating_sub(3);
     let right = right
         .map(|s| {
-            let max = area.width as usize;
+            let max = (area.width as usize)
+                .saturating_sub(if essential_w > 0 { essential_w + 2 } else { 0 })
+                .max(1);
             match s.width() > max {
                 true => Span::styled(truncate(&s.content, max), s.style),
                 false => s,
@@ -236,12 +245,7 @@ fn keybar(
         .iter()
         .filter_map(|n| keys.iter().position(|(k, _)| k == n))
         .chain((0..keys.len()).rev())
-        .filter(|&i| {
-            !matches!(
-                keys[i].0,
-                "Help" | "Quit" | "Back" | "Install" | "Cancel running" | "Dashboard"
-            )
-        })
+        .filter(|&i| !is_essential_key(keys[i].0))
         .collect();
     for i in order {
         if total(&keep) <= room {
@@ -276,6 +280,14 @@ fn keybar(
     f.render_widget(Paragraph::new(right).alignment(Alignment::Right), r);
 }
 
+/// Key hints a key bar never drops.
+fn is_essential_key(name: &str) -> bool {
+    matches!(
+        name,
+        "Help" | "Quit" | "Back" | "Install" | "Cancel running" | "Dashboard"
+    )
+}
+
 /// Returns the column where `what` starts.
 fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u16 {
     let mut left = vec![
@@ -297,11 +309,11 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u
     } else {
         String::new()
     };
-    let right_w = right.chars().count() + 1;
+    let right_w = right.width() + 1;
     // The host name goes when the rest would not fit.
     let host = format!(" · {} · ", app.facts.hostname);
     let rest = Line::from(left.clone()).width() + Line::from(what.clone()).width();
-    if rest + host.chars().count() + right_w <= area.width as usize {
+    if rest + host.width() + right_w <= area.width as usize {
         left.push(Span::styled(host, t.s(t.dim)));
     } else {
         left.push(Span::styled(" · ", t.s(t.dim)));
@@ -310,12 +322,49 @@ fn header(f: &mut Frame, area: Rect, app: &App, t: &Theme, what: Vec<Span>) -> u
     left.extend(what);
     let [l, r] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_w as u16)]).areas(area);
+    let left = fit_spans(left, l.width as usize);
     f.render_widget(Paragraph::new(Line::from(left)), l);
     f.render_widget(
         Paragraph::new(Span::styled(right, t.s(t.dim))).alignment(Alignment::Right),
         r,
     );
     what_x
+}
+
+/// For a wrapped paragraph drawn in `area` from line `want`: the first line to draw (stored
+/// limit in `max`) and whether lines below stay hidden.
+fn scrolled(p: &Paragraph, area: Rect, want: usize, max: &std::cell::Cell<usize>) -> (usize, bool) {
+    let total = p.line_count(area.width);
+    let m = total.saturating_sub(area.height as usize);
+    max.set(m);
+    let top = want.min(m);
+    (top, top < m)
+}
+
+/// "↓ key: more" for a panel title, when lines are hidden below.
+fn more_span<'a>(t: &Theme, more: bool, key: &str) -> Option<Span<'a>> {
+    more.then(|| Span::styled(format!("↓ {key}: more "), t.s(t.yellow)))
+}
+
+/// `spans` cut to `width` cells, ending in "…" when cut.
+fn fit_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
+    if Line::from(spans.clone()).width() <= width {
+        return spans;
+    }
+    let mut out = Vec::new();
+    let mut used = 0;
+    for s in spans {
+        let w = s.width();
+        if used + w < width {
+            used += w;
+            out.push(s);
+        } else {
+            let text = truncate(&s.content, width - used);
+            out.push(Span::styled(text, s.style));
+            break;
+        }
+    }
+    out
 }
 
 /// Records `marks` (span index, hit) for spans laid out in one line from the left of `area`.
@@ -405,7 +454,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     );
     let scope_w = " · new installs → system (S → user)".len() + 14;
     let facts = app.facts.summary();
-    let roomy = lead.chars().count() + facts.chars().count() + scope_w <= h.width as usize;
+    let roomy = lead.width() + facts.width() + scope_w <= h.width as usize;
     let mut what = if roomy {
         vec![
             Span::raw(facts),
@@ -497,15 +546,25 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let cols = columns(inner, 4);
     let system = snap.count(|i| i.present && i.scope == Some(Scope::System));
     let user = snap.count(|i| i.present && i.scope == Some(Scope::User));
-    let fit = |s: &String| s.chars().count() + present.to_string().len() < cols[0].width as usize;
-    let installed = [
-        format!("/ {applicable} installed · {system} system {user} user"),
-        format!("/ {applicable} installed · {system} system"),
-        format!("/ {applicable} installed"),
-    ]
-    .into_iter()
-    .find(fit)
-    .unwrap_or_else(|| format!("/ {applicable}"));
+    // The longest label that fits after the number; the last one is cut if nothing fits.
+    let pick = |n: usize, w: u16, labels: Vec<String>| -> String {
+        let room = (w as usize).saturating_sub(n.to_string().len() + 1);
+        let last = labels.last().cloned().unwrap_or_default();
+        labels
+            .into_iter()
+            .find(|s| s.width() <= room)
+            .unwrap_or_else(|| truncate(&last, room))
+    };
+    let installed = pick(
+        present,
+        cols[0].width,
+        vec![
+            format!("/ {applicable} installed · {system} system {user} user"),
+            format!("/ {applicable} installed · {system} system"),
+            format!("/ {applicable} installed"),
+            format!("/ {applicable}"),
+        ],
+    );
     let cells: [(Line, Line); 4] = [
         (
             stat(t, present, t.green, installed),
@@ -516,11 +575,20 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t,
                 to_install,
                 t.cyan,
-                if new > 0 {
-                    format!("to install · {new} new in catalog")
-                } else {
-                    "to install".into()
-                },
+                pick(
+                    to_install,
+                    cols[1].width,
+                    if new > 0 {
+                        vec![
+                            format!("to install · {new} new in catalog"),
+                            format!("to install · {new} new"),
+                            "to install".into(),
+                            "to do".into(),
+                        ]
+                    } else {
+                        vec!["to install".into(), "to do".into()]
+                    },
+                ),
             ),
             bar(t, cols[1].width, &[(to_install, t.cyan)], applicable),
         ),
@@ -529,11 +597,20 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t,
                 failed.len(),
                 t.red,
-                match &app.last_run {
-                    Some((_, t, _)) => format!("failed · last run left {} · t", t.len()),
-                    None if failed.is_empty() => "failed".into(),
-                    None => format!("failed · {}", failed.join(" ")),
-                },
+                pick(
+                    failed.len(),
+                    cols[2].width,
+                    match &app.last_run {
+                        Some((_, t, _)) => vec![
+                            format!("failed · last run left {} · t", t.len()),
+                            "failed · t: retry".into(),
+                            "failed · t".into(),
+                            "failed".into(),
+                        ],
+                        None if failed.is_empty() => vec!["failed".into()],
+                        None => vec![format!("failed · {}", failed.join(" ")), "failed".into()],
+                    },
+                ),
             ),
             bar(
                 t,
@@ -547,11 +624,18 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t,
                 outdated,
                 t.blue,
-                if app.checking_latest {
-                    format!("outdated · checking{}", ".".repeat(app.tick as usize % 4))
-                } else {
-                    "outdated".into()
-                },
+                pick(
+                    outdated,
+                    cols[3].width,
+                    if app.checking_latest {
+                        vec![
+                            format!("outdated · checking{}", ".".repeat(app.tick as usize % 4)),
+                            "checking…".into(),
+                        ]
+                    } else {
+                        vec!["outdated".into()]
+                    },
+                ),
             ),
             bar(t, cols[3].width, &[(outdated, t.blue)], updatable.max(1)),
         ),
@@ -617,10 +701,7 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                     t.s(if on { t.green } else { t.dim }),
                 ),
                 Span::styled(
-                    format!(
-                        "{:<name_w$}",
-                        truncate(app.catalog.bundle_name(b), name_w - 1)
-                    ),
+                    format!("{} ", pad(app.catalog.bundle_name(b), name_w - 1)),
                     t.s(if on { t.fg } else { t.dim }),
                 ),
             ];
@@ -689,8 +770,9 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let Some(plan) = plan else {
         let lines = vec![
             Line::styled("Nothing selected.", t.s(t.dim)),
-            Line::styled("space: select bundles, items", t.s(t.dim)),
-            Line::styled("enter: install / update them", t.s(t.dim)),
+            Line::styled("space: follow bundles", t.s(t.dim)),
+            Line::styled("space: select items", t.s(t.dim)),
+            Line::styled("enter: install / update", t.s(t.dim)),
         ];
         f.render_widget(Paragraph::new(lines), inner);
         return;
@@ -716,13 +798,39 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     for (id, _) in plan.skipped.iter().filter(|(_, w)| w != "already present") {
         entries.push(("–", t.dim, id, t.dim));
     }
+    // Where each entry goes (row, column), wrapping by hand.
+    let place = |entries: &[(&str, Color, &str, Color)]| -> Vec<(u16, u16)> {
+        let (mut x, mut y) = (0u16, 0u16);
+        entries
+            .iter()
+            .map(|(g, _, id, _)| {
+                let w = Span::raw(format!("{g} {id}")).width() as u16;
+                if x > 0 && x + w > inner.width {
+                    (x, y) = (0, y + 1);
+                }
+                let at = (y, x);
+                x += w + 2;
+                at
+            })
+            .collect()
+    };
+    // Too many to show: the last row says how many are hidden.
+    let total = entries.len();
+    let rows = place(&entries).last().map_or(0, |(y, _)| y + 1);
+    let mut more = 0;
+    if rows > inner.height && inner.height > 0 {
+        let at = place(&entries);
+        let keep = at.iter().take_while(|(y, _)| *y + 1 < inner.height).count();
+        more = total - keep;
+        entries.truncate(keep);
+    }
     let mut lines: Vec<Line> = vec![Line::default()];
-    let (mut x, mut y) = (0u16, 0u16);
-    for (g, c, id, ic) in entries {
+    let mut y = 0u16;
+    for ((g, c, id, ic), (row, x)) in entries.iter().copied().zip(place(&entries)) {
         let w = Span::raw(format!("{g} {id}")).width() as u16;
-        if x > 0 && x + w > inner.width {
+        if row > y {
             lines.push(Line::default());
-            (x, y) = (0, y + 1);
+            y = row;
         }
         if y < inner.height {
             let gw = Span::raw(format!("{g} ")).width() as u16;
@@ -736,7 +844,15 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         line.push_span(Span::styled(format!("{g} "), t.s(c)));
         line.push_span(Span::styled(id.to_string(), t.s(ic)));
         line.push_span(Span::raw("  "));
-        x += w + 2;
+    }
+    if more > 0 {
+        let long = format!("… {more} more · enter: see the plan");
+        let text = if long.width() <= inner.width as usize {
+            long
+        } else {
+            truncate(&format!("… {more} more"), inner.width as usize)
+        };
+        lines.push(Line::styled(text, t.s(t.dim)));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -778,6 +894,22 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         ];
         marks = vec![(0, Hit::Key(f_key))];
     }
+    // A query longer than what is left shows its end (where typing happens) after "…".
+    let left = room.saturating_sub(wide(&tabs) + 3 + usize::from(app.searching));
+    if !search.is_empty() && app.search.width() > left {
+        let mut tail: Vec<char> = Vec::new();
+        let mut w = 1;
+        for c in app.search.chars().rev() {
+            let cw = Span::raw(c.to_string()).width();
+            if w + cw > left {
+                break;
+            }
+            tail.push(c);
+            w += cw;
+        }
+        let tail: String = tail.into_iter().rev().collect();
+        search[0] = Span::styled(format!("  /…{tail}"), t.s(t.yellow));
+    }
     hit_title(app, area, "Items", &tabs, marks);
     tabs.extend(search);
     let block = pane(t, "Items", app.focus == Focus::Items, tabs);
@@ -797,7 +929,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     }
     let name_w = rows
         .iter()
-        .map(|i| i.id.chars().count())
+        .map(|i| i.id.width())
         .max()
         .unwrap_or(0)
         .clamp(12, 22) as u16;
@@ -825,7 +957,11 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             "status",
             "via",
             "scope",
-            "managed by / note",
+            if note_w >= 17 {
+                "managed by / note"
+            } else {
+                "note"
+            },
         ]
         .map(Cell::from)
         .to_vec(),
@@ -1095,7 +1231,7 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
     {
         let sudo = if s == Scope::System { ", sudo" } else { "" };
         lines.push(Line::styled(
-            format!("would install via {v} ({s}{sudo})"),
+            format!("would install via {} ({s}{sudo})", via_name(v)),
             t.s(t.dim),
         ));
     }
@@ -1107,7 +1243,7 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
     }
     if let Some(e) = &it.last_error {
         lines.push(Line::styled(
-            format!("last attempt failed: {e} · l shows the log"),
+            format!("last attempt failed: {e} · its log is under the Log tab"),
             t.s(t.red),
         ));
     }
@@ -1282,15 +1418,34 @@ fn via_name(v: &str) -> &str {
     if v == "run" { "command" } else { v }
 }
 
+/// Cuts `s` to at most `n` terminal cells, ending in "…" when cut. Wide characters (CJK,
+/// emoji) count two cells.
 fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!(
-            "{}…",
-            s.chars().take(n.saturating_sub(1)).collect::<String>()
-        )
+    use unicode_width::UnicodeWidthChar;
+    if s.width() <= n {
+        return s.to_string();
     }
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw + 1 > n {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    if n > 0 {
+        out.push('…');
+    }
+    out
+}
+
+/// `s` cut to `n` cells and padded with spaces to exactly `n` cells.
+fn pad(s: &str, n: usize) -> String {
+    let s = truncate(s, n);
+    let w = s.width();
+    format!("{s}{}", " ".repeat(n.saturating_sub(w)))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1346,7 +1501,9 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     first.push(Span::styled("+ shell setup", t.s(t.dim)));
     let sudo = if plan.needs_sudo(&app.facts) {
         Span::styled(
-            if app.facts.sudo_asks_password() {
+            if app.facts.sudo_asks_password() && app.scope_fixed {
+                "! needs sudo · enter: password"
+            } else if app.facts.sudo_asks_password() {
                 "! needs sudo · enter: password or user mode"
             } else {
                 "! needs sudo (no password needed)"
@@ -1380,7 +1537,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let item_w = plan
         .units
         .iter()
-        .map(|u| u.id.chars().count())
+        .map(|u| u.id.width())
         .max()
         .unwrap_or(0)
         .clamp(10, 24) as u16;
@@ -1475,7 +1632,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .unwrap_or_default(),
     );
     let inner = block.inner(cmds);
-    f.render_widget(block, cmds);
+    app.hit(inner, Hit::Panel(Panel::PlanCommands));
     if let Some(u) = u {
         let mut lines = Vec::new();
         for s in &u.steps {
@@ -1506,11 +1663,26 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             Span::styled("log ", t.s(t.dim)),
             Span::raw(format!("logs/<run>/{}.log", u.id)),
         ]));
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        let p = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let (top, more) = scrolled(&p, inner, app.plan_cmd_scroll, &app.plan_cmd_max);
+        f.render_widget(
+            panel(t, 3, "Commands", false, {
+                // "more" first: a long item name may be cut, the hint must not.
+                let mut v: Vec<Span> = more_span(t, more, "J").into_iter().collect();
+                v.push(Span::styled(
+                    format!("· step {} {}", app.plan_cursor + 1, u.id),
+                    t.s(t.dim),
+                ));
+                v
+            }),
+            cmds,
+        );
+        f.render_widget(p.scroll((top as u16, 0)), inner);
+    } else {
+        f.render_widget(block, cmds);
     }
-    let block = panel(t, 4, "Left out", false, vec![]);
-    let inner = block.inner(skipped);
-    f.render_widget(block, skipped);
+    let inner = panel(t, 4, "Left out", false, vec![]).inner(skipped);
+    app.hit(inner, Hit::Panel(Panel::LeftOut));
     let lines: Vec<Line> = if plan.skipped.is_empty() {
         vec![Line::styled("nothing", t.s(t.dim))]
     } else {
@@ -1524,7 +1696,18 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             })
             .collect()
     };
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    let p = Paragraph::new(lines).wrap(Wrap { trim: true });
+    let (top, more) = scrolled(&p, inner, app.left_out_scroll, &app.left_out_max);
+    let mut extra = Vec::new();
+    if !plan.skipped.is_empty() {
+        extra.push(Span::styled(
+            format!("({}) ", plan.skipped.len()),
+            t.s(t.dim),
+        ));
+    }
+    extra.extend(more_span(t, more, "PgDn"));
+    f.render_widget(panel(t, 4, "Left out", false, extra), skipped);
+    f.render_widget(p.scroll((top as u16, 0)), inner);
 
     // The run label is clickable; a toast in its place is not.
     let toast = toast_span(app, t);
@@ -1544,7 +1727,12 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 ("Back", "esc"),
             ]
         } else {
-            &[("Step", "↑↓"), ("Save as script", "c"), ("Back", "esc")]
+            &[
+                ("Step", "↑↓"),
+                ("Scroll", "J/K"),
+                ("Save as script", "c"),
+                ("Back", "esc"),
+            ]
         },
         toast.or_else(|| {
             Some(Span::styled(
@@ -1684,7 +1872,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .plan
         .units
         .iter()
-        .map(|u| u.id.chars().count())
+        .map(|u| u.id.width())
         .max()
         .unwrap_or(0)
         .clamp(8, 18) as u16;
@@ -1764,6 +1952,20 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let inner = block.inner(info);
     f.render_widget(block, info);
     let mut lines = Vec::new();
+    // Run-wide, so first: a long log path below must not push it out of the panel.
+    if let Some(r) = &run.shell_env {
+        lines.push(match r {
+            Ok(files) if files.is_empty() => Line::styled("shell setup unchanged", t.s(t.dim)),
+            Ok(files) => Line::styled(
+                format!(
+                    "shell setup: {} files updated · open a new shell",
+                    files.len()
+                ),
+                t.s(t.green),
+            ),
+            Err(e) => Line::styled(format!("shell setup not updated: {e}"), t.s(t.red)),
+        });
+    }
     if let Some(u) = run.plan.units.get(run.sel) {
         lines.push(Line::from(vec![
             Span::styled(
@@ -1794,29 +1996,18 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         }) {
             lines.push(Line::styled(format!("hint {h}"), t.s(t.yellow)));
         }
-        lines.push(Line::styled(
-            format!(
-                "log {}",
-                app.paths
-                    .run_dir(&run.run_id)
-                    .join(format!("{}.log", u.id))
-                    .display()
-            ),
-            t.s(t.dim),
-        ));
-    }
-    if let Some(r) = &run.shell_env {
-        lines.push(match r {
-            Ok(files) if files.is_empty() => Line::styled("shell setup unchanged", t.s(t.dim)),
-            Ok(files) => Line::styled(
-                format!(
-                    "shell setup: {} files updated · open a new shell",
-                    files.len()
-                ),
-                t.s(t.green),
-            ),
-            Err(e) => Line::styled(format!("shell setup not updated: {e}"), t.s(t.red)),
-        });
+        let log = app
+            .paths
+            .run_dir(&run.run_id)
+            .join(format!("{}.log", u.id))
+            .display()
+            .to_string();
+        let home = format!("{}/", app.facts.home.display());
+        let log = match log.strip_prefix(&home) {
+            Some(rest) => format!("~/{rest}"),
+            None => log,
+        };
+        lines.push(Line::styled(format!("log {log}"), t.s(t.dim)));
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 
@@ -1842,7 +2033,15 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let height = inner.height as usize;
     let end = log.len().saturating_sub(run.scroll.min(log.len()));
     let start = end.saturating_sub(height);
-    let lines: Vec<Line> = log[start..end].iter().map(|l| log_line(t, l)).collect();
+    // Long lines end in "…" (z widens the log; the full text is in the log file).
+    let lines: Vec<Line> = log[start..end]
+        .iter()
+        .map(|l| {
+            let mut line = log_line(t, l);
+            line.spans = fit_spans(std::mem::take(&mut line.spans), inner.width as usize);
+            line
+        })
+        .collect();
     f.render_widget(Paragraph::new(lines), inner);
 
     let keyset: &[(&str, &str)] = if run.finished.is_some() {
@@ -1870,7 +2069,11 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let right_span = toast.or_else(|| {
         retry.then(|| {
             Span::styled(
-                format!("Retry unfinished ({}): r", failed + blocked + skipped),
+                if keys.width >= 80 {
+                    format!("Retry unfinished ({}): r", failed + blocked + skipped)
+                } else {
+                    format!("Retry ({}): r", failed + blocked + skipped)
+                },
                 Style::new().fg(t.magenta).add_modifier(Modifier::BOLD),
             )
         })
@@ -1923,12 +2126,14 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
         Screen::Loading => &[("q  esc", "quit")],
         Screen::Plan => &[
             ("↑↓ j k", "move"),
+            ("J K", "scroll Commands"),
+            ("PgUp PgDn", "scroll Left out"),
             ("enter", "run the plan"),
             ("c", "save the plan as a shell script"),
             ("esc  q", "back without running"),
             (
                 "",
-                "steps run in order; a failed step blocks only its dependents",
+                "independent steps may run at once; a failed step blocks only its dependents",
             ),
         ],
         Screen::Run => &[
@@ -1949,11 +2154,7 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
 fn help(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     const KEY: usize = 12;
     let rows = help_rows(app.screen);
-    let widest = rows
-        .iter()
-        .map(|(_, v)| v.chars().count())
-        .max()
-        .unwrap_or(0);
+    let widest = rows.iter().map(|(_, v)| v.width()).max().unwrap_or(0);
     // As wide as the longest line plus a space; on a narrow terminal the descriptions wrap.
     let w = ((KEY + widest + 3) as u16).min(area.width);
     let text = (w as usize).saturating_sub(KEY + 3).max(1);
@@ -2019,7 +2220,7 @@ fn wrap_words(s: &str, n: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for word in s.split(' ') {
         match out.last_mut() {
-            Some(line) if line.chars().count() + 1 + word.chars().count() <= n => {
+            Some(line) if line.width() + 1 + word.width() <= n => {
                 line.push(' ');
                 line.push_str(word);
             }
@@ -2458,8 +2659,64 @@ mod tests {
         ));
         let s = render(&a, 100, 30);
         let last = s.lines().last().unwrap();
-        assert!(last.starts_with("Catalog: using the embedded"), "{last}");
+        assert!(last.contains("Catalog: using the embedded"), "{last}");
         assert!(last.trim_end().ends_with('…'), "{last}");
+        // The essential hints keep their room.
+        for k in ["Help: ?", "Quit: q", "Install: enter"] {
+            assert!(last.contains(k), "{k}: {last}");
+        }
+    }
+
+    #[test]
+    fn a_long_toast_keeps_the_essential_keys_at_60_columns() {
+        let mut a = app();
+        a.notify("Nothing selected · space selects".to_string() + &" and more".repeat(10));
+        let s = render(&a, 60, 20);
+        let last = s.lines().last().unwrap();
+        for k in ["Help: ?", "Quit: q"] {
+            assert!(last.contains(k), "{k}: {last}");
+        }
+    }
+
+    #[test]
+    fn truncate_counts_terminal_cells() {
+        assert_eq!(truncate("开发工具套件测试", 9), "开发工具…");
+        assert_eq!(pad("开发工具套件测试", 12).width(), 12);
+        assert_eq!(pad("Base", 12), "Base        ");
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcd", 3), "ab…");
+    }
+
+    #[test]
+    fn a_long_search_shows_its_end() {
+        let mut a = app();
+        a.searching = true;
+        a.search = "not-an-item-with-a-long-query-that-exceeds-the-panel".into();
+        let s = render(&a, 60, 20);
+        assert!(s.contains("the-panel▏"), "{s}");
+        assert!(s.contains("/…"), "{s}");
+    }
+
+    #[test]
+    fn a_full_selected_panel_says_how_many_are_hidden() {
+        let mut a = app();
+        a.selected = a.catalog.item_ids().into_iter().collect();
+        let s = render(&a, 80, 24);
+        assert!(s.contains("… 106 more"), "{s}");
+        let s = render(&a, 200, 60);
+        assert!(s.contains("more · enter: see the plan"), "{s}");
+    }
+
+    #[test]
+    fn opening_a_plan_clears_a_dashboard_notice() {
+        let mut a = app();
+        let id = a.catalog.item_ids().into_iter().next().unwrap();
+        a.selected.insert(id);
+        a.notify("Following X: 3 items to install");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        if a.screen == Screen::Plan {
+            assert_eq!(a.toast_text(), None);
+        }
     }
 
     #[test]

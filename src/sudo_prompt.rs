@@ -155,7 +155,14 @@ impl Prompt {
             KeyCode::Esc => return Some(Action::Back),
             KeyCode::Enter => match self.focus {
                 Focus::Password if self.password.is_empty() => {
-                    self.error = Some("Type the password, or choose user mode".into());
+                    self.error = Some(
+                        if self.user_mode {
+                            "Type the password, or choose user mode"
+                        } else {
+                            "Type the password, or choose Back"
+                        }
+                        .into(),
+                    );
                 }
                 Focus::Password => {
                     self.checking = true;

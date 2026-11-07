@@ -52,3 +52,26 @@ or user mode"), not a bare key or label ("[S]", "Go"). Shortening must not drop 
 - Below 80 columns the left column is 26 wide. When fewer than 8 columns are left for the
   managed by/note column, it goes before the name is squeezed. The header drops the host name
   when the scope hint would otherwise be cut.
+
+## After the codex review (F01–F15)
+
+- Widths are terminal cells, not chars: `ui::truncate` and `ui::pad` use `unicode-width`, so
+  CJK names (two cells each) stay aligned.
+- Key bar: the essential hints get their room first. A toast or the retry label is cut to what is
+  left. The summary uses `Retry (N): r` below 80 columns.
+- Overview counters choose the longest label that fits: `to install · N new in catalog` →
+  `to install · N new` → `to install` → `to do`. Failed falls back the same way, ending in
+  `failed · t` and then `failed`.
+- Selected: when it overflows, the last row reads `… N more · enter: see the plan`, or just
+  `… N more` when that does not fit.
+- Long search: the title shows the end of the query after `/…`, so the caret stays visible.
+- Plan: J/K scroll Commands, and PgUp/PgDn (or the mouse wheel) scroll Left out. Each title
+  shows `↓ key: more` while lines are hidden. The limits come from `Paragraph::line_count`
+  (ratatui feature `unstable-rendered-line-info`) and are stored in `App::plan_cmd_max` and
+  `App::left_out_max` at draw time.
+- Opening a plan clears a non-warning toast, so `Run N steps: enter` shows.
+- Run Info shows the run-wide shell-setup result first, and the log path with `~`. Log lines
+  are cut with `…`; z widens them.
+- tmux gotcha: when a tmux server is already running, a new session gets the server's
+  environment, not the caller's exports. Start the TUI through a script that sources the
+  scratch env itself and refuses to start without `ENVIRA_STATE_DIR`.

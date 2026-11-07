@@ -94,8 +94,9 @@ pub enum DetailTab {
 #[derive(Debug, Default)]
 pub struct View {
     top: Cell<usize>,
-    /// `(cursor, rows)` at the last draw.
-    seen: Cell<Option<(usize, usize)>>,
+    /// `(cursor, rows, height)` at the last draw: a change in any brings the cursor into view
+    /// (a smaller terminal included); wheel scrolling changes none of them.
+    seen: Cell<Option<(usize, usize, usize)>>,
 }
 
 impl View {
@@ -107,8 +108,8 @@ impl View {
     /// The top row for `height` visible rows out of `len`, called while drawing.
     pub fn top(&self, cursor: usize, len: usize, height: usize) -> usize {
         let mut top = self.top.get();
-        if self.seen.get() != Some((cursor, len)) {
-            self.seen.set(Some((cursor, len)));
+        if self.seen.get() != Some((cursor, len, height)) {
+            self.seen.set(Some((cursor, len, height)));
             if cursor < top {
                 top = cursor;
             } else if height > 0 && cursor >= top + height {
@@ -130,6 +131,10 @@ pub enum Panel {
     Plan,
     Steps,
     Log,
+    /// The plan's Commands panel.
+    PlanCommands,
+    /// The plan's Left out panel.
+    LeftOut,
 }
 
 /// What lies under the mouse, as recorded by the last draw. Every click maps to what a key
@@ -256,6 +261,13 @@ pub struct RunView {
 }
 
 impl RunView {
+    /// The first step running now.
+    pub fn running(&self) -> Option<usize> {
+        self.units
+            .iter()
+            .position(|u| matches!(u, UnitState::Running(_)))
+    }
+
     pub fn new(plan: Plan, run_id: String, ctl: Option<watch::Sender<Control>>) -> RunView {
         let n = plan.units.len();
         RunView {
@@ -361,6 +373,12 @@ pub struct App {
     /// terminal cannot show it all).
     pub help_scroll: u16,
     pub help_max: Cell<u16>,
+    /// Scroll of the plan's Commands and Left out panels, and how far each can go (set by
+    /// the last draw).
+    pub plan_cmd_scroll: usize,
+    pub plan_cmd_max: Cell<usize>,
+    pub left_out_scroll: usize,
+    pub left_out_max: Cell<usize>,
     pub tick: u64,
     /// SIGTERM/SIGHUP arrived during a run: quit once it has wound down.
     pub quitting: bool,
@@ -423,6 +441,10 @@ impl App {
             help: false,
             help_scroll: 0,
             help_max: Cell::new(0),
+            plan_cmd_scroll: 0,
+            plan_cmd_max: Cell::new(0),
+            left_out_scroll: 0,
+            left_out_max: Cell::new(0),
             tick: 0,
             quitting: false,
             last_run: None,
@@ -705,7 +727,14 @@ impl App {
         self.plan = Some((plan, title));
         self.plan_cursor = 0;
         self.plan_view = View::default();
+        self.plan_cmd_scroll = 0;
+        self.left_out_scroll = 0;
         self.screen = Screen::Plan;
+        // A dashboard notice (or the retry's "checking" one) is done now: the plan's own
+        // action takes the key bar. Warnings stay.
+        if !self.toast_warns {
+            self.toast = None;
+        }
     }
 
     // --------------------------------------------------------------------------------------------
@@ -906,6 +935,8 @@ impl App {
             Panel::Bundles => self.bundles_view.scroll(up),
             Panel::Plan => self.plan_view.scroll(up),
             Panel::Steps => self.steps_view.scroll(up),
+            Panel::PlanCommands => self.scroll_plan_commands(up, 3),
+            Panel::LeftOut => self.scroll_left_out(up, 3),
             Panel::Detail => {
                 self.detail_scroll = if up {
                     self.detail_scroll.saturating_sub(3)
@@ -924,6 +955,22 @@ impl App {
                 }
             }
         }
+    }
+
+    fn scroll_plan_commands(&mut self, up: bool, by: usize) {
+        self.plan_cmd_scroll = if up {
+            self.plan_cmd_scroll.saturating_sub(by)
+        } else {
+            (self.plan_cmd_scroll + by).min(self.plan_cmd_max.get())
+        };
+    }
+
+    fn scroll_left_out(&mut self, up: bool, by: usize) {
+        self.left_out_scroll = if up {
+            self.left_out_scroll.saturating_sub(by)
+        } else {
+            (self.left_out_scroll + by).min(self.left_out_max.get())
+        };
     }
 
     fn dashboard_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -1089,7 +1136,7 @@ impl App {
     fn install_selection(&mut self) {
         let t = self.selected_ids();
         if t.is_empty() {
-            self.notify("Nothing selected: space selects bundles (left) and items (right)");
+            self.notify("Nothing selected · space selects");
             return;
         }
         let items = |n: usize| format!("{n} {}", super::ui::plural(n, "item", "items"));
@@ -1287,6 +1334,7 @@ impl App {
             .unwrap_or_default();
         if plan.is_empty() {
             self.plan = None;
+            self.user_mode = false;
             self.screen = Screen::Dashboard;
             let why = plan
                 .skipped
@@ -1328,14 +1376,22 @@ impl App {
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.plan = None;
+                // User mode was for that plan: the Selected panel previews as Enter plans.
+                self.user_mode = false;
                 self.screen = Screen::Dashboard;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.plan_cursor = self.plan_cursor.saturating_sub(1)
+                self.plan_cursor = self.plan_cursor.saturating_sub(1);
+                self.plan_cmd_scroll = 0;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.plan_cursor = (self.plan_cursor + 1).min(n.saturating_sub(1))
+                self.plan_cursor = (self.plan_cursor + 1).min(n.saturating_sub(1));
+                self.plan_cmd_scroll = 0;
             }
+            KeyCode::Char('J') => self.scroll_plan_commands(false, 1),
+            KeyCode::Char('K') => self.scroll_plan_commands(true, 1),
+            KeyCode::PageDown => self.scroll_left_out(false, 3),
+            KeyCode::PageUp => self.scroll_left_out(true, 3),
             KeyCode::Char('c') => return vec![Cmd::ExportScript(plan.clone())],
             KeyCode::Char('?') => self.help = true,
             KeyCode::Enter => {
@@ -1408,6 +1464,12 @@ impl App {
             KeyCode::Char('f') => {
                 run.follow = !run.follow;
                 run.scroll = 0;
+                if run.follow
+                    && !matches!(run.units.get(run.sel), Some(UnitState::Running(_)))
+                    && let Some(j) = run.running()
+                {
+                    run.sel = j;
+                }
             }
             KeyCode::Char('z') => run.zoom = !run.zoom,
             KeyCode::Char('c') if !finished => {
@@ -1454,6 +1516,15 @@ impl App {
 
     /// Offers to retry what the last run left unfinished (failed, or interrupted by a crash,
     /// a closed terminal or a stop).
+    /// What `t` would retry of run `id`.
+    fn retry_targets(&self, id: &str, rec: &RunRecord) -> crate::plan::RetryTargets {
+        crate::plan::RetryTargets::new(
+            rec.unfinished_units()
+                .map(|u| (u.id.as_str(), u.action.as_str())),
+        )
+        .progress(&rec.units, Some(&self.paths.run_dir(id)))
+    }
+
     pub fn load_last_run(&mut self) {
         self.last_run = None;
         let Some(id) = self.state.as_ref().and_then(|s| s.last_run.clone()) else {
@@ -1462,11 +1533,7 @@ impl App {
         let Ok(rec) = RunRecord::load(&self.paths, &id) else {
             return;
         };
-        let t = crate::plan::RetryTargets::new(
-            rec.unfinished_units()
-                .map(|u| (u.id.as_str(), u.action.as_str())),
-        )
-        .progress(&rec.units, Some(&self.paths.run_dir(&id)));
+        let t = self.retry_targets(&id, &rec);
         if t.is_empty() {
             return;
         }
@@ -1514,6 +1581,7 @@ impl App {
 
     pub fn on_exec(&mut self, ev: Event) {
         let Some(run) = &mut self.run else { return };
+        let mut finished: Option<(String, RunRecord)> = None;
         match ev {
             Event::UnitStarted(i) => {
                 run.units[i] = UnitState::Running(Instant::now());
@@ -1538,10 +1606,21 @@ impl App {
                     *bytes -= freed;
                 }
             }
-            Event::UnitFinished(i, o, d) => run.units[i] = UnitState::Done(o, d),
+            Event::UnitFinished(i, o, d) => {
+                run.units[i] = UnitState::Done(o, d);
+                // Following: move on to a step still running.
+                if run.follow
+                    && run.sel == i
+                    && let Some(j) = run.running()
+                {
+                    run.sel = j;
+                    run.scroll = 0;
+                }
+            }
             Event::ShellEnv(r) => run.shell_env = Some(r),
             Event::Notice(m) => self.notify(m),
             Event::Finished(rec) => {
+                finished = Some((run.run_id.clone(), rec.clone()));
                 let unrecorded = rec.unrecorded.clone();
                 let elapsed = run.started.elapsed();
                 // Jump to the first failure so its log is visible.
@@ -1562,6 +1641,11 @@ impl App {
                     ));
                 }
             }
+        }
+        // Dashboard `t` retries what this run left, without a restart.
+        if let Some((id, rec)) = finished {
+            let t = self.retry_targets(&id, &rec);
+            self.last_run = (!t.is_empty()).then_some((id, t, true));
         }
     }
 }
