@@ -1729,7 +1729,10 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("status", "✓ installed  ↑ outdated  ! failed or drifted"),
     ("", "◌ wanted  ◆ new  · available  – not for this machine"),
     ("Selected", "+ install  ↑ update  ◇ config  ↺ revert"),
-    ("Bundles", "● followed  ○ not · 7/9: installed / total"),
+    (
+        "Bundles",
+        "● followed  ○ not followed · 7/9: installed / total",
+    ),
 ];
 
 /// Keys of the current screen.
