@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -43,11 +44,31 @@ pub struct Session {
     pub runner: Arc<dyn Runner>,
     /// Memory of envira's own commands, shared by the runners of a reload.
     pub budget: Arc<Budget>,
+    /// `facts` without sudo, for plans in user mode.
+    pub user_facts: Arc<Facts>,
+    /// Plans are made in user mode: chosen when sudo asked for a password.
+    user_mode: AtomicBool,
+}
+
+/// The facts `--scope` asks for: `user` plans without sudo (user mode); `system` takes sudo
+/// to be there when envira could not tell (`has_sudo`: the command exists), as sudo rights
+/// can come from a sudoers rule envira cannot see without a password: the plan asks for it.
+pub fn scoped(facts: Facts, scope: Option<ScopeArg>, has_sudo: bool) -> Facts {
+    match scope {
+        Some(ScopeArg::User) => facts.without_sudo(),
+        Some(ScopeArg::System) if facts.privilege == Privilege::None && has_sudo => Facts {
+            privilege: Privilege::Sudo {
+                passwordless: false,
+            },
+            ..facts
+        },
+        _ => facts,
+    }
 }
 
 impl Session {
     pub fn open(global: &Global) -> Result<Session> {
-        let facts = Facts::probe();
+        let facts = scoped(Facts::probe(), global.scope, crate::facts::which("sudo"));
         let paths = Paths::new(&facts);
         let loaded = load_valid(global, &paths, &facts)?;
         let budget = Arc::new(Budget::for_scans(paths.state_dir.join("probes.toml")));
@@ -56,11 +77,27 @@ impl Session {
             global: global.clone(),
             catalog: Arc::new(loaded.catalog.clone()),
             loaded,
+            user_facts: Arc::new(facts.without_sudo()),
             facts: Arc::new(facts),
             paths,
             runner,
             budget,
+            user_mode: AtomicBool::new(false),
         })
+    }
+
+    /// Makes the next plans in user mode (see `Facts::without_sudo`).
+    pub fn use_user_mode(&self) {
+        self.user_mode.store(true, Ordering::Relaxed);
+    }
+
+    /// The facts plans are made with: `user_facts` in user mode.
+    pub fn plan_facts(&self) -> &Facts {
+        if self.user_mode.load(Ordering::Relaxed) {
+            &self.user_facts
+        } else {
+            &self.facts
+        }
     }
 
     /// Re-reads every catalog layer (TUI `r`). Commands get the PATH of the new catalog (its
@@ -127,9 +164,10 @@ impl Session {
         snap.apply_latest(&answers);
     }
 
-    pub fn update_plan(&self, targets: &[UpdateTarget]) -> Plan {
-        let present = BTreeSet::new();
-        let mut p = Planner::new(&self.catalog, &self.facts, &present);
+    /// Updates `targets`; `present`: what is installed now (a dependency of a user-scope copy
+    /// that replaces a system install out of reach is installed only when missing).
+    pub fn update_plan(&self, present: &BTreeSet<String>, targets: &[UpdateTarget]) -> Plan {
+        let mut p = Planner::new(&self.catalog, self.plan_facts(), present);
         p.prefer_system = self.prefer_system();
         p.update(targets)
     }
@@ -137,12 +175,12 @@ impl Session {
     pub fn prefer_system(&self) -> bool {
         match self.global.scope {
             Some(ScopeArg::User) => false,
-            Some(ScopeArg::System) | None => self.facts.privilege.can_elevate(),
+            Some(ScopeArg::System) | None => self.plan_facts().privilege.can_elevate(),
         }
     }
 
     pub fn plan(&self, present: &BTreeSet<String>, targets: &[String], force: bool) -> Plan {
-        let mut p = Planner::new(&self.catalog, &self.facts, present);
+        let mut p = Planner::new(&self.catalog, self.plan_facts(), present);
         p.prefer_system = self.prefer_system();
         p.plan(targets, force)
     }
@@ -155,7 +193,7 @@ impl Session {
         targets: &[String],
         done: &crate::plan::InstallsDone,
     ) -> Plan {
-        let mut p = Planner::new(&self.catalog, &self.facts, present);
+        let mut p = Planner::new(&self.catalog, self.plan_facts(), present);
         p.prefer_system = self.prefer_system();
         p.finishing = done.clone();
         p.plan(targets, false)
@@ -169,7 +207,7 @@ impl Session {
         targets: &[String],
         retrying: Option<&BTreeMap<String, Vec<String>>>,
     ) -> Plan {
-        let mut p = Planner::new(&self.catalog, &self.facts, present);
+        let mut p = Planner::new(&self.catalog, self.plan_facts(), present);
         p.prefer_system = self.prefer_system();
         p.retrying = retrying.cloned();
         p.revert(targets)
@@ -218,39 +256,10 @@ fn load_valid(global: &Global, paths: &Paths, facts: &Facts) -> Result<Loaded> {
     Ok(loaded)
 }
 
-/// Asks for the sudo password once (when needed) and keeps the credential cache warm.
-/// Must run while the terminal is in normal mode.
-/// Whether steps can run `sudo -n` now: a NOPASSWD rule or a fresh timestamp. Checked with
-/// `sudo -n true` rather than `sudo -n -v`: validating needs *every* matching rule to be NOPASSWD
-/// (openSUSE ships `ALL ALL=(ALL) ALL` next to a user's NOPASSWD rule), running one command does not.
+/// Whether steps can use sudo now without its password (see
+/// `facts::sudo_runs_without_password`).
 pub fn sudo_without_password() -> bool {
-    std::process::Command::new("sudo")
-        .args(["-n", "true"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-pub fn ensure_sudo(facts: &Facts) -> Result<Option<tokio::task::JoinHandle<()>>> {
-    match facts.privilege {
-        Privilege::Root => return Ok(None),
-        Privilege::None => bail!("this plan needs sudo, which is not available"),
-        Privilege::Sudo { .. } => {}
-    }
-    if !sudo_without_password() {
-        let ok = std::process::Command::new("sudo")
-            .arg("-v")
-            .status()
-            .is_ok_and(|s| s.success());
-        if !ok {
-            bail!("sudo authentication failed");
-        }
-    }
-    // Also when `sudo -n true` passed: that may be a ticket cached from earlier, which can run
-    // out before a long build reaches its sudo steps.
-    Ok(Some(sudo_keepalive()))
+    crate::facts::sudo_runs_without_password()
 }
 
 /// Refreshes the sudo ticket every minute for as long as it runs (a run). Harmless where sudo
@@ -268,4 +277,29 @@ pub fn sudo_keepalive() -> tokio::task::JoinHandle<()> {
                 .await;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn scope_user_plans_without_sudo_and_system_assumes_it() {
+        let f = Facts::sample(Path::new("/home/user"));
+        let user = scoped(f.clone(), Some(ScopeArg::User), true);
+        assert_eq!(user.privilege, Privilege::None);
+        assert!(user.user_mode && user.summary().contains("user mode"));
+        assert_eq!(scoped(f.clone(), None, true).privilege, f.privilege);
+        // Sudo envira could not see (a sudoers rule for this user): the plan asks for it.
+        let mut none = f.clone();
+        none.privilege = Privilege::None;
+        let system = scoped(none.clone(), Some(ScopeArg::System), true);
+        assert!(system.sudo_asks_password());
+        // No sudo command at all: nothing to ask.
+        assert_eq!(
+            scoped(none, Some(ScopeArg::System), false).privilege,
+            Privilege::None
+        );
+    }
 }

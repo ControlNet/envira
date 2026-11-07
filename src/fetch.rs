@@ -18,7 +18,7 @@ pub struct FetchArgs {
     pub to: PathBuf,
     /// Release tag; latest when `None`.
     pub tag: Option<String>,
-    /// Command that copies the binaries into `to` (`sudo -n`), so the download, checks and
+    /// Command that copies the binaries into `to` (`sudo -A`), so the download, checks and
     /// extraction run as the user, who keeps `GITHUB_TOKEN`. Empty: write `to` directly.
     pub install_with: Vec<String>,
 }

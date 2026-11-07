@@ -26,8 +26,95 @@ pub fn draw(f: &mut Frame, app: &App, t: &Theme) {
         Screen::Plan => plan_view(f, area, app, t),
         Screen::Run => run_view(f, area, app, t),
     }
+    if let Some(p) = &app.sudo {
+        sudo_dialog(f, area, app, p, t);
+    }
     if app.help {
         help(f, area, app, t);
+    }
+}
+
+/// The password sudo wants for the plan on screen, or user mode instead.
+fn sudo_dialog(f: &mut Frame, area: Rect, app: &App, p: &crate::sudo_prompt::Prompt, t: &Theme) {
+    use crate::sudo_prompt::Focus;
+    let title = p.title();
+    let w = ((title.chars().count() + 4).max(44) as u16).min(area.width);
+    let h = 7.min(area.height);
+    let r = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, r);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(t.s(t.orange))
+        .title(Span::styled(
+            " sudo ",
+            Style::new().fg(t.orange).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let typing = p.focus == Focus::Password && !p.checking;
+    let mut field = vec![Span::styled(format!(" {}", p.masked()), t.s(t.fg))];
+    if typing {
+        field.push(Span::styled("▏", t.s(t.focus)));
+    }
+    let status = if p.checking {
+        Span::styled(" checking…", t.s(t.dim))
+    } else if let Some(e) = &p.error {
+        Span::styled(format!(" {e}"), t.s(t.red))
+    } else {
+        Span::raw("")
+    };
+    let button = |f: Focus, label: &str| {
+        let style = if p.focus == f {
+            Style::new()
+                .fg(t.fg)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            t.s(t.dim)
+        };
+        Span::styled(format!(" {label} "), style)
+    };
+    let mut buttons = vec![];
+    if p.user_mode {
+        buttons.extend([button(Focus::UserMode, "Use user mode"), Span::raw("   ")]);
+    }
+    buttons.push(button(Focus::Back, p.back_label));
+    let bw: u16 = buttons.iter().map(|s| s.width() as u16).sum();
+    let lines = vec![
+        Line::styled(format!(" {title}"), t.s(t.fg)),
+        Line::from(field),
+        Line::from(status),
+        Line::raw(""),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+    if inner.height > 1 {
+        app.hit(
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+            Hit::Sudo(Focus::Password),
+        );
+    }
+    if inner.height >= 5 {
+        let row = Rect::new(
+            inner.x + inner.width.saturating_sub(bw) / 2,
+            inner.y + 4,
+            bw.min(inner.width),
+            1,
+        );
+        hit_spans(
+            app,
+            row,
+            &buttons,
+            if p.user_mode {
+                vec![(0, Hit::Sudo(Focus::UserMode)), (2, Hit::Sudo(Focus::Back))]
+            } else {
+                vec![(0, Hit::Sudo(Focus::Back))]
+            },
+        );
+        f.render_widget(Paragraph::new(Line::from(buttons)), row);
     }
 }
 
@@ -1253,7 +1340,16 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         keys,
         app,
         t,
-        &[("Step", "↑↓"), ("Save as script", "c"), ("Back", "esc")],
+        if app.sudo.is_some() {
+            &[
+                ("Password", "type"),
+                ("Choose", "←→"),
+                ("Confirm", "enter"),
+                ("Back", "esc"),
+            ]
+        } else {
+            &[("Step", "↑↓"), ("Save as script", "c"), ("Back", "esc")]
+        },
         toast.or_else(|| {
             Some(Span::styled(
                 format!("Run {n} steps: enter"),
@@ -1701,6 +1797,48 @@ mod tests {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn the_sudo_dialog_asks_for_the_password_over_the_plan() {
+        use crate::sudo_prompt::{Check, Prompt};
+        let mut a = app();
+        a.selected = ["nmap".to_string()].into();
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        a.sudo = Some(Prompt::new(1, "Back", true));
+        for c in "abc".chars() {
+            a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let out = render(&a, 100, 30);
+        assert!(
+            out.contains("1 item in this plan needs sudo. Password:"),
+            "{out}"
+        );
+        assert!(out.contains("•••"), "{out}");
+        assert!(!out.contains("abc"), "{out}");
+        assert!(
+            out.contains("Use user mode") && out.contains("Back"),
+            "{out}"
+        );
+        assert!(out.contains("Confirm: enter"), "{out}");
+        // A click on a button presses it.
+        a.on_sudo(Check::Wrong);
+        let out = render(&a, 100, 30);
+        assert!(out.contains("Wrong password, try again"), "{out}");
+        let hit = a
+            .hits
+            .borrow()
+            .iter()
+            .find(|(_, h)| *h == Hit::Sudo(crate::sudo_prompt::Focus::Back))
+            .map(|(r, _)| *r)
+            .unwrap();
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: hit.x,
+            row: hit.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(a.sudo.is_none());
+    }
 
     fn render(app: &App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();

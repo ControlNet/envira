@@ -188,12 +188,22 @@ impl Plan {
     }
 
     pub fn needs_sudo(&self, facts: &Facts) -> bool {
-        !facts.is_root()
-            && self.units.iter().any(|u| {
+        self.sudo_units(facts) > 0
+    }
+
+    /// Units with a step that goes through sudo (none as root).
+    pub fn sudo_units(&self, facts: &Facts) -> usize {
+        if facts.is_root() {
+            return 0;
+        }
+        self.units
+            .iter()
+            .filter(|u| {
                 u.steps
                     .iter()
                     .any(|s| s.cmd.as_deref().is_some_and(uses_sudo))
             })
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -765,7 +775,16 @@ impl<'a> Planner<'a> {
         }
         for t in order {
             if t.route.scope == Scope::System && !self.facts.privilege.can_elevate() {
-                plan.skipped.push((t.id.clone(), "needs sudo".into()));
+                // Without sudo (user mode, or none here) the system install stays as it is; a
+                // user-scope copy takes over, ahead of it on PATH.
+                match self.choose(&t.id) {
+                    Ok(_) => self.commit(
+                        &t.id,
+                        "user copy: its system install needs sudo".into(),
+                        &mut plan,
+                    ),
+                    Err(_) => plan.skipped.push((t.id.clone(), "needs sudo".into())),
+                }
                 continue;
             }
             match self.entry_steps(&t.id, t.route.entry, t.route.scope, true) {
@@ -1018,25 +1037,34 @@ fn summarize(notes: &[String], facts: &Facts) -> String {
     if notes.is_empty() {
         return "no install method".into();
     }
+    // A route for another platform says nothing about why this one cannot install it.
+    let elsewhere = |n: &String| {
+        ["os:", "family:", "distro:"]
+            .iter()
+            .any(|w| n.contains(&format!(": {w}")))
+    };
     if notes
         .iter()
-        .all(|n| n.ends_with("needs sudo") || n.contains(": family:") || n.contains(": distro:"))
+        .all(|n| n.ends_with("needs sudo") || elsewhere(n))
     {
         if notes.iter().any(|n| n.ends_with("needs sudo")) {
             return "needs sudo".into();
         }
         return format!("no install method for {}", facts.distro_id);
     }
-    // Prefer the most specific note: one that is not about the distro family.
+    // Prefer the most specific note: one that is not about the platform.
     notes
         .iter()
-        .find(|n| !n.contains(": family:") && !n.contains(": distro:"))
+        .find(|n| !elsewhere(n))
         .cloned()
         .unwrap_or_else(|| notes[0].clone())
 }
 
 /// Plan as a shell script (TUI "copy as script", `--dry-run`).
 pub fn as_script(plan: &Plan) -> String {
+    // Run by hand, sudo asks on the terminal: `sudo -A` is for envira's own runs.
+    let sudo = regex::Regex::new(r"\bsudo -A\b").expect("valid regex");
+    let by_hand = |c: &str| sudo.replace_all(c, "sudo").into_owned();
     let mut s = String::from("#!/usr/bin/env bash\nset -eo pipefail\n");
     for u in &plan.units {
         s.push_str(&format!(
@@ -1047,7 +1075,8 @@ pub fn as_script(plan: &Plan) -> String {
             u.reason
         ));
         for st in &u.steps {
-            match (&st.check, &st.only_if, &st.cmd) {
+            let cmd = st.cmd.as_deref().map(by_hand);
+            match (&st.check, &st.only_if, &cmd) {
                 (_, Some(c), Some(cmd)) => s.push_str(&format!("if {c}; then {cmd}; fi\n")),
                 (Some(c), None, Some(cmd)) => s.push_str(&format!("{c} || {{ {cmd}; }}\n")),
                 (None, None, Some(cmd)) => s.push_str(&format!("{cmd}\n")),
@@ -1160,7 +1189,7 @@ mod tests {
         // fetch-release itself is not run with sudo: sudo would drop GITHUB_TOKEN.
         assert!(!cmd.starts_with("sudo"), "{cmd}");
         assert!(
-            cmd.ends_with(" --to /usr/local/bin --install-with 'sudo -n'"),
+            cmd.ends_with(" --to /usr/local/bin --install-with 'sudo -A'"),
             "{cmd}"
         );
         assert!(plan.needs_sudo(&f));
@@ -1247,8 +1276,8 @@ mod tests {
 
     #[test]
     fn sudo_is_found_inside_quotes() {
-        assert!(uses_sudo("envira fetch-release --install-with 'sudo -n'"));
-        assert!(uses_sudo("x --install-with \"sudo -n\""));
+        assert!(uses_sudo("envira fetch-release --install-with 'sudo -A'"));
+        assert!(uses_sudo("x --install-with \"sudo -A\""));
         assert!(!uses_sudo("envira fetch-release --install-with ''"));
         assert!(!uses_sudo("echo pseudo"));
     }
@@ -1262,7 +1291,7 @@ mod tests {
         assert_eq!(plan.units[0].via, "apt");
         assert_eq!(plan.units[0].scope, Scope::System);
         assert!(plan.units[0].steps[0].cmd.as_deref().unwrap().contains(
-            " apt-refresh && { sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y bat "
+            " apt-refresh && { sudo -A env DEBIAN_FRONTEND=noninteractive apt-get install -y bat "
         ));
         assert!(plan.needs_sudo(&f));
 
@@ -1300,10 +1329,10 @@ mod tests {
         assert_eq!(u.steps.len(), 2);
         assert_eq!(
             u.steps[1].cmd.as_deref().unwrap(),
-            "if sudo -n test -d /usr/local/bin/texlab; then printf '%s is a directory\\n' /usr/local/bin/texlab >&2; \
-             false; else sudo -n install -m 755 \"$(command -v texlab)\" /usr/local/bin/.texlab.envira-new \
-             && sudo -n mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab \
-             || { sudo -n rm -f /usr/local/bin/.texlab.envira-new; false; }; fi"
+            "if sudo -A test -d /usr/local/bin/texlab; then printf '%s is a directory\\n' /usr/local/bin/texlab >&2; \
+             false; else sudo -A install -m 755 \"$(command -v texlab)\" /usr/local/bin/.texlab.envira-new \
+             && sudo -A mv -f /usr/local/bin/.texlab.envira-new /usr/local/bin/texlab \
+             || { sudo -A rm -f /usr/local/bin/.texlab.envira-new; false; }; fi"
         );
         // The build runs as the user, the copy as root (under `sudo envira`).
         assert!(!u.steps[0].as_root && u.steps[1].as_root);
@@ -1410,10 +1439,10 @@ mod tests {
             check.contains("fs line --check /etc/sysctl.conf --match"),
             "{check}"
         );
-        assert!(u.steps[0].cmd.as_deref().unwrap().starts_with("sudo -n "));
+        assert!(u.steps[0].cmd.as_deref().unwrap().starts_with("sudo -A "));
         assert_eq!(
             u.steps[1].cmd.as_deref().unwrap(),
-            "sudo -n sysctl -w fs.inotify.max_user_watches=524288"
+            "sudo -A sysctl -w fs.inotify.max_user_watches=524288"
         );
         assert_eq!(u.verify.len(), 2);
     }
@@ -1618,6 +1647,17 @@ mod tests {
             "curl -fsSL https://herdr.dev/install.sh | sh -s --"
         );
         assert!(as_script(&plan).contains("# install herdr via script (requested)"));
+        // envira's runs use `sudo -A`; run by hand, sudo asks on the terminal.
+        let nmap = Planner::new(&c, &f, &present).plan(&["nmap".into()], false);
+        assert!(
+            nmap.units[0].steps[0]
+                .cmd
+                .as_deref()
+                .unwrap()
+                .contains("sudo -A ")
+        );
+        let script = as_script(&nmap);
+        assert!(script.contains("sudo env DEBIAN_FRONTEND") && !script.contains("sudo -A"));
     }
 
     /// Index of the first install entry of `id` using `via` (a method name or `run`).
@@ -1691,13 +1731,55 @@ mod tests {
     }
 
     #[test]
-    fn system_updates_need_sudo() {
+    fn a_system_install_out_of_reach_is_updated_by_a_user_copy() {
         let c = cat();
-        let mut f = Facts::sample(Path::new("/home/user"));
-        f.privilege = Privilege::None;
-        let present = set(&["bat"]);
-        let plan = Planner::new(&c, &f, &present).update(&[target("bat", 0, "apt", Scope::System)]);
-        assert!(plan.is_empty());
-        assert_eq!(plan.skipped[0].1, "needs sudo");
+        let f = Facts::sample(Path::new("/home/user")).without_sudo();
+        let present = set(&["bat", "nmap"]);
+        let plan = Planner::new(&c, &f, &present).update(&[
+            target("bat", entry_of(&c, "bat", "apt"), "apt", Scope::System),
+            target("nmap", entry_of(&c, "nmap", "apt"), "apt", Scope::System),
+        ]);
+        // bat has a user-scope route: a copy in ~/.local/bin, ahead of the system one.
+        assert_eq!(ids(&plan), vec!["bat"]);
+        let u = &plan.units[0];
+        assert_eq!((u.via.as_str(), u.scope), ("github-release", Scope::User));
+        assert_eq!(u.action, Action::Install);
+        assert_eq!(u.reason, "user copy: its system install needs sudo");
+        let cmd = u.steps[0].cmd.clone().unwrap();
+        assert!(cmd.contains("--to /home/user/.local/bin"), "{cmd}");
+        assert!(!plan.needs_sudo(&f));
+        // nmap has none: left as it is.
+        assert_eq!(plan.skipped, vec![("nmap".into(), "needs sudo".into())]);
+    }
+
+    #[test]
+    fn user_mode_plans_without_sudo() {
+        let c = cat();
+        let f = Facts::sample(Path::new("/home/user"));
+        let present = set(&["curl"]);
+        let targets: Vec<String> = ["bat", "nmap", "inotify-watches", "lsd"]
+            .map(String::from)
+            .to_vec();
+        let with = Planner::new(&c, &f, &present).plan(&targets, false);
+        assert!(with.needs_sudo(&f));
+        let user = f.without_sudo();
+        let mut p = Planner::new(&c, &user, &present);
+        p.prefer_system = false;
+        let plan = p.plan(&targets, false);
+        assert!(!plan.needs_sudo(&user));
+        assert!(plan.units.iter().all(|u| u.scope == Scope::User));
+        let bat = plan.units.iter().find(|u| u.id == "bat").unwrap();
+        assert_eq!(bat.via, "github-release");
+        // A portable build is not copied system-wide.
+        let lsd = plan.units.iter().find(|u| u.id == "lsd").unwrap();
+        assert_eq!(lsd.steps.len(), 1);
+        // Left out with the reason, not a route for another platform (`brew: os:macos`).
+        assert_eq!(
+            plan.skipped,
+            vec![
+                ("nmap".into(), "needs sudo".into()),
+                ("inotify-watches".into(), "needs sudo".into())
+            ]
+        );
     }
 }

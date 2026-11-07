@@ -43,7 +43,7 @@ pub trait Runner: Send + Sync {
         self.capture_as(cmd, timeout, false)
     }
 
-    /// `capture`, as root when `as_root`: directly when envira is root, else through `sudo -n`
+    /// `capture`, as root when `as_root`: directly when envira is root, else through `sudo -A`
     /// (which fails at once rather than ask for a password). HOME is the user's either way, so
     /// a check looks at the same files; PATH is the system's (`ROOT_PATH`).
     fn capture_as<'a>(
@@ -169,6 +169,12 @@ impl RealRunner {
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .kill_on_drop(true);
+        // `{sudo}` is `sudo -A`: it asks envira for the password while a run holds it, and
+        // fails at once otherwise (never a desktop askpass the user had set).
+        match crate::askpass::helper() {
+            Some(h) => c.env("SUDO_ASKPASS", h),
+            None => c.env_remove("SUDO_ASKPASS"),
+        };
         for (k, v) in build_env() {
             c.env(k, v);
         }
@@ -623,7 +629,7 @@ impl RealRunner {
         let cmd = if as_root && !euid_root {
             let q = |s: &str| crate::template::shell_quote(s);
             through_sudo = format!(
-                "sudo -n -- env HOME={} PATH={} ENVIRA_STATE_DIR={} bash -eo pipefail -c {}",
+                "sudo -A -- env HOME={} PATH={} ENVIRA_STATE_DIR={} bash -eo pipefail -c {}",
                 q(&e.home.display().to_string()),
                 ROOT_PATH,
                 q(&e.state_dir.display().to_string()),

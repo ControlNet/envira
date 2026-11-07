@@ -77,8 +77,16 @@ Bundles (`envira install <bundle>`):
 | `system` | Kernel and system settings |
 | `extras` | Older or redundant tools from the legacy scripts |
 
-- With sudo, packages go system-wide; without it, envira picks user-scope routes
-  (`--scope user` forces that).
+- With sudo, packages go system-wide; without it, envira picks user-scope routes. When a plan
+  needs sudo and sudo asks for a password, envira asks for it before the plan runs (in the TUI,
+  a dialog over the plan), with **Use user mode** next to it: the plan made again without sudo.
+  Items that have a user-scope route take it (bat from its GitHub release into `~/.local/bin`
+  instead of apt), the others are left out, and no password is asked. An update of a tool
+  installed system-wide puts a user-scope copy ahead of it on `PATH`.
+- `--scope user` is user mode from the start; `--scope system` uses sudo without offering it
+  (also where envira cannot tell that sudo is allowed, e.g. a sudoers rule for one user).
+  Without a terminal or with `-y`, where nobody can type the password, envira plans in user
+  mode unless `--scope system` is given.
 - macOS: install [Homebrew](https://brew.sh) first; envira uses it for most tools and does not
   install it itself. Without it, only tools with another route (cargo, pipx, npm, vendor scripts)
   are available. Linux-only items (Docker, the default-shell and sysctl configs) show as n/a.

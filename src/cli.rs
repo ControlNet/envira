@@ -22,7 +22,7 @@ pub struct Global {
     /// Use the catalog built into this envira, not the published one.
     #[arg(long, global = true, env = "ENVIRA_NO_REMOTE", value_parser = clap::builder::BoolishValueParser::new())]
     pub no_remote: bool,
-    /// Where `any`-scope methods install: system (needs sudo) or user. Default: system when sudo is available.
+    /// `user`: plan without sudo (user mode). `system`: use sudo, asking for its password up front. Default: sudo when available, and user mode offered when it asks for a password.
     #[arg(long, global = true, value_enum)]
     pub scope: Option<ScopeArg>,
     /// Stop and fail a step that runs longer than this many seconds.
@@ -171,7 +171,7 @@ pub enum Command {
         to: PathBuf,
         #[arg(long)]
         tag: Option<String>,
-        /// Command that copies the binaries into --to (`sudo -n` for system scope); the
+        /// Command that copies the binaries into --to (`sudo -A` for system scope); the
         /// download runs as the caller.
         #[arg(long, default_value = "")]
         install_with: String,

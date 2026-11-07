@@ -152,6 +152,18 @@ pub enum Hit {
     Key(KeyEvent),
     PlanRow(usize),
     StepRow(usize),
+    /// A control of the sudo password dialog.
+    Sudo(crate::sudo_prompt::Focus),
+}
+
+/// What a plan on screen was made from, so it can be made again in user mode.
+#[derive(Debug, Clone)]
+pub enum PlanReq {
+    Install(Vec<String>),
+    /// Targets, and selected tools left out (with why).
+    Update(Vec<UpdateTarget>, Vec<(String, String)>),
+    Revert(Vec<String>),
+    Retry(crate::plan::RetryTargets),
 }
 
 /// The key a key-bar entry stands for, when clicking it should press it. Navigation entries
@@ -202,6 +214,8 @@ pub enum Cmd {
     ExportScript(Plan),
     /// Leave the screen and run `envira self-update`.
     SelfUpdate,
+    /// Check the password typed in the sudo dialog.
+    Sudo(crate::sudo_prompt::Secret),
 }
 
 #[derive(Debug, Clone)]
@@ -324,6 +338,16 @@ pub struct App {
     pub detail: DetailTab,
     pub detail_scroll: usize,
     pub plan: Option<(Plan, String)>,
+    /// What `plan` was made from.
+    plan_req: Option<PlanReq>,
+    /// `plan` is made in user mode (chosen in the sudo dialog).
+    pub user_mode: bool,
+    /// `facts` without sudo, for user mode.
+    user_facts: Arc<Facts>,
+    /// The sudo password dialog over the plan.
+    pub sudo: Option<crate::sudo_prompt::Prompt>,
+    /// `--scope` was given: the sudo dialog does not offer user mode.
+    pub scope_fixed: bool,
     pub plan_cursor: usize,
     pub run: Option<RunView>,
     pub toast: Option<(String, Instant)>,
@@ -355,6 +379,7 @@ impl App {
         paths: Paths,
         prefer_system: bool,
     ) -> App {
+        let user_facts = Arc::new(facts.without_sudo());
         App {
             catalog,
             catalog_warnings: loaded.warnings.clone(),
@@ -379,6 +404,11 @@ impl App {
             detail: DetailTab::Info,
             detail_scroll: 0,
             plan: None,
+            plan_req: None,
+            user_mode: false,
+            user_facts,
+            sudo: None,
+            scope_fixed: false,
             plan_cursor: 0,
             run: None,
             toast: None,
@@ -439,8 +469,8 @@ impl App {
         }
         self.snap = Some(snap);
         if let Some(t) = self.pending_retry.take() {
-            let plan = self.retry_plan(&t);
-            self.open_plan(plan, format!("retry · {} unfinished", t.len()));
+            let title = format!("retry · {} unfinished", t.len());
+            self.open_req(PlanReq::Retry(t), title);
         }
         if self.reseed {
             self.reseed = false;
@@ -494,17 +524,47 @@ impl App {
     /// `Planner::finishing`).
     fn make_retry_install(&self, targets: &[String], done: &crate::plan::InstallsDone) -> Plan {
         let present = self.present();
-        let mut p = Planner::new(&self.catalog, &self.facts, &present);
-        p.prefer_system = self.prefer_system;
+        let mut p = self.planner(&present);
         p.finishing = done.clone();
         p.plan(targets, false)
     }
 
     pub fn make_update_plan(&self, targets: &[UpdateTarget]) -> Plan {
         let present = self.present();
-        let mut p = Planner::new(&self.catalog, &self.facts, &present);
-        p.prefer_system = self.prefer_system;
-        p.update(targets)
+        self.planner(&present).update(targets)
+    }
+
+    /// A planner for this machine, without sudo in user mode.
+    fn planner<'a>(&'a self, present: &'a BTreeSet<String>) -> Planner<'a> {
+        let facts = if self.user_mode {
+            &self.user_facts
+        } else {
+            &self.facts
+        };
+        let mut p = Planner::new(&self.catalog, facts, present);
+        p.prefer_system = self.prefer_system && !self.user_mode;
+        p
+    }
+
+    fn build(&self, req: &PlanReq) -> Plan {
+        match req {
+            PlanReq::Install(t) => self.make_plan(t),
+            PlanReq::Update(t, skipped) => {
+                let mut plan = self.make_update_plan(t);
+                plan.skipped.extend(skipped.iter().cloned());
+                plan
+            }
+            PlanReq::Revert(t) => self.make_revert(t, None),
+            PlanReq::Retry(t) => self.retry_plan(t),
+        }
+    }
+
+    /// Makes the plan `req` asks for (not in user mode) and opens it.
+    fn open_req(&mut self, req: PlanReq, title: String) {
+        self.user_mode = false;
+        let plan = self.build(&req);
+        self.plan_req = Some(req);
+        self.open_plan(plan, title);
     }
 
     /// Update targets: the selected tools (explicit), else every outdated tool; plus why
@@ -601,8 +661,7 @@ impl App {
         retrying: Option<&BTreeMap<String, Vec<String>>>,
     ) -> Plan {
         let present = self.present();
-        let mut p = Planner::new(&self.catalog, &self.facts, &present);
-        p.prefer_system = self.prefer_system;
+        let mut p = self.planner(&present);
         p.retrying = retrying.cloned();
         p.revert(targets)
     }
@@ -638,6 +697,9 @@ impl App {
     // --------------------------------------------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if self.sudo.is_some() {
+            return self.sudo_key(k);
+        }
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             if self.screen == Screen::Run {
                 return self.run_key(k);
@@ -723,6 +785,11 @@ impl App {
                 .map(|(_, h)| h.clone())
         };
         match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.sudo.is_some() => match find(false) {
+                Some(Hit::Sudo(f)) => self.sudo_click(f),
+                _ => vec![],
+            },
+            _ if self.sudo.is_some() => vec![],
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.help {
                     self.help = false;
@@ -789,6 +856,7 @@ impl App {
                 }
             }
             Hit::Key(k) => return self.on_key(k),
+            Hit::Sudo(f) => return self.sudo_click(f),
             Hit::PlanRow(i) => self.plan_cursor = i,
             Hit::StepRow(i) => {
                 if let Some(run) = &mut self.run {
@@ -930,9 +998,7 @@ impl App {
                         });
                     self.notify(why);
                 } else {
-                    let mut plan = self.make_update_plan(&targets);
-                    plan.skipped.extend(skipped);
-                    self.open_plan(plan, what);
+                    self.open_req(PlanReq::Update(targets, skipped), what);
                 }
             }
             KeyCode::Char('x') => {
@@ -953,14 +1019,14 @@ impl App {
                     self.notify("Only configs can be reverted");
                 } else {
                     let n = t.len();
-                    self.open_plan(self.make_revert(&t, None), format!("revert · {n} configs"));
+                    self.open_req(PlanReq::Revert(t), format!("revert · {n} configs"));
                 }
             }
             KeyCode::Char('t') => match self.last_run.clone() {
                 Some((id, t, _)) => {
                     let n = t.len();
-                    self.open_plan(
-                        self.retry_plan(&t),
+                    self.open_req(
+                        PlanReq::Retry(t),
                         format!("retry · {n} unfinished from run {id}"),
                     );
                 }
@@ -991,8 +1057,8 @@ impl App {
             return;
         }
         let n = t.len();
-        self.open_plan(
-            self.make_plan(&t),
+        self.open_req(
+            PlanReq::Install(t),
             format!("install · {n} {}", super::ui::plural(n, "item", "items")),
         );
     }
@@ -1104,6 +1170,109 @@ impl App {
         vec![]
     }
 
+    fn sudo_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        use crate::sudo_prompt::Action;
+        let Some(prompt) = &mut self.sudo else {
+            return vec![];
+        };
+        match prompt.key(k) {
+            Some(Action::Submit(password)) => vec![Cmd::Sudo(password)],
+            Some(Action::UserMode) => {
+                self.switch_to_user_mode();
+                vec![]
+            }
+            Some(Action::Back) => {
+                self.sudo = None;
+                vec![]
+            }
+            None => vec![],
+        }
+    }
+
+    fn sudo_click(&mut self, f: crate::sudo_prompt::Focus) -> Vec<Cmd> {
+        use crate::sudo_prompt::Focus;
+        match f {
+            Focus::Password => {
+                if let Some(p) = &mut self.sudo {
+                    p.focus = Focus::Password;
+                }
+                vec![]
+            }
+            Focus::UserMode | Focus::Back => {
+                if let Some(p) = &mut self.sudo {
+                    p.focus = f;
+                }
+                self.sudo_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            }
+        }
+    }
+
+    /// What sudo said to the password typed in the dialog: run the plan, or ask again.
+    pub fn on_sudo(&mut self, check: crate::sudo_prompt::Check) -> Vec<Cmd> {
+        if check != crate::sudo_prompt::Check::Ok {
+            if let Some(p) = &mut self.sudo {
+                p.failed(check);
+            }
+            return vec![];
+        }
+        self.sudo = None;
+        let Some((plan, title)) = self.plan.take() else {
+            return vec![];
+        };
+        self.selected.clear();
+        vec![Cmd::StartRun {
+            plan,
+            command: title.split(" · ").next().unwrap_or("run").to_string(),
+        }]
+    }
+
+    /// The plan on screen made again without sudo, to review before it runs.
+    fn switch_to_user_mode(&mut self) {
+        self.sudo = None;
+        let Some(req) = self.plan_req.clone() else {
+            return;
+        };
+        self.user_mode = true;
+        let plan = self.build(&req);
+        let title = self
+            .plan
+            .as_ref()
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default();
+        if plan.is_empty() {
+            self.plan = None;
+            self.screen = Screen::Dashboard;
+            let why = plan
+                .skipped
+                .first()
+                .map(|(id, w)| format!(" ({id}: {w})"))
+                .unwrap_or_default();
+            self.notify(format!("Nothing to do in user mode{why}"));
+            return;
+        }
+        let title = if title.ends_with(" · user mode") {
+            title
+        } else {
+            format!("{title} · user mode")
+        };
+        self.plan = Some((plan, title));
+        self.plan_cursor = 0;
+        self.plan_view = View::default();
+    }
+
+    /// sudo wanted a password after all (its ticket ran out since the plan was made): ask in
+    /// the dialog over this plan.
+    pub fn ask_sudo(&mut self, plan: Plan, command: String) {
+        let n = plan.sudo_units(&self.facts);
+        self.plan = Some((plan, command));
+        self.screen = Screen::Plan;
+        self.sudo = Some(crate::sudo_prompt::Prompt::new(
+            n,
+            "Back",
+            !self.scope_fixed,
+        ));
+    }
+
     fn plan_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
         let Some((plan, title)) = &self.plan else {
             self.screen = Screen::Dashboard;
@@ -1124,6 +1293,14 @@ impl App {
             KeyCode::Char('c') => return vec![Cmd::ExportScript(plan.clone())],
             KeyCode::Char('?') => self.help = true,
             KeyCode::Enter => {
+                if self.facts.sudo_asks_password() && plan.needs_sudo(&self.facts) {
+                    self.sudo = Some(crate::sudo_prompt::Prompt::new(
+                        plan.sudo_units(&self.facts),
+                        "Back",
+                        !self.scope_fixed,
+                    ));
+                    return vec![];
+                }
                 let cmd = Cmd::StartRun {
                     plan: plan.clone(),
                     command: title.split(" · ").next().unwrap_or("run").to_string(),
@@ -1459,6 +1636,81 @@ pub mod tests {
         assert!(a.search.is_empty());
         a.filter = Filter::All;
         assert_eq!(a.rows().len(), all);
+    }
+
+    /// The sample app on a machine where sudo asks for a password, with `ids` selected.
+    fn asking_sudo(ids: &[&str]) -> App {
+        let mut a = app();
+        let mut f = (*a.facts).clone();
+        f.privilege = crate::facts::Privilege::Sudo {
+            passwordless: false,
+        };
+        a.facts = Arc::new(f);
+        a.selected = ids.iter().map(|s| s.to_string()).collect();
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Plan);
+        a
+    }
+
+    #[test]
+    fn a_plan_needing_a_sudo_password_asks_for_it_or_user_mode() {
+        use crate::sudo_prompt::Check;
+        let mut a = asking_sudo(&["nmap", "lsd"]);
+        assert!(a.plan.as_ref().unwrap().0.needs_sudo(&a.facts));
+        // Enter asks for the password instead of running.
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(a.sudo.as_ref().unwrap().items, 2);
+        chars(&mut a, "pw");
+        let cmds = a.on_key(key(KeyCode::Enter));
+        assert!(matches!(&cmds[..], [Cmd::Sudo(p)] if p.as_str() == "pw"));
+        // A wrong one: asked again, nothing runs.
+        assert!(a.on_sudo(Check::Wrong).is_empty());
+        assert!(a.sudo.as_ref().unwrap().error.is_some());
+        chars(&mut a, "pw2");
+        a.on_key(key(KeyCode::Enter));
+        let cmds = a.on_sudo(Check::Ok);
+        assert!(a.sudo.is_none());
+        let [Cmd::StartRun { plan, command }] = &cmds[..] else {
+            panic!("{cmds:?}");
+        };
+        assert_eq!(command, "install");
+        assert!(plan.needs_sudo(&a.facts));
+    }
+
+    #[test]
+    fn user_mode_makes_the_plan_again_without_sudo() {
+        let mut a = asking_sudo(&["nmap", "lsd"]);
+        a.on_key(key(KeyCode::Enter));
+        // Esc goes back to the plan.
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.sudo.is_none() && a.screen == Screen::Plan);
+        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(KeyCode::Right));
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(a.sudo.is_none());
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert!(title.ends_with(" · user mode"), "{title}");
+        assert!(!plan.needs_sudo(&a.facts));
+        let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
+        assert!(ids.contains(&"lsd") && !ids.contains(&"nmap"), "{ids:?}");
+        assert!(plan.skipped.iter().any(|(id, _)| id == "nmap"));
+        // It runs without asking.
+        let cmds = a.on_key(key(KeyCode::Enter));
+        assert!(matches!(&cmds[..], [Cmd::StartRun { command, .. }] if command == "install"));
+    }
+
+    #[test]
+    fn user_mode_with_nothing_left_goes_back_to_the_dashboard() {
+        let mut a = asking_sudo(&["nmap"]);
+        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(KeyCode::Tab));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Dashboard);
+        assert!(
+            a.toast_text()
+                .unwrap()
+                .starts_with("Nothing to do in user mode")
+        );
     }
 
     #[test]

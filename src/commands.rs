@@ -582,8 +582,9 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
             );
         }
         let snap = sess.snapshot(Some(&state)).await;
-        let plan = sess.plan(&snap.present(), &snap.to_install(), false);
-        return run_plan(sess, plan, state, "install", opts).await;
+        let (present, missing) = (snap.present(), snap.to_install());
+        let build = || sess.plan(&present, &missing, false);
+        return run_plan(sess, &build, state, "install", opts).await;
     }
     let targets = sess.expand_targets(items)?;
     let mut added = false;
@@ -608,8 +609,9 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
     }
     let known = disk.is_some() || added;
     let snap = sess.snapshot(known.then_some(&state)).await;
-    let plan = sess.plan(&snap.present(), &targets, force);
-    run_plan(sess, plan, state, "install", opts).await
+    let present = snap.present();
+    let build = || sess.plan(&present, &targets, force);
+    run_plan(sess, &build, state, "install", opts).await
 }
 
 pub async fn update(
@@ -671,9 +673,13 @@ pub async fn update(
         }
         return Ok(if all_current { 0 } else { 1 });
     }
-    let mut plan = sess.update_plan(&targets);
-    plan.skipped.extend(skipped);
-    run_plan(sess, plan, state.unwrap_or_default(), "update", opts).await
+    let present = snap.present();
+    let build = || {
+        let mut plan = sess.update_plan(&present, &targets);
+        plan.skipped.extend(skipped.clone());
+        plan
+    };
+    run_plan(sess, &build, state.unwrap_or_default(), "update", opts).await
 }
 
 fn print_outdated(snap: &Snapshot) {
@@ -801,39 +807,52 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
         return Ok(0);
     }
     let mut snap = sess.snapshot(Some(&state)).await;
-    let mut plan = Plan::default();
-    if !t.install.is_empty() {
-        plan.extend(sess.retry_install_plan(&snap.present(), &t.install, &t.install_done));
-    }
-    if !t.update.is_empty() {
+    let (updates, update_skipped) = if t.update.is_empty() {
+        Default::default()
+    } else {
         sess.apply_latest(&mut snap, Fetch::CacheOnly).await;
-        let (targets, skipped) = snap.update_targets(&t.update);
-        let mut p = sess.update_plan(&targets);
-        p.skipped.extend(skipped);
-        plan.extend(p);
-    }
-    if !t.revert.is_empty() {
-        plan.extend(sess.revert_plan(&snap.present(), &t.revert, Some(&t.revert_done)));
-    }
-    run_plan(sess, plan, state, "retry", opts).await
+        snap.update_targets(&t.update)
+    };
+    let present = snap.present();
+    let build = || {
+        let mut plan = Plan::default();
+        if !t.install.is_empty() {
+            plan.extend(sess.retry_install_plan(&present, &t.install, &t.install_done));
+        }
+        if !t.update.is_empty() {
+            let mut p = sess.update_plan(&present, &updates);
+            p.skipped.extend(update_skipped.clone());
+            plan.extend(p);
+        }
+        if !t.revert.is_empty() {
+            plan.extend(sess.revert_plan(&present, &t.revert, Some(&t.revert_done)));
+        }
+        plan
+    };
+    run_plan(sess, &build, state, "retry", opts).await
 }
 
 pub async fn config(sess: &Session, items: &[String], revert: bool, opts: &RunOpts) -> Result<i32> {
     let state = sess.state()?;
     let snap = sess.snapshot(state.as_ref()).await;
-    let plan = if revert {
-        sess.revert_plan(&snap.present(), items, None)
-    } else {
+    if !revert {
         for i in items {
             if !sess.catalog.configs.contains_key(i) {
                 bail!("{i:?} is not a config");
             }
         }
-        sess.plan(&snap.present(), items, false)
+    }
+    let present = snap.present();
+    let build = || {
+        if revert {
+            sess.revert_plan(&present, items, None)
+        } else {
+            sess.plan(&present, items, false)
+        }
     };
     run_plan(
         sess,
-        plan,
+        &build,
         state.unwrap_or_default(),
         if revert {
             "config revert"
@@ -931,14 +950,60 @@ fn log_tail(path: &std::path::Path, n: usize) -> Vec<String> {
     lines[lines.len().saturating_sub(n)..].to_vec()
 }
 
+/// Plans with `build`, shows the plan and runs it once confirmed. When the plan needs sudo and
+/// sudo wants a password, typing it is the confirmation, and user mode is offered instead:
+/// `build` again without sudo. Where nobody can type it (`-y`, no terminal) the plan is made in
+/// user mode. `--scope system` asks for the password without offering user mode (also with
+/// `-y` on a terminal), and fails where it cannot ask.
 async fn run_plan(
     sess: &Session,
-    plan: Plan,
+    build: &dyn Fn() -> Plan,
     state: State,
     command: &str,
     opts: &RunOpts,
 ) -> Result<i32> {
-    print_plan(&plan, sess);
+    let mut plan = build();
+    let mut confirmed = false;
+    let mut password = None;
+    if !opts.dry_run && plan.needs_sudo(&sess.facts) && !app::sudo_without_password() {
+        let offer = sess.global.scope.is_none();
+        let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        if terminal && (!opts.yes || !offer) {
+            print_plan(&plan, sess);
+            println!();
+            let n = plan.sudo_units(&sess.facts);
+            let answer =
+                tokio::task::spawn_blocking(move || crate::sudo_prompt::ask_on_terminal(n, offer))
+                    .await??;
+            match answer {
+                Some(crate::sudo_prompt::Answer::Sudo(pw)) => {
+                    password = Some(pw);
+                    confirmed = true;
+                }
+                Some(crate::sudo_prompt::Answer::UserMode) => {
+                    sess.use_user_mode();
+                    plan = build();
+                    println!("In user mode:");
+                }
+                None => {
+                    println!("Aborted.");
+                    return Ok(1);
+                }
+            }
+        } else if offer {
+            println!(
+                "sudo needs a password, which this run cannot ask for: planning in user mode (--scope system uses sudo)."
+            );
+            sess.use_user_mode();
+            plan = build();
+        } else {
+            print_plan(&plan, sess);
+            bail!("sudo needs a password, which this run cannot ask for: run it on a terminal");
+        }
+    }
+    if !confirmed {
+        print_plan(&plan, sess);
+    }
     if plan.is_empty() || opts.dry_run {
         return Ok(
             if plan.skipped.iter().any(|(_, w)| w != "already present") && plan.is_empty() {
@@ -948,7 +1013,7 @@ async fn run_plan(
             },
         );
     }
-    if !opts.yes {
+    if !opts.yes && !confirmed {
         if !std::io::stdin().is_terminal() {
             bail!("refusing to run without confirmation; pass -y");
         }
@@ -976,11 +1041,13 @@ async fn run_plan(
         }
         None => state,
     };
-    let keepalive = if plan.needs_sudo(&sess.facts) {
-        app::ensure_sudo(&sess.facts)?
-    } else {
-        None
-    };
+    // The password goes to the steps' sudo through `askpass`; envira's own sudo (stopping
+    // root processes on cancel) uses the ticket it left, kept fresh.
+    let askpass = password
+        .map(crate::askpass::Askpass::start)
+        .transpose()
+        .context("cannot hand sudo's password to the steps")?;
+    let keepalive = plan.needs_sudo(&sess.facts).then(app::sudo_keepalive);
 
     let ids: Vec<String> = plan.units.iter().map(|u| u.id.clone()).collect();
     let actions: Vec<String> = plan
@@ -1041,6 +1108,7 @@ async fn run_plan(
     if let Some(k) = keepalive {
         k.abort();
     }
+    drop(askpass);
     let ok = record.units.iter().filter(|u| u.outcome == "ok").count();
     let failed = record.units.len() - ok;
     let unrecorded = record.unrecorded.clone();

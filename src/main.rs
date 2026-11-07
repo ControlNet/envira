@@ -1,5 +1,6 @@
 mod app;
 mod apt;
+mod askpass;
 mod catalog;
 mod cli;
 mod commands;
@@ -17,6 +18,7 @@ mod selfupdate;
 mod shellenv;
 mod state;
 mod status;
+mod sudo_prompt;
 mod template;
 mod tui;
 mod version;
@@ -26,6 +28,10 @@ use clap::Parser;
 use cli::{Cli, Command, ConfigCmd};
 
 fn main() {
+    // sudo asking a run's steps for the password (see `askpass`).
+    if let Some(code) = askpass::helper_main() {
+        std::process::exit(code);
+    }
     let cli = Cli::parse();
     if reads_only(&cli.command) {
         // SAFETY: called before any thread starts; restores the default action.

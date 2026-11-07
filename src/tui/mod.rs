@@ -38,6 +38,11 @@ enum AppEvent {
     Error(String),
     /// SIGTERM or SIGHUP (the terminal went away).
     Terminate,
+    /// What sudo said to the password typed in the dialog, with the password when it took it.
+    Sudo(
+        crate::sudo_prompt::Check,
+        Option<crate::sudo_prompt::Secret>,
+    ),
 }
 
 /// What SIGTERM/SIGHUP need besides the UI loop, which can be stuck writing to a terminal that
@@ -247,7 +252,11 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
         sess.prefer_system(),
     );
     app.checking_latest = true;
+    app.scope_fixed = sess.global.scope.is_some();
     let mut keepalive: Option<JoinHandle<()>> = None;
+    // sudo's password, from the dialog to the run that needs it, and its helper during the run.
+    let mut password: Option<crate::sudo_prompt::Secret> = None;
+    let mut askpass: Option<crate::askpass::Askpass> = None;
     // The running plan's events, read here and not forwarded: while the screen is busy they
     // wait in their own bounded queue.
     let mut exec_rx: Option<exec::EventRx> = None;
@@ -307,6 +316,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         if let Some(k) = keepalive.take() {
                             k.abort();
                         }
+                        drop(askpass.take());
                     }
                     app.on_exec(e);
                     if finished && app.quitting {
@@ -315,6 +325,10 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                             None => Ok(1),
                         };
                     }
+                }
+                AppEvent::Sudo(check, pw) => {
+                    password = pw;
+                    cmds.extend(app.on_sudo(check));
                 }
                 AppEvent::Terminate => {
                     if app.terminate() {
@@ -398,6 +412,14 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         Err(e) => app.notify(format!("{e:#}")),
                     }
                 }
+                Cmd::Sudo(password) => {
+                    let tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let check = crate::sudo_prompt::check(&password);
+                        let keep = (check == crate::sudo_prompt::Check::Ok).then_some(password);
+                        let _ = tx.send(AppEvent::Sudo(check, keep));
+                    });
+                }
                 Cmd::StartRun { plan, command } => {
                     let lock = match state::RunLock::acquire(&sess.paths, &sess.facts) {
                         Ok(l) => l,
@@ -408,43 +430,34 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         }
                     };
                     if plan.needs_sudo(&sess.facts) {
-                        match authorize_sudo(term, &mut input, &tx) {
-                            Ok(true) => keepalive = Some(crate::app::sudo_keepalive()),
-                            Ok(false) => {
-                                app.notify("sudo authentication failed; nothing was run");
+                        // The password typed in the dialog goes to the steps' sudo.
+                        match password.take() {
+                            Some(pw) => match crate::askpass::Askpass::start(pw) {
+                                Ok(a) => askpass = Some(a),
+                                Err(e) => {
+                                    app.screen = Screen::Dashboard;
+                                    app.notify(format!(
+                                        "cannot hand sudo's password to the steps: {e}"
+                                    ));
+                                    continue;
+                                }
+                            },
+                            // sudo wants a password after all (a ticket from this terminal,
+                            // which steps do not see, or one that ran out): ask in the dialog.
+                            None if !crate::app::sudo_without_password() => {
+                                drop(lock);
+                                app.ask_sudo(plan, command);
                                 continue;
                             }
-                            Err(e) => return Err(e),
+                            None => {}
                         }
+                        keepalive = Some(crate::app::sudo_keepalive());
                     }
                     exec_rx = Some(start_run(&sess, &mut app, plan, command, lock, &shutdown));
                 }
             }
         }
     }
-}
-
-/// Refreshes sudo credentials, prompting on the normal screen when a password is needed.
-fn authorize_sudo(
-    term: &mut DefaultTerminal,
-    input: &mut JoinHandle<()>,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) -> Result<bool> {
-    if crate::app::sudo_without_password() {
-        return Ok(true);
-    }
-    // Stop reading keys so the password prompt gets them, then hand the terminal back.
-    input.abort();
-    restore();
-    println!("envira: this plan needs sudo (asked once; kept alive during the run).");
-    let ok = std::process::Command::new("sudo")
-        .arg("-v")
-        .status()
-        .is_ok_and(|s| s.success());
-    *term = init();
-    term.clear()?;
-    *input = spawn_input(tx.clone());
-    Ok(ok)
 }
 
 /// `envira self-update` on the normal screen (it asks before changing anything), then offers

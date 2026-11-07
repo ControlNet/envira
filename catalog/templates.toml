@@ -9,7 +9,8 @@
 # for this machine is skipped, so a table of Linux assets never installs on a Mac.
 #   {home}     target user's home        {user}  target user's name
 #   {bin_dir}  [env.bin_dir] for the chosen scope
-#   {sudo}     `sudo -n` for system scope when not root, else nothing (unquoted)
+#   {sudo}     `sudo -A` for system scope when not root, else nothing (unquoted): sudo gets
+#              the password from envira when the run has it, and fails at once otherwise
 #   {envira}   absolute path of the running envira binary
 #   {id}       item id                   {bin}   item's primary binary
 # `${...}` is left to the shell, and `{{` / `}}` produce literal braces.

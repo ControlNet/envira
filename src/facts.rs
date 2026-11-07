@@ -46,6 +46,8 @@ pub struct Facts {
     pub gid: u32,
     /// Set when running as root on behalf of `SUDO_USER`: user-scope commands drop to this user.
     pub drop_to: Option<String>,
+    /// Planned without sudo by choice (`without_sudo`), though sudo may be there.
+    pub user_mode: bool,
 }
 
 impl Facts {
@@ -93,7 +95,27 @@ impl Facts {
             uid,
             gid,
             drop_to,
+            user_mode: false,
         }
+    }
+
+    /// This machine planned without sudo: envira's user mode (`--scope user`, or the choice
+    /// offered when sudo asks for a password). Items with a user-scope route take it, the
+    /// others are left out, and nothing asks for a password.
+    pub fn without_sudo(&self) -> Facts {
+        Facts {
+            privilege: Privilege::None,
+            user_mode: true,
+            ..self.clone()
+        }
+    }
+
+    /// Sudo needs a password before a plan can use it.
+    pub fn sudo_asks_password(&self) -> bool {
+        self.privilege
+            == Privilege::Sudo {
+                passwordless: false,
+            }
     }
 
     pub fn is_root(&self) -> bool {
@@ -132,6 +154,7 @@ impl Facts {
             Privilege::Sudo {
                 passwordless: false,
             } => "sudo (password)",
+            Privilege::None if self.user_mode => "user mode",
             Privilege::None => "no sudo",
         };
         let mut s = format!(
@@ -170,6 +193,7 @@ impl Facts {
             uid: 1000,
             gid: 1000,
             drop_to: None,
+            user_mode: false,
         }
     }
 }
@@ -320,18 +344,33 @@ fn libc_passwd_by_uid(uid: u32) -> Option<(String, PathBuf, u32)> {
     }
 }
 
+/// Whether a step can run `sudo` without a password: `sudo -n true` in a session of its own, as
+/// steps run. A ticket the user's own `sudo` left in this terminal does not count, as steps do
+/// not see it. `true` rather than `-v`: validating needs *every* matching rule to be NOPASSWD
+/// (openSUSE ships `ALL ALL=(ALL) ALL` next to a user's NOPASSWD rule), running one command
+/// does not.
+pub fn sudo_runs_without_password() -> bool {
+    use std::os::unix::process::CommandExt;
+    let mut c = Command::new("sudo");
+    c.args(["-n", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe and touches no memory.
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    c.status().is_ok_and(|s| s.success())
+}
+
 fn probe_sudo(user: &str) -> Privilege {
     if !which("sudo") {
         return Privilege::None;
     }
-    let ok = Command::new("sudo")
-        .args(["-n", "true"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if ok {
+    if sudo_runs_without_password() {
         return Privilege::Sudo { passwordless: true };
     }
     let groups = Command::new("id")

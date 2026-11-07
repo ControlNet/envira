@@ -120,7 +120,7 @@ impl Vars {
         b.insert(
             "sudo",
             if system_scope && !facts.is_root() {
-                "sudo -n".into()
+                "sudo -A".into()
             } else {
                 String::new()
             },
@@ -485,7 +485,7 @@ mod tests {
     fn sudo_only_for_system_scope_when_not_root() {
         let facts = Facts::sample(Path::new("/home/user"));
         let v = Vars::new(&facts, "x", "x", "/usr/local/bin", true);
-        assert_eq!(v.expand("{sudo} apt", Ctx::Shell).unwrap(), "sudo -n apt");
+        assert_eq!(v.expand("{sudo} apt", Ctx::Shell).unwrap(), "sudo -A apt");
     }
 
     #[test]

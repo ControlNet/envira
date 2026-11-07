@@ -1606,7 +1606,7 @@ mod tests {
         let s = setup();
         let l = |u: &Unit| lanes(&s.ctx.catalog, u).into_iter().collect::<Vec<_>>();
         assert_eq!(
-            l(&unit("a", "sudo -n apt-get install -y bat", &[])),
+            l(&unit("a", "sudo -A apt-get install -y bat", &[])),
             ["packages"]
         );
         assert_eq!(
