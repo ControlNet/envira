@@ -754,8 +754,8 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             let via = match (&it.via, planned) {
                 (Some(v), true) => format!("→ {}", via_name(v)),
                 (Some(v), false) => via_name(v).to_string(),
-                (None, _) if it.label == Label::NotApplicable => String::new(),
-                (None, _) => "—".into(),
+                // Unknown: the note says where it came from.
+                (None, _) => String::new(),
             };
             let scope = match it.scope {
                 Some(s) if it.label != Label::NotApplicable => Span::styled(
@@ -1132,7 +1132,7 @@ pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
 fn managed_by(o: Ownership) -> &'static str {
     match o {
         Ownership::Managed => "envira",
-        Ownership::Adoptable => "you · A",
+        Ownership::Adoptable => "not envira · A",
         Ownership::External => "other",
     }
 }
@@ -1729,6 +1729,7 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("status", "✓ installed  ↑ outdated  ! failed or drifted"),
     ("", "◌ wanted  ◆ new  · available  – not for this machine"),
     ("Selected", "+ install  ↑ update  ◇ config  ↺ revert"),
+    ("Bundles", "● followed  ○ not · 7/9: installed / total"),
 ];
 
 /// Keys of the current screen.
@@ -2377,6 +2378,40 @@ mod tests {
         )]));
         let s = render(&a, 140, 40);
         assert!(s.contains("Selected 1 · 1 step─"), "{s}");
+    }
+
+    #[test]
+    fn rows_say_who_manages_a_tool_without_a_dash_for_an_unknown_route() {
+        let mut a = app();
+        let mut snap = a.snap.clone().unwrap();
+        for i in &mut snap.items {
+            match i.id.as_str() {
+                "bat" => {
+                    i.ownership = Some(Ownership::Adoptable);
+                }
+                "yazi" => {
+                    i.ownership = Some(Ownership::External);
+                    i.via = None;
+                    i.path = Some(a.facts.home.join(".nvm/bin/yazi").display().to_string());
+                }
+                _ => {}
+            }
+        }
+        a.on_snapshot(snap, None);
+        a.filter = Filter::All;
+        let s = render(&a, 180, 160);
+        let row = |id: &str| {
+            s.lines()
+                .find(|l| l.contains(&format!(" {id} ")))
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(row("bat").contains("not envira · A"), "{}", row("bat"));
+        let yazi = row("yazi");
+        assert!(
+            yazi.contains("other · ~/.nvm/") && !yazi.contains('—'),
+            "{yazi}"
+        );
     }
 
     #[test]
