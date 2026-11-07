@@ -1053,6 +1053,20 @@ impl App {
             .collect()
     }
 
+    /// Shows items as wanted (or not) at once when a bundle is followed (or no longer), before
+    /// the next detection works it out.
+    fn set_wanted(&mut self, ids: &[String], wanted: bool) {
+        let Some(snap) = &mut self.snap else { return };
+        for i in snap.items.iter_mut().filter(|i| ids.contains(&i.id)) {
+            i.desired = wanted;
+            i.label = match (i.label, wanted) {
+                (Label::Available, true) => Label::Missing,
+                (Label::Missing, false) => Label::Available,
+                (l, _) => l,
+            };
+        }
+    }
+
     /// Enter on the dashboard: install what is selected and update what of it is outdated.
     fn install_selection(&mut self) {
         let t = self.selected_ids();
@@ -1066,7 +1080,7 @@ impl App {
         let title = match (rest, upd) {
             (_, 0) => format!("install · {}", items(rest)),
             (0, _) => format!("update · {}", items(upd)),
-            _ => format!("install · {} · update · {upd}", items(rest)),
+            _ => format!("install {rest} · update {upd}"),
         };
         self.open_req(PlanReq::Install(t), title);
     }
@@ -1146,14 +1160,20 @@ impl App {
                         .iter()
                         .flat_map(|o| self.catalog.bundle_items(o))
                         .collect();
-                    for i in self.catalog.bundle_items(&b) {
-                        if !others.contains(&i) {
-                            self.selected.remove(&i);
-                        }
+                    let dropped: Vec<String> = self
+                        .catalog
+                        .bundle_items(&b)
+                        .into_iter()
+                        .filter(|i| !others.contains(i))
+                        .collect();
+                    for i in &dropped {
+                        self.selected.remove(i);
                     }
+                    self.set_wanted(&dropped, false);
                     self.notify(format!("No longer following {name}"));
                 } else {
                     kept.push(b.clone());
+                    self.set_wanted(&self.catalog.bundle_items(&b), true);
                     let missing = self.missing_items(&b);
                     let n = missing.len();
                     self.selected.extend(missing);
@@ -1230,7 +1250,7 @@ impl App {
         self.selected.clear();
         vec![Cmd::StartRun {
             plan,
-            command: title.split(" · ").next().unwrap_or("run").to_string(),
+            command: title.split_whitespace().next().unwrap_or("run").to_string(),
         }]
     }
 
@@ -1311,7 +1331,7 @@ impl App {
                 }
                 let cmd = Cmd::StartRun {
                     plan: plan.clone(),
-                    command: title.split(" · ").next().unwrap_or("run").to_string(),
+                    command: title.split_whitespace().next().unwrap_or("run").to_string(),
                 };
                 self.plan = None;
                 self.selected.clear();
@@ -1827,7 +1847,7 @@ pub mod tests {
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.screen, Screen::Plan);
         let (plan, title) = a.plan.as_ref().unwrap();
-        assert_eq!(title, "install · 2 items · update · 1");
+        assert_eq!(title, "install 2 · update 1");
         let upd = plan
             .units
             .iter()
@@ -1843,7 +1863,7 @@ pub mod tests {
         assert!(plan.units.iter().all(|u| u.id != "bat"));
         assert!(plan.skipped.iter().any(|(id, _)| id == "bat"));
         let cmds = a.on_key(key(KeyCode::Enter));
-        assert!(matches!(&cmds[..], [Cmd::StartRun { .. }]));
+        assert!(matches!(&cmds[..], [Cmd::StartRun { command, .. }] if command == "install"));
 
         // Only outdated tools selected: an update plan.
         let mut a = app();

@@ -602,8 +602,9 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Span::styled(app.selected.len().to_string(), t.s(t.magenta)),
                 Span::styled(
                     format!(
-                        " → {} steps{}",
+                        " · {} {}{}",
                         p.units.len(),
+                        plural(p.units.len(), "step", "steps"),
                         if deps > 0 {
                             format!(" (+{deps} deps)")
                         } else {
@@ -720,7 +721,7 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         "status",
         "via",
         "scope",
-        "owner / note",
+        "managed by / note",
     ])
     .style(t.s(t.dim));
     let body: Vec<Row> = rows
@@ -734,12 +735,13 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Label::NotApplicable => it.reason.clone().unwrap_or_default(),
                 Label::Failed => it.last_error.clone().unwrap_or_default(),
                 Label::Drifted => "check fails after envira applied it".into(),
-                _ if update_needs_sudo(app, it) => "managed · update needs sudo".into(),
+                _ if update_needs_sudo(app, it) => "envira · update needs sudo".into(),
                 _ => match (it.ownership, &it.path) {
                     (Some(Ownership::External), Some(p)) => {
-                        format!("external · {}", short_path(app, p))
+                        format!("other · {}", short_path(app, p))
                     }
-                    (o, _) => o.map(|o| o.as_str().to_string()).unwrap_or_default(),
+                    (Some(o), _) => managed_by(o).to_string(),
+                    (None, _) => String::new(),
                 },
             };
             let note_color = match (it.label, it.ownership) {
@@ -829,6 +831,11 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             "detecting…"
         } else {
             "no items match"
+        };
+        let msg = if app.snap.is_some() && app.filter != Filter::All {
+            format!("{msg} (filter: {})", app.filter.name())
+        } else {
+            msg.to_string()
         };
         f.render_widget(Paragraph::new(Span::styled(msg, t.s(t.dim))), inner);
         return;
@@ -980,7 +987,7 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
         lines.push(Line::from(spans));
         if it.ownership == Some(Ownership::Adoptable) {
             lines.push(Line::styled(
-                "installed outside envira, updated in place · A records it as managed (no reinstall)",
+                "installed outside envira · A: let envira manage it (no reinstall)",
                 t.s(t.dim),
             ));
         }
@@ -1121,6 +1128,24 @@ pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 
+/// Who looks after an installed tool, as the items table says it.
+fn managed_by(o: Ownership) -> &'static str {
+    match o {
+        Ownership::Managed => "envira",
+        Ownership::Adoptable => "you · A",
+        Ownership::External => "other",
+    }
+}
+
+/// A unit's reason on screen: what the user picked reads as "selected".
+fn why(reason: &str) -> String {
+    if reason == "requested" {
+        "selected".into()
+    } else {
+        reason.to_string()
+    }
+}
+
 /// A route's name on screen: a catalog's raw `run` commands read as "command".
 fn via_name(v: &str) -> &str {
     if v == "run" { "command" } else { v }
@@ -1187,7 +1212,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ));
         }
     }
-    first.push(Span::styled("+ shell env", t.s(t.dim)));
+    first.push(Span::styled("+ shell setup", t.s(t.dim)));
     let sudo = if plan.needs_sudo(&app.facts) {
         Span::styled(
             if app.facts.sudo_asks_password() {
@@ -1202,10 +1227,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     };
     let low = plan.low_space(&app.facts);
     let rest = if low.is_empty() {
-        Span::styled(
-            " · steps run in order · a failed step only blocks its dependents",
-            t.s(t.dim),
-        )
+        Span::raw("")
     } else {
         let what: Vec<String> = low
             .iter()
@@ -1251,7 +1273,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Cell::from(u.id.clone()),
                 Cell::from(Span::styled(via_name(&u.via).to_string(), t.s(t.dim))),
                 Cell::from(Span::styled(u.scope.to_string(), t.s(t.dim))),
-                Cell::from(Span::styled(u.reason.clone(), t.s(t.dim))),
+                Cell::from(Span::styled(why(&u.reason), t.s(t.dim))),
             ]);
             if i == app.plan_cursor {
                 row.style(t.cursor())
@@ -1318,8 +1340,6 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ]));
         }
         lines.push(Line::from(vec![
-            Span::styled("cwd ", t.s(t.dim)),
-            Span::raw("$ENVIRA_TMP (removed after) · "),
             Span::styled("log ", t.s(t.dim)),
             Span::raw(format!("logs/<run>/{}.log", u.id)),
         ]));
@@ -1578,7 +1598,7 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t.s(t.dim),
             ),
         ]));
-        lines.push(Line::styled(u.reason.clone(), t.s(t.dim)));
+        lines.push(Line::styled(why(&u.reason), t.s(t.dim)));
         if !u.deps.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("needs ", t.s(t.dim)),
@@ -1605,15 +1625,15 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     }
     if let Some(r) = &run.shell_env {
         lines.push(match r {
-            Ok(files) if files.is_empty() => Line::styled("shell env unchanged", t.s(t.dim)),
+            Ok(files) if files.is_empty() => Line::styled("shell setup unchanged", t.s(t.dim)),
             Ok(files) => Line::styled(
                 format!(
-                    "shell env: {} files updated · open a new shell",
+                    "shell setup: {} files updated · open a new shell",
                     files.len()
                 ),
                 t.s(t.green),
             ),
-            Err(e) => Line::styled(format!("shell env not updated: {e}"), t.s(t.red)),
+            Err(e) => Line::styled(format!("shell setup not updated: {e}"), t.s(t.red)),
         });
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
@@ -1720,6 +1740,10 @@ fn help_rows(screen: Screen) -> &'static [(&'static str, &'static str)] {
             ("enter", "run the plan"),
             ("c", "save the plan as a shell script"),
             ("esc  q", "back without running"),
+            (
+                "",
+                "steps run in order; a failed step blocks only its dependents",
+            ),
         ],
         Screen::Run => &[
             ("↑↓ j k", "choose a step (stops following)"),
@@ -1971,6 +1995,7 @@ mod tests {
         a.selected = ["rust-toolchain".to_string(), "codex".to_string()].into();
         let s = render(&a, 140, 40);
         assert!(s.contains("↑ rust-toolchain"), "{s}");
+        assert!(s.contains("Selected 2 · 5 steps (+3 deps)"), "{s}");
         a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = render(&a, 140, 40);
         assert!(s.contains("1 update") && !s.contains("0 configs"), "{s}");
@@ -2238,7 +2263,7 @@ mod tests {
         let codex = row(&mut a, "codex");
         assert!(codex.contains("→ npm") && codex.contains("user"), "{codex}");
         let yazi = row(&mut a, "yazi");
-        assert!(yazi.contains("external · ~/.nvm/versions/…"), "{yazi}");
+        assert!(yazi.contains("other · ~/.nvm/versions/…"), "{yazi}");
         a.search.clear();
         a.prefer_system = false;
         let s = render(&a, 180, 60);
@@ -2308,6 +2333,64 @@ mod tests {
             cmds[..],
             [Cmd::SaveBundles { .. }, Cmd::Refresh(_)]
         ));
+    }
+
+    #[test]
+    fn following_a_bundle_shows_its_missing_items_as_wanted_at_once() {
+        let mut a = app();
+        let i = a
+            .bundle_ids()
+            .iter()
+            .position(|b| !a.subscribed(b))
+            .unwrap();
+        let b = a.bundle_ids()[i].clone();
+        let lacking: Vec<String> = a
+            .catalog
+            .bundle_items(&b)
+            .into_iter()
+            .filter(|id| {
+                a.snap
+                    .as_ref()
+                    .and_then(|s| s.get(id))
+                    .is_some_and(|it| it.label == Label::Available)
+            })
+            .collect();
+        assert!(!lacking.is_empty(), "the fixture bundle {b} lacks nothing");
+        let label = |a: &App, id: &str| a.snap.as_ref().unwrap().get(id).unwrap().label;
+        click(&mut a, Hit::BundleMark(i));
+        for id in &lacking {
+            assert_eq!(label(&a, id), Label::Missing, "{id}");
+        }
+        click(&mut a, Hit::BundleMark(i));
+        for id in &lacking {
+            assert_eq!(label(&a, id), Label::Available, "{id}");
+        }
+    }
+
+    #[test]
+    fn one_selected_step_is_singular() {
+        let mut a = app();
+        a.selected = ["bat".to_string()].into();
+        a.on_latest(std::collections::BTreeMap::from([(
+            "bat".to_string(),
+            crate::latest::Latest::Version("99.0".into()),
+        )]));
+        let s = render(&a, 140, 40);
+        assert!(s.contains("Selected 1 · 1 step─"), "{s}");
+    }
+
+    #[test]
+    fn an_empty_list_names_the_filter_that_hides_items() {
+        let mut a = app();
+        a.filter = Filter::Outdated;
+        a.search = "no-such-item".into();
+        assert!(render(&a, 140, 40).contains("no items match (filter: Outdated)"));
+        a.filter = Filter::All;
+        let s = render(&a, 140, 40);
+        assert!(
+            s.contains("no items match") && !s.contains("(filter:"),
+            "{s}"
+        );
     }
 
     #[test]
