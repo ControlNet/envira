@@ -119,7 +119,7 @@ pub fn summary_line(snap: &Snapshot) -> String {
     let failed = snap.count(|i| matches!(i.label, Label::Failed | Label::Drifted));
     let outdated = snap.count(|i| i.label == Label::Outdated);
     format!(
-        "{present}/{applicable} present · {outdated} outdated · {missing} missing · {new} new · {failed} failed or drifted"
+        "{present}/{applicable} present · {outdated} outdated · {missing} wanted · {new} new · {failed} failed or drifted"
     )
 }
 
@@ -572,7 +572,7 @@ pub async fn install(sess: &Session, items: &[String], force: bool, opts: &RunOp
         }
         if state.bundles.is_empty() && state.include.is_empty() {
             bail!(
-                "no bundles kept on this machine yet; use `envira install <bundle>` (available: {}) or pick bundles in the TUI",
+                "no bundles followed on this machine yet; use `envira install <bundle>` (available: {}) or pick bundles in the TUI",
                 sess.catalog
                     .bundles
                     .keys()

@@ -173,7 +173,8 @@ fn bar<'a>(t: &Theme, width: u16, segments: &[(usize, Color)], total: usize) -> 
 fn label_color(t: &Theme, l: Label) -> Color {
     match l {
         Label::Installed | Label::Applied => t.green,
-        Label::Missing | Label::Failed => t.red,
+        Label::Failed => t.red,
+        Label::Missing => t.yellow,
         Label::New => t.cyan,
         Label::Drifted => t.yellow,
         Label::Outdated => t.blue,
@@ -354,8 +355,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     }
     let hint = app.facts.privilege.can_elevate().then_some(what.len());
     if hint.is_some() {
-        let other = if app.prefer_system { "user" } else { "system" };
-        what.push(Span::styled(format!(" (S: {other})"), t.s(t.dim)));
+        what.push(Span::styled(" · S switches", t.s(t.dim)));
     }
     let x = header(f, h, app, t, what.clone());
     if let Some(i) = hint {
@@ -383,21 +383,27 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             )
         })
     });
-    let keyset: &[(&str, &str)] = if app.searching {
-        &[("Filter", "type"), ("Keep", "enter"), ("Clear", "esc")]
+    let keyset: Vec<(&str, &str)> = if app.searching {
+        vec![("Filter", "type"), ("Keep", "enter"), ("Clear", "esc")]
     } else {
-        &[
+        let mut k = vec![
             ("Panels", "← →"),
             ("Select", "space"),
-            ("Install", "enter"),
+            ("Install/Update", "enter"),
             ("Update all", "u"),
+        ];
+        if app.last_run.is_some() {
+            k.push(("Retry", "t"));
+        }
+        k.extend([
             ("Search", "/"),
             ("Filter", "f"),
             ("Help", "?"),
             ("Quit", "q"),
-        ]
+        ]);
+        k
     };
-    keybar(f, keys, app, t, keyset, right_span, None);
+    keybar(f, keys, app, t, &keyset, right_span, None);
 }
 
 fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
@@ -408,7 +414,6 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let applicable = snap.count(|i| i.present || i.label != Label::NotApplicable);
     let present = snap.count(|i| i.present);
     let to_install = snap.to_install().len();
-    let missing = snap.count(|i| i.label == Label::Missing);
     let new = snap.count(|i| i.label == Label::New);
     let failed: Vec<&str> = snap
         .items
@@ -435,7 +440,11 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 t,
                 to_install,
                 t.cyan,
-                format!("to install · {missing} missing {new} new"),
+                if new > 0 {
+                    format!("to install · {new} new in catalog")
+                } else {
+                    "to install".into()
+                },
             ),
             bar(t, cols[1].width, &[(to_install, t.cyan)], applicable),
         ),
@@ -465,7 +474,7 @@ fn overview(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 if app.checking_latest {
                     format!("outdated · checking{}", ".".repeat(app.tick as usize % 4))
                 } else if outdated > 0 {
-                    "outdated · u updates".into()
+                    "outdated · u updates all".into()
                 } else {
                     "outdated".into()
                 },
@@ -504,7 +513,7 @@ fn bundles(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         t,
         "Bundles",
         app.focus == Focus::Bundles,
-        vec![Span::styled("space keeps", t.s(t.dim))],
+        vec![Span::styled("space follows", t.s(t.dim))],
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -599,14 +608,14 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         }
         None => vec![],
     };
-    let block = pane(t, "To install", false, extra);
+    let block = pane(t, "Selected", false, extra);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(plan) = plan else {
         let lines = vec![
             Line::styled("Nothing selected.", t.s(t.dim)),
             Line::styled("space: select bundles, items", t.s(t.dim)),
-            Line::styled("enter: install them", t.s(t.dim)),
+            Line::styled("enter: install / update them", t.s(t.dim)),
         ];
         f.render_widget(Paragraph::new(lines), inner);
         return;
@@ -733,8 +742,8 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             // Missing items show the route an install would take, behind an arrow.
             let planned = !it.present && it.label != Label::NotApplicable;
             let via = match (&it.via, planned) {
-                (Some(v), true) => format!("→ {v}"),
-                (Some(v), false) => v.clone(),
+                (Some(v), true) => format!("→ {}", via_name(v)),
+                (Some(v), false) => via_name(v).to_string(),
                 (None, _) if it.label == Label::NotApplicable => String::new(),
                 (None, _) => "—".into(),
             };
@@ -751,12 +760,12 @@ fn table(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             };
             let version = match (it.kind, it.method_version.as_ref().or(it.version.as_ref())) {
                 (Kind::Config, _) => String::new(),
-                (_, Some(v)) => v.clone(),
+                (_, Some(v)) => truncate(v, 9),
                 _ => "—".into(),
             };
             let latest = match (&it.latest, it.present) {
                 (Some(l), true) => Span::styled(
-                    l.clone(),
+                    truncate(l, 9),
                     t.s(if it.label == Label::Outdated {
                         t.blue
                     } else {
@@ -894,7 +903,7 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
             first.push(Span::styled(s.to_string(), t.s(c)));
         }
         if let Some(v) = &it.via {
-            first.push(Span::styled(format!(" · via {v}"), t.s(t.dim)));
+            first.push(Span::styled(format!(" · via {}", via_name(v)), t.s(t.dim)));
         }
     }
     let mut lines = vec![
@@ -947,12 +956,12 @@ fn info_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a>> 
             Some(r) if update_needs_sudo(app, it) => spans.push(Span::styled(
                 format!(
                     "  · updates via {} (system) need sudo, which this user lacks",
-                    r.via
+                    via_name(&r.via)
                 ),
                 t.s(t.yellow),
             )),
             Some(r) => spans.push(Span::styled(
-                format!("  · updates via {} ({})", r.via, r.scope),
+                format!("  · updates via {} ({})", via_name(&r.via), r.scope),
                 t.s(t.dim),
             )),
             None => spans.push(Span::styled(
@@ -1010,7 +1019,7 @@ fn command_lines<'a>(app: &'a App, it: &'a ItemStatus, t: &Theme) -> Vec<Line<'a
         )],
         Ok(c) => {
             let mut lines = vec![Line::styled(
-                format!("via {} · scope {}", c.via, c.scope),
+                format!("via {} · scope {}", via_name(&c.via), c.scope),
                 t.s(t.dim),
             )];
             for s in c.steps {
@@ -1104,6 +1113,11 @@ pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 
+/// A route's name on screen: a catalog's raw `run` commands read as "command".
+fn via_name(v: &str) -> &str {
+    if v == "run" { "command" } else { v }
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -1167,7 +1181,14 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     }
     first.push(Span::styled("+ shell env", t.s(t.dim)));
     let sudo = if plan.needs_sudo(&app.facts) {
-        Span::styled("! sudo needed: asked once before the run", t.s(t.yellow))
+        Span::styled(
+            if app.facts.sudo_asks_password() {
+                "! needs sudo: enter asks for its password, or offers user mode"
+            } else {
+                "! needs sudo (no password needed here)"
+            },
+            t.s(t.yellow),
+        )
     } else {
         Span::styled("✓ sudo not needed", t.s(t.green))
     };
@@ -1220,7 +1241,7 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Cell::from(Span::styled((i + 1).to_string(), t.s(t.dim))),
                 Cell::from(Span::styled(u.action.as_str(), t.s(c))),
                 Cell::from(u.id.clone()),
-                Cell::from(Span::styled(u.via.clone(), t.s(t.dim))),
+                Cell::from(Span::styled(via_name(&u.via).to_string(), t.s(t.dim))),
                 Cell::from(Span::styled(u.scope.to_string(), t.s(t.dim))),
                 Cell::from(Span::styled(u.reason.clone(), t.s(t.dim))),
             ]);
@@ -1540,7 +1561,12 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 Style::new().fg(t.blue).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" · {} via {} · {}", u.action.as_str(), u.via, u.scope),
+                format!(
+                    " · {} via {} · {}",
+                    u.action.as_str(),
+                    via_name(&u.via),
+                    u.scope
+                ),
                 t.s(t.dim),
             ),
         ]));
@@ -1650,9 +1676,9 @@ fn run_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
 const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("← →  h l", "Bundles · Items"),
     ("↑↓  j k", "move"),
-    ("space", "bundle: keep it and select what it misses"),
+    ("space", "bundle: follow it and select what it misses"),
     ("space", "item: select or unselect it"),
-    ("a  n", "select everything missing in view · nothing"),
+    ("a  n", "select everything not installed in view · nothing"),
     ("enter", "install the selection, update its outdated tools"),
     ("u", "update every outdated tool"),
     ("/  f", "search · cycle status filter"),
@@ -1661,13 +1687,21 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("S", "new installs: system (sudo) or user scope"),
     (
         "A",
-        "adopt selected (else this) tools installed outside envira",
+        "let envira manage tools installed without it (selected, else this)",
     ),
     ("t", "retry what the last run left unfinished"),
     ("U", "update envira itself (envira self-update)"),
     ("R  r", "re-detect + check updates · reload catalog"),
     ("esc", "clear the search"),
     ("q", "quit"),
+    ("", ""),
+    ("✓ ↑ !", "installed · newer version out · failed or drifted"),
+    (
+        "◌ ◆ ·",
+        "wanted by a followed bundle · new in catalog · available",
+    ),
+    ("–", "not for this machine"),
+    ("+ ↑ ◇ ↺", "Selected: install · update · config · revert"),
 ];
 
 /// Keys of the current screen.
@@ -1868,19 +1902,19 @@ mod tests {
         for needle in [
             "Overview",
             "Bundles",
-            "To install",
+            "Selected",
             "Items",
             "Info - Commands - Log",
             "● Terminal",
             "◆",
             "herdr",
             "Panels: ← →",
-            "Install: enter",
+            "Install/Update: enter",
             "Update all: u",
         ] {
             assert!(s.contains(needle), "missing {needle:?} in\n{s}");
         }
-        assert!(s.contains("when gpu is not met"), "{s}");
+        assert!(s.contains("needs an NVIDIA GPU"), "{s}");
         // Small terminals must not panic.
         render(&a, 80, 24);
         render(&a, 40, 10);
@@ -1932,6 +1966,14 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = render(&a, 140, 40);
         assert!(s.contains("1 update") && !s.contains("0 configs"), "{s}");
+    }
+
+    #[test]
+    fn the_key_bar_offers_retry_only_after_an_unfinished_run() {
+        let mut a = app();
+        assert!(!render(&a, 160, 40).contains("Retry: t"));
+        a.last_run = Some(("r1".into(), Default::default(), true));
+        assert!(render(&a, 160, 40).contains("Retry: t"));
     }
 
     #[test]
@@ -2123,7 +2165,7 @@ mod tests {
         assert!(
             s.contains("Bundles")
                 && s.contains("Nothing selected.")
-                && s.contains("Install: enter"),
+                && s.contains("Install/Update: enter"),
             "{s}"
         );
         render(&a, 70, 20);
@@ -2157,7 +2199,7 @@ mod tests {
         a.on_snapshot(snap, None);
         a.filter = Filter::All;
         let s = render(&a, 180, 60);
-        for needle in ["new installs → system (S: user)", "scope", "1 system"] {
+        for needle in ["new installs → system · S switches", "scope", "1 system"] {
             assert!(s.contains(needle), "{needle:?} missing in\n{s}");
         }
         let row = |a: &mut App, id: &str| {
@@ -2177,7 +2219,7 @@ mod tests {
         a.search.clear();
         a.prefer_system = false;
         let s = render(&a, 180, 60);
-        assert!(s.contains("new installs → user (S: system)"), "{s}");
+        assert!(s.contains("new installs → user · S switches"), "{s}");
     }
 
     fn area_of(a: &App, h: &Hit) -> Rect {
@@ -2266,7 +2308,7 @@ mod tests {
             .skip(r.x as usize)
             .take(r.width as usize)
             .collect();
-        assert_eq!(text, " (S: system)");
+        assert_eq!(text, " · S switches");
     }
 
     #[test]

@@ -62,7 +62,7 @@ impl Label {
         match self {
             Label::Installed | Label::Applied => "✓",
             Label::Outdated => "↑",
-            Label::Missing => "✗",
+            Label::Missing => "◌",
             Label::New => "◆",
             Label::Available => "·",
             Label::Failed | Label::Drifted => "!",
@@ -75,7 +75,7 @@ impl Label {
             Label::Installed => "installed",
             Label::Outdated => "outdated",
             Label::Applied => "applied",
-            Label::Missing => "missing",
+            Label::Missing => "wanted",
             Label::New => "new",
             Label::Available => "available",
             Label::Failed => "failed",
@@ -435,7 +435,7 @@ pub async fn snapshot(
             };
             let reason = match &choice {
                 Err(e) if !p.present => Some(e.clone()),
-                _ if !p.present => unmet(when, facts).map(|w| format!("when {w} is not met")),
+                _ if !p.present => unmet(when, facts).map(crate::template::describe),
                 _ => None,
             };
             let rec = st.tools.get(id);

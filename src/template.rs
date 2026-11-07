@@ -358,6 +358,65 @@ pub fn unmet<'a>(when: &'a [String], facts: &Facts) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+/// A `when` predicate the way the screens say it: `os:macos` is "only on macOS".
+pub fn describe(w: &str) -> String {
+    let Ok((neg, p)) = parse_pred(w) else {
+        return format!("when {w} holds");
+    };
+    let (only, not) = ("only", "not");
+    let on = |name: String| {
+        if neg {
+            format!("{not} on {name}")
+        } else {
+            format!("{only} on {name}")
+        }
+    };
+    match p {
+        Pred::Gpu if neg => "only without an NVIDIA GPU".into(),
+        Pred::Gpu => "needs an NVIDIA GPU".into(),
+        Pred::Container if neg => "not in a container".into(),
+        Pred::Container => "only in a container".into(),
+        Pred::Wsl => on("WSL".into()),
+        Pred::Sudo if neg => "only without sudo".into(),
+        Pred::Sudo => "needs sudo".into(),
+        Pred::Root if neg => "not as root".into(),
+        Pred::Root => "only as root".into(),
+        Pred::Distro(d) => on(platform_name(&d)),
+        Pred::Family(d) if d == "linux" => on("Linux".into()),
+        Pred::Family(d) => on(format!("{} and alike", platform_name(&d))),
+        Pred::Arch(a) => on(a),
+        Pred::Os(o) => on(platform_name(&o)),
+        Pred::Shell(sh) if neg => format!("only without {sh}"),
+        Pred::Shell(sh) => format!("needs {sh}"),
+    }
+}
+
+/// Whether `w` is about the platform (OS, distro), not about this machine's setup.
+pub fn about_platform(w: &str) -> bool {
+    matches!(
+        parse_pred(w),
+        Ok((_, Pred::Os(_) | Pred::Family(_) | Pred::Distro(_)))
+    )
+}
+
+fn platform_name(id: &str) -> String {
+    match id {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        "debian" => "Debian",
+        "ubuntu" => "Ubuntu",
+        "fedora" => "Fedora",
+        "rhel" => "RHEL",
+        "arch" => "Arch",
+        "suse" => "SUSE",
+        "opensuse" => "openSUSE",
+        "opensuse-leap" => "openSUSE Leap",
+        "opensuse-tumbleweed" => "openSUSE Tumbleweed",
+        other => other,
+    }
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +565,18 @@ mod tests {
         assert_eq!(unmet(&w(&["!os:linux"]), &f), None);
         assert!(parse_pred("colour").is_err());
         assert!(parse_pred("distro:").is_err());
+    }
+
+    #[test]
+    fn predicates_read_as_words() {
+        assert_eq!(describe("os:macos"), "only on macOS");
+        assert_eq!(describe("!os:linux"), "not on Linux");
+        assert_eq!(describe("family:arch"), "only on Arch and alike");
+        assert_eq!(describe("distro:ubuntu"), "only on Ubuntu");
+        assert_eq!(describe("gpu"), "needs an NVIDIA GPU");
+        assert_eq!(describe("!container"), "not in a container");
+        assert_eq!(describe("arch:aarch64"), "only on aarch64");
+        assert!(about_platform("family:debian") && about_platform("!os:macos"));
+        assert!(!about_platform("gpu") && !about_platform("arch:x86_64"));
     }
 }

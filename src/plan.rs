@@ -588,31 +588,38 @@ impl<'a> Planner<'a> {
         let (cat, facts) = (self.cat, self.facts);
         let tool = &cat.tools[id];
         if let Some(w) = unmet(&tool.when, facts) {
-            return Err(format!("when {w} is not met"));
+            return Err(crate::template::describe(w));
         }
         if let Some(m) = &tool.manual {
             return Err(format!("install it yourself: {m}"));
         }
         let verify = vec![detect_cmd(cat, facts, id)];
-        let mut notes: Vec<String> = Vec::new();
+        // Why each route is out, and whether that is only about the platform.
+        let mut notes: Vec<(String, bool)> = Vec::new();
+        let unmet_note = |name: &str, w: &str| {
+            (
+                format!("{name}: {}", crate::template::describe(w)),
+                crate::template::about_platform(w),
+            )
+        };
         for (idx, entry) in tool.install.iter().enumerate() {
             let name = entry_name(entry);
             if let Some(w) = unmet(&entry.when, facts) {
-                notes.push(format!("{name}: {w}"));
+                notes.push(unmet_note(name, w));
                 continue;
             }
             let method = match &entry.method {
                 Some(m) => match cat.methods.get(m) {
                     Some(method) => Some(method),
                     None => {
-                        notes.push(format!("{m}: unknown method"));
+                        notes.push((format!("{m}: unknown method"), false));
                         continue;
                     }
                 },
                 None => None,
             };
             if let Some(w) = method.and_then(|m| unmet(&m.when, facts)) {
-                notes.push(format!("{name}: {w}"));
+                notes.push(unmet_note(name, w));
                 continue;
             }
             let scope = resolve_scope(
@@ -620,12 +627,12 @@ impl<'a> Planner<'a> {
                 self.prefer_system,
             );
             if scope == Scope::System && !facts.privilege.can_elevate() {
-                notes.push(format!("{name}: needs sudo"));
+                notes.push((format!("{name}: needs sudo"), false));
                 continue;
             }
             let deps: Vec<String> = tool.depends.iter().chain(&entry.depends).cloned().collect();
             if let Err(e) = self.deps_ok(&deps) {
-                notes.push(format!("{name}: {e}"));
+                notes.push((format!("{name}: {e}"), false));
                 continue;
             }
             match self.entry_steps(id, idx, scope, false) {
@@ -638,7 +645,7 @@ impl<'a> Planner<'a> {
                         verify,
                     });
                 }
-                Err(e) => notes.push(format!("{name}: {e}")),
+                Err(e) => notes.push((format!("{name}: {e}"), false)),
             }
         }
         Err(summarize(&notes, facts))
@@ -825,7 +832,7 @@ impl<'a> Planner<'a> {
         let (cat, facts) = (self.cat, self.facts);
         let cf = &cat.configs[id];
         if let Some(w) = unmet(&cf.when, facts) {
-            return Err(format!("when {w} is not met"));
+            return Err(crate::template::describe(w));
         }
         let scope = resolve_scope(cf.scope, self.prefer_system);
         if scope == Scope::System && !facts.privilege.can_elevate() {
@@ -1033,21 +1040,14 @@ pub fn resume_revert(steps: Vec<UnitStep>, done: &[String]) -> (Vec<UnitStep>, V
     (left, resumed)
 }
 
-fn summarize(notes: &[String], facts: &Facts) -> String {
+fn summarize(notes: &[(String, bool)], facts: &Facts) -> String {
     if notes.is_empty() {
         return "no install method".into();
     }
     // A route for another platform says nothing about why this one cannot install it.
-    let elsewhere = |n: &String| {
-        ["os:", "family:", "distro:"]
-            .iter()
-            .any(|w| n.contains(&format!(": {w}")))
-    };
-    if notes
-        .iter()
-        .all(|n| n.ends_with("needs sudo") || elsewhere(n))
-    {
-        if notes.iter().any(|n| n.ends_with("needs sudo")) {
+    let sudo = |n: &str| n.ends_with("needs sudo");
+    if notes.iter().all(|(n, elsewhere)| sudo(n) || *elsewhere) {
+        if notes.iter().any(|(n, _)| sudo(n)) {
             return "needs sudo".into();
         }
         return format!("no install method for {}", facts.distro_id);
@@ -1055,9 +1055,10 @@ fn summarize(notes: &[String], facts: &Facts) -> String {
     // Prefer the most specific note: one that is not about the platform.
     notes
         .iter()
-        .find(|n| !elsewhere(n))
-        .cloned()
-        .unwrap_or_else(|| notes[0].clone())
+        .find(|(_, elsewhere)| !elsewhere)
+        .unwrap_or(&notes[0])
+        .0
+        .clone()
 }
 
 /// Plan as a shell script (TUI "copy as script", `--dry-run`).
@@ -1243,7 +1244,7 @@ mod tests {
         let mut p = Planner::new(&c, &f, &base);
         assert_eq!(p.choose("lazygit").unwrap().via, "brew");
         let docker = p.choose("docker").unwrap_err();
-        assert!(docker.contains("os:linux"), "{docker}");
+        assert!(docker.contains("only on Linux"), "{docker}");
         assert!(p.choose("docker-group").is_err());
         assert!(p.choose("default-shell").is_err());
     }
@@ -1416,7 +1417,7 @@ mod tests {
         let mut f = Facts::sample(Path::new("/home/user"));
         let present = set(&[]);
         let mut p = Planner::new(&c, &f, &present);
-        assert_eq!(p.choose("yay").unwrap_err(), "when family:arch is not met");
+        assert_eq!(p.choose("yay").unwrap_err(), "only on Arch and alike");
         f.privilege = Privilege::None;
         let mut p = Planner::new(&c, &f, &present);
         assert_eq!(p.choose("docker").unwrap_err(), "needs sudo");

@@ -57,9 +57,9 @@ impl Filter {
     pub fn name(self) -> &'static str {
         match self {
             Filter::All => "All",
-            Filter::Attention => "Attention",
+            Filter::Attention => "To do",
             Filter::Outdated => "Outdated",
-            Filter::Missing => "Missing",
+            Filter::Missing => "Wanted",
             Filter::New => "New",
             Filter::Failed => "Failed",
             Filter::Installed => "Installed",
@@ -224,6 +224,9 @@ pub enum UnitState {
     Running(Instant),
     Done(Outcome, Duration),
 }
+
+/// The toast while `u` waits for the update check.
+const CHECKING: &str = "Checking for updates…";
 
 /// Lines of a unit's log the run view keeps (the log file has all of them).
 pub const LOG_LINES: usize = 20_000;
@@ -608,15 +611,17 @@ impl App {
     /// Latest-version answers from the background check.
     pub fn on_latest(&mut self, answers: BTreeMap<String, Latest>) {
         self.checking_latest = false;
+        let waiting = self.toast_text() == Some(CHECKING);
         if let Some(snap) = &mut self.snap {
             snap.apply_latest(&answers);
-            let n = snap.outdated().len();
-            // The overview shows the count too: never cover a warning still on screen.
-            if n > 0 && !(self.toast_warns && self.toast_text().is_some()) {
-                self.notify(format!(
-                    "{n} {} · u updates",
-                    super::ui::plural(n, "update", "updates")
-                ));
+            // The overview shows the count; a toast only answers a `u` pressed while checking.
+            if waiting {
+                let n = snap.outdated().len();
+                self.notify(if n > 0 {
+                    format!("{n} outdated · u updates all")
+                } else {
+                    "Nothing is outdated".into()
+                });
             }
         }
         self.clamp();
@@ -992,7 +997,7 @@ impl App {
                 let (targets, what) = self.update_targets();
                 if targets.is_empty() {
                     self.notify(if self.checking_latest {
-                        "Checking for updates…"
+                        CHECKING
                     } else {
                         "Nothing is outdated (R checks again)"
                     });
@@ -1146,14 +1151,14 @@ impl App {
                             self.selected.remove(&i);
                         }
                     }
-                    self.notify(format!("{name} is no longer kept"));
+                    self.notify(format!("No longer following {name}"));
                 } else {
                     kept.push(b.clone());
                     let missing = self.missing_items(&b);
                     let n = missing.len();
                     self.selected.extend(missing);
                     self.notify(format!(
-                        "{name} kept: {n} {} to install",
+                        "Following {name}: {n} {} to install",
                         super::ui::plural(n, "item", "items")
                     ));
                 }
@@ -1555,7 +1560,7 @@ pub mod tests {
             }),
             latest: (label == Label::Outdated).then(|| "2.0.0".into()),
             latest_error: None,
-            reason: (label == Label::NotApplicable).then(|| "when gpu is not met".into()),
+            reason: (label == Label::NotApplicable).then(|| "needs an NVIDIA GPU".into()),
             last_error: (label == Label::Failed).then(|| "exit 1".into()),
         }
     }
@@ -1750,7 +1755,7 @@ pub mod tests {
             ("yazi".to_string(), Latest::Version("1.0.0".into())),
         ]));
         assert!(!a.checking_latest);
-        assert_eq!(a.toast_text(), Some("1 update · u updates"));
+        assert_eq!(a.toast_text(), Some("1 outdated · u updates all"));
         a.filter = Filter::Outdated;
         let rows: Vec<&str> = a.rows().iter().map(|i| i.id.as_str()).collect();
         assert_eq!(rows, vec!["rust-toolchain"]);

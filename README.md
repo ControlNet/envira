@@ -38,9 +38,9 @@ check off, and it is skipped in CI.
 ```shell
 envira                     # the TUI: pick bundles, review the plan, watch it run
 envira status              # what is installed, missing, outdated or drifted
-envira install full        # a bundle: installs it, and this machine keeps it
-envira install             # later: whatever the kept bundles miss (new catalog items too)
-envira install bat yazi    # some tools or configs, with their dependencies (not kept)
+envira install full        # a bundle: installs it, and this machine follows it
+envira install             # later: whatever the followed bundles miss (new catalog items too)
+envira install bat yazi    # some tools or configs, with their dependencies (not followed)
 envira plan                # what `envira install` would do, without doing it
 envira update              # update outdated tools in place
 envira retry               # retry what failed or was blocked in the last run
