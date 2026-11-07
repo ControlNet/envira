@@ -573,7 +573,7 @@ fn selection(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .into_iter()
         .filter(|id| app.selected.contains(id))
         .collect();
-    let plan = (!targets.is_empty()).then(|| app.make_plan(&targets));
+    let plan = (!targets.is_empty()).then(|| app.make_selection_plan(&targets));
     let extra = match &plan {
         Some(p) => {
             let deps = p
@@ -1143,43 +1143,27 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     );
 
     let n = plan.units.len();
-    let installs = plan
-        .units
-        .iter()
-        .filter(|u| u.action == Action::Install)
-        .count();
-    let applies = plan
-        .units
-        .iter()
-        .filter(|u| u.action == Action::Apply)
-        .count();
-    let reverts = plan
-        .units
-        .iter()
-        .filter(|u| u.action == Action::Revert)
-        .count();
+    let count = |a: Action| plan.units.iter().filter(|u| u.action == a).count();
     let block = panel(t, 1, "Plan", false, vec![]);
     let inner = block.inner(top);
     f.render_widget(block, top);
-    let mut first = vec![
-        Span::styled(
-            format!("{n} {}  ", plural(n, "step", "steps")),
-            Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{installs} {}  ", plural(installs, "install", "installs")),
-            t.s(t.cyan),
-        ),
-        Span::styled(
-            format!("{applies} {}  ", plural(applies, "config", "configs")),
-            t.s(t.magenta),
-        ),
-    ];
-    if reverts > 0 {
-        first.push(Span::styled(
-            format!("{reverts} {}  ", plural(reverts, "revert", "reverts")),
-            t.s(t.yellow),
-        ));
+    let mut first = vec![Span::styled(
+        format!("{n} {}  ", plural(n, "step", "steps")),
+        Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
+    )];
+    for (a, one, many, c) in [
+        (Action::Install, "install", "installs", t.cyan),
+        (Action::Update, "update", "updates", t.blue),
+        (Action::Apply, "config", "configs", t.magenta),
+        (Action::Revert, "revert", "reverts", t.yellow),
+    ] {
+        let k = count(a);
+        if k > 0 {
+            first.push(Span::styled(
+                format!("{k} {}  ", plural(k, one, many)),
+                t.s(c),
+            ));
+        }
     }
     first.push(Span::styled("+ shell env", t.s(t.dim)));
     let sudo = if plan.needs_sudo(&app.facts) {
@@ -1933,6 +1917,21 @@ mod tests {
         );
         assert!(s.contains("latest") && s.contains("Update all: u"), "{s}");
         assert!(s.contains("outdated · u updates"), "{s}");
+    }
+
+    #[test]
+    fn a_selected_outdated_tool_shows_as_an_update_before_and_in_the_plan() {
+        let mut a = app();
+        a.on_latest(std::collections::BTreeMap::from([(
+            "rust-toolchain".to_string(),
+            crate::latest::Latest::Version("2.0.0".into()),
+        )]));
+        a.selected = ["rust-toolchain".to_string(), "codex".to_string()].into();
+        let s = render(&a, 140, 40);
+        assert!(s.contains("↑ rust-toolchain"), "{s}");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = render(&a, 140, 40);
+        assert!(s.contains("1 update") && !s.contains("0 configs"), "{s}");
     }
 
     #[test]

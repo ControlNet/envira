@@ -578,7 +578,7 @@ impl App {
 
     /// Enter on the dashboard: outdated tools in `targets` are updated, the rest planned as
     /// an install (missing ones installed, present ones skipped).
-    fn make_selection_plan(&self, targets: &[String]) -> Plan {
+    pub fn make_selection_plan(&self, targets: &[String]) -> Plan {
         let updates = self.selected_outdated(targets);
         let rest: Vec<String> = targets
             .iter()
