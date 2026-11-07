@@ -1805,7 +1805,8 @@ mod tests {
         a.selected = ["nmap".to_string()].into();
         a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         a.sudo = Some(Prompt::new(1, "Back", true));
-        for c in "abc".chars() {
+        // Not a string a build path or hash could hold.
+        for c in "Q%~".chars() {
             a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         let out = render(&a, 100, 30);
@@ -1814,7 +1815,7 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("•••"), "{out}");
-        assert!(!out.contains("abc"), "{out}");
+        assert!(!out.contains("Q%~"), "{out}");
         assert!(
             out.contains("Use user mode") && out.contains("Back"),
             "{out}"
