@@ -951,10 +951,10 @@ fn log_tail(path: &std::path::Path, n: usize) -> Vec<String> {
 }
 
 /// Plans with `build`, shows the plan and runs it once confirmed. When the plan needs sudo and
-/// sudo wants a password, typing it is the confirmation, and user mode is offered instead:
-/// `build` again without sudo. Where nobody can type it (`-y`, no terminal) the plan is made in
-/// user mode. `--scope system` asks for the password without offering user mode (also with
-/// `-y` on a terminal), and fails where it cannot ask.
+/// sudo wants a password, it is asked on the terminal (also with `-y`, and with stdin or stdout
+/// piped), and typing it is the confirmation; user mode is offered instead: `build` again
+/// without sudo. Where there is no terminal to ask on, the plan is made in user mode.
+/// `--scope system` asks without offering user mode, and fails where it cannot ask.
 async fn run_plan(
     sess: &Session,
     build: &dyn Fn() -> Plan,
@@ -967,8 +967,7 @@ async fn run_plan(
     let mut password = None;
     if !opts.dry_run && plan.needs_sudo(&sess.facts) && !app::sudo_without_password() {
         let offer = sess.global.scope.is_none();
-        let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-        if terminal && (!opts.yes || !offer) {
+        if crate::sudo_prompt::can_ask() {
             print_plan(&plan, sess);
             println!();
             let n = plan.sudo_units(&sess.facts);

@@ -47,7 +47,7 @@ succeeds, and `sudo -n true` with `start_new_session=True` fails.
   |---|---|
   | sudo wants a password, interactive | The prompt appears (CLI line, or TUI dialog over the plan): password field, **Use user mode**, Back/Cancel |
   | Passwordless sudo | Nothing is asked |
-  | `-y` or no terminal | User mode, with a note |
+  | No terminal to ask on (`/dev/tty` does not open: CI, cron) | User mode, with a note. `-y` or piped stdin/stdout still ask: `envira.sh` documents `… \| bash -s -- install full -y` and hands envira `/dev/tty` |
   | `--scope system` | The prompt without the user-mode button; without a terminal it fails |
   | `--scope user` | User mode from the start (session facts) |
 
@@ -56,6 +56,12 @@ succeeds, and `sudo -n true` with `start_new_session=True` fails.
   `sudo_prompt::Secret` zeroes its whole buffer on drop.
 - Sudo rights that come from a sudoers rule envira cannot see without a password: the user
   chose option A (no guessing). Such users pass `--scope system` to get the prompt.
+
+## Upgrade effect
+
+`sudo -n` became `sudo -A` in every system-scope step, so every system route id changed. A
+failed system install recorded by 0.1.3 and retried by a newer envira runs its route in full
+instead of resuming (the documented "route changed" rule).
 
 ## Testing it
 

@@ -85,8 +85,9 @@ Bundles (`envira install <bundle>`):
   installed system-wide puts a user-scope copy ahead of it on `PATH`.
 - `--scope user` is user mode from the start; `--scope system` uses sudo without offering it
   (also where envira cannot tell that sudo is allowed, e.g. a sudoers rule for one user).
-  Without a terminal or with `-y`, where nobody can type the password, envira plans in user
-  mode unless `--scope system` is given.
+  The password is asked on the terminal also with `-y` or piped input (`curl … | bash`); only
+  where there is no terminal at all (CI, cron) envira plans in user mode, unless
+  `--scope system` is given.
 - macOS: install [Homebrew](https://brew.sh) first; envira uses it for most tools and does not
   install it itself. Without it, only tools with another route (cargo, pipx, npm, vendor scripts)
   are available. Linux-only items (Docker, the default-shell and sysctl configs) show as n/a.

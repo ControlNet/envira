@@ -245,20 +245,37 @@ pub enum Answer {
     UserMode,
 }
 
-/// The prompt on the command line, after the plan was printed: `Ok(None)` cancels.
+/// The controlling terminal, where someone can type the password even when stdin or stdout
+/// is a pipe (`curl … | bash`, `| tee log`).
+fn tty() -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+}
+
+/// Whether someone can be asked for the password here.
+pub fn can_ask() -> bool {
+    tty().is_ok()
+}
+
+/// The prompt on the terminal, after the plan was printed: `Ok(None)` cancels.
 pub fn ask_on_terminal(items: usize, user_mode: bool) -> std::io::Result<Option<Answer>> {
     use crossterm::{cursor, event, execute, style, terminal};
     struct Raw;
     impl Drop for Raw {
         fn drop(&mut self) {
             let _ = terminal::disable_raw_mode();
-            let _ = execute!(std::io::stdout(), cursor::Show);
-            println!();
+            if let Ok(mut t) = tty() {
+                let _ = execute!(t, cursor::Show);
+                let _ = writeln!(t);
+            }
         }
     }
-    let mut out = std::io::stdout();
+    // On the terminal itself: a piped stdout (a log) never gets the prompt.
+    let mut out = tty()?;
     let mut p = Prompt::new(items, "Cancel", user_mode);
-    println!("{}", p.title());
+    writeln!(out, "{}", p.title())?;
     terminal::enable_raw_mode()?;
     let _raw = Raw;
     loop {
