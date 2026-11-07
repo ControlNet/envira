@@ -135,8 +135,8 @@ pub enum Command {
         /// Install this release instead of the latest (also to go back to an older one).
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
-        /// Do not ask for confirmation.
-        #[arg(short = 'y', long)]
+        /// Accepted for older scripts; self-update does not ask.
+        #[arg(short = 'y', long, hide = true)]
         yes: bool,
     },
     /// Catalog utilities.

@@ -12,7 +12,7 @@ From the canonical path of the running binary (`current_exe()` + `canonicalize`)
 | `…/target/{debug,release}/envira` (or `target/<triple>/release`) | source build | refused |
 | contains `/pipx/venvs/envira/` | pipx | `pipx upgrade envira`, pinned `pipx install --force envira==v` |
 | contains `/uv/tools/envira/` | uv tool | `uv tool upgrade envira`, pinned `uv tool install --force envira==v` |
-| `$CARGO_HOME/bin` (default `~/.cargo/bin`) | cargo | with cargo-binstall: `cargo binstall -y --force --disable-strategies compile envira[@v]` (download only), and if that fails, `cargo install --locked --force [--version v] envira` (shown as "if no prebuilt" before asking); without it, that `cargo install` directly. Both get `runner::build_env()` (`CARGO_BUILD_JOBS` one per GiB free). |
+| `$CARGO_HOME/bin` (default `~/.cargo/bin`) | cargo | with cargo-binstall: `cargo binstall -y --force --disable-strategies compile envira[@v]` (download only), and if that fails, `cargo install --locked --force [--version v] envira` (shown as "if no prebuilt" before it runs); without it, that `cargo install` directly. Both get `runner::build_env()` (`CARGO_BUILD_JOBS` one per GiB free). |
 | `<root>/bin/envira` with `<root>/lib/python*/site-packages/envira-*.dist-info/RECORD` listing `/bin/envira,` | pip (`pyvenv.cfg` in root: venv python; else `python3 -m pip install --user`) | pip install --upgrade |
 | anything else | release binary | download + replace |
 
@@ -65,3 +65,9 @@ exercises the GitHub download, checksum and swap (downgrade uses the same path);
 `/usr/local/bin/envira` exercises the sudo path. For pipx: `pipx install envira==0.1.1`, copy the
 dev binary over the venv's `bin/envira`, then `--version 0.1.1` (pinned) or the fake server
 (upgrade; it warns that the installed version is not the fake one).
+
+## No confirmation (after 0.1.4)
+
+`self-update` prints what it will run (version, channel, command, fallback, release notes) and
+then runs it without asking. `-y`/`--yes` is still accepted, hidden, so older scripts keep
+working. The TUI's `U` updates at once; only the "Restart envira now?" question remains.

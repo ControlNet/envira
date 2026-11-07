@@ -94,15 +94,10 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         }
         Some(Command::Catalog { cmd }) => return commands::catalog_cmd(&cli.global, cmd),
         // Without the catalog: it must work when the published catalog needs a newer envira.
-        Some(Command::SelfUpdate {
-            check,
-            version,
-            yes,
-        }) => {
+        Some(Command::SelfUpdate { check, version, .. }) => {
             let opts = selfupdate::Opts {
                 check: *check,
                 version: version.clone(),
-                yes: *yes,
             };
             return Ok(match selfupdate::run(&opts)? {
                 selfupdate::Outcome::Unchanged(code) => code,

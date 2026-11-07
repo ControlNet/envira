@@ -334,7 +334,6 @@ pub fn notice(paths: &Paths, facts: &Facts) {
 pub struct Opts {
     pub check: bool,
     pub version: Option<String>,
-    pub yes: bool,
 }
 
 pub enum Outcome {
@@ -351,7 +350,7 @@ fn tilde(facts: &Facts, p: &Path) -> String {
     }
 }
 
-/// `envira self-update`: checks, confirms, then updates the way this copy was installed. Runs
+/// `envira self-update`: checks, shows what it runs, then updates the way this copy was installed. Runs
 /// without the catalog, so it works when the published catalog needs a newer envira.
 pub fn run(o: &Opts) -> Result<Outcome> {
     let facts = Facts::probe();
@@ -422,19 +421,6 @@ pub fn run(o: &Opts) -> Result<Outcome> {
         println!("  if no prebuilt {} (builds from source)", c.join(" "));
     }
     println!("  notes          {}/tag/v{target}", releases());
-    if !o.yes {
-        if !std::io::stdin().is_terminal() {
-            bail!("refusing to update without confirmation; pass -y");
-        }
-        print!("Update? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim(), "y" | "Y" | "yes") {
-            println!("Aborted.");
-            return Ok(Outcome::Unchanged(1));
-        }
-    }
     // Steps call `<envira> fs …`: never swap the binary under a running install.
     let _lock = state::RunLock::acquire_exclusive(&paths, &facts)?;
     match cmd {

@@ -460,7 +460,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
     }
 }
 
-/// `envira self-update` on the normal screen (it asks before changing anything), then offers
+/// `envira self-update` on the normal screen, then offers
 /// to restart into the new binary. Returns a toast for when it comes back to the TUI, and
 /// whether the binary was replaced.
 async fn self_update(
@@ -473,7 +473,6 @@ async fn self_update(
     let opts = selfupdate::Opts {
         check: false,
         version: None,
-        yes: false,
     };
     let res = tokio::task::spawn_blocking(move || selfupdate::run(&opts)).await?;
     let updated = matches!(res, Ok(selfupdate::Outcome::Updated(_)));
