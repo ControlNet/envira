@@ -160,8 +160,8 @@ pub enum Hit {
 #[derive(Debug, Clone)]
 pub enum PlanReq {
     Install(Vec<String>),
-    /// Targets, and selected tools left out (with why).
-    Update(Vec<UpdateTarget>, Vec<(String, String)>),
+    /// `u`: every outdated tool.
+    Update(Vec<UpdateTarget>),
     Revert(Vec<String>),
     Retry(crate::plan::RetryTargets),
 }
@@ -548,12 +548,8 @@ impl App {
 
     fn build(&self, req: &PlanReq) -> Plan {
         match req {
-            PlanReq::Install(t) => self.make_plan(t),
-            PlanReq::Update(t, skipped) => {
-                let mut plan = self.make_update_plan(t);
-                plan.skipped.extend(skipped.iter().cloned());
-                plan
-            }
+            PlanReq::Install(t) => self.make_selection_plan(t),
+            PlanReq::Update(t) => self.make_update_plan(t),
             PlanReq::Revert(t) => self.make_revert(t, None),
             PlanReq::Retry(t) => self.retry_plan(t),
         }
@@ -567,37 +563,46 @@ impl App {
         self.open_plan(plan, title);
     }
 
-    /// Update targets: the selected tools (explicit), else every outdated tool; plus why
-    /// selected ones were left out, and a plan title.
-    /// `u`: the selected tools that are installed, else every outdated tool.
-    fn update_targets(&self) -> (Vec<UpdateTarget>, Vec<(String, String)>, String) {
+    /// The selected tools that are installed with a newer version out.
+    fn selected_outdated(&self, targets: &[String]) -> Vec<UpdateTarget> {
         let Some(snap) = &self.snap else {
-            return (vec![], vec![], String::new());
+            return vec![];
         };
-        let (mut targets, mut skipped) = (Vec::new(), Vec::new());
-        let chosen: Vec<String> = self
-            .selected_ids()
-            .into_iter()
-            .filter(|id| snap.get(id).is_some_and(|i| i.present))
+        targets
+            .iter()
+            .filter_map(|id| snap.get(id))
+            .filter(|i| i.label == crate::status::Label::Outdated)
+            .filter_map(|i| i.update_target(false).ok())
+            .collect()
+    }
+
+    /// Enter on the dashboard: outdated tools in `targets` are updated, the rest planned as
+    /// an install (missing ones installed, present ones skipped).
+    fn make_selection_plan(&self, targets: &[String]) -> Plan {
+        let updates = self.selected_outdated(targets);
+        let rest: Vec<String> = targets
+            .iter()
+            .filter(|id| !updates.iter().any(|u| &u.id == *id))
+            .cloned()
             .collect();
-        if chosen.is_empty() {
-            for id in snap.outdated() {
-                if let Some(Ok(t)) = snap.get(&id).map(|i| i.update_target(false)) {
-                    targets.push(t);
-                }
-            }
-            let n = targets.len();
-            return (targets, skipped, format!("update · {n} outdated"));
-        }
-        for id in &chosen {
-            match snap.get(id).map(|i| i.update_target(true)) {
-                Some(Ok(t)) => targets.push(t),
-                Some(Err(why)) => skipped.push((id.clone(), why)),
-                None => {}
-            }
-        }
-        let n = chosen.len();
-        (targets, skipped, format!("update · from {n} selected"))
+        // Updates first: an install may depend on a tool being updated.
+        let mut plan = self.make_update_plan(&updates);
+        plan.extend(self.make_plan(&rest));
+        plan
+    }
+
+    /// `u`: every outdated tool, whatever is selected.
+    fn update_targets(&self) -> (Vec<UpdateTarget>, String) {
+        let Some(snap) = &self.snap else {
+            return (vec![], String::new());
+        };
+        let targets: Vec<UpdateTarget> = snap
+            .outdated()
+            .iter()
+            .filter_map(|id| snap.get(id).and_then(|i| i.update_target(false).ok()))
+            .collect();
+        let n = targets.len();
+        (targets, format!("update · {n} outdated"))
     }
 
     /// Latest-version answers from the background check.
@@ -984,21 +989,15 @@ impl App {
                 return vec![Cmd::Refresh(Fetch::CacheOnly)];
             }
             KeyCode::Char('u') => {
-                let (targets, skipped, what) = self.update_targets();
+                let (targets, what) = self.update_targets();
                 if targets.is_empty() {
-                    let why = skipped
-                        .first()
-                        .map(|(id, w)| format!("{id}: {w}"))
-                        .unwrap_or_else(|| {
-                            if self.checking_latest {
-                                "Checking for updates…".into()
-                            } else {
-                                "Nothing is outdated (R checks again)".into()
-                            }
-                        });
-                    self.notify(why);
+                    self.notify(if self.checking_latest {
+                        "Checking for updates…"
+                    } else {
+                        "Nothing is outdated (R checks again)"
+                    });
                 } else {
-                    self.open_req(PlanReq::Update(targets, skipped), what);
+                    self.open_req(PlanReq::Update(targets), what);
                 }
             }
             KeyCode::Char('x') => {
@@ -1049,18 +1048,22 @@ impl App {
             .collect()
     }
 
-    /// Enter on the dashboard: plan the install of everything selected.
+    /// Enter on the dashboard: install what is selected and update what of it is outdated.
     fn install_selection(&mut self) {
         let t = self.selected_ids();
         if t.is_empty() {
             self.notify("Nothing selected: space selects bundles (left) and items (right)");
             return;
         }
-        let n = t.len();
-        self.open_req(
-            PlanReq::Install(t),
-            format!("install · {n} {}", super::ui::plural(n, "item", "items")),
-        );
+        let items = |n: usize| format!("{n} {}", super::ui::plural(n, "item", "items"));
+        let upd = self.selected_outdated(&t).len();
+        let rest = t.len() - upd;
+        let title = match (rest, upd) {
+            (_, 0) => format!("install · {}", items(rest)),
+            (0, _) => format!("update · {}", items(upd)),
+            _ => format!("install · {} · update · {upd}", items(rest)),
+        };
+        self.open_req(PlanReq::Install(t), title);
     }
 
     fn table_key(&mut self, k: KeyEvent) {
@@ -1787,17 +1790,67 @@ pub mod tests {
     }
 
     #[test]
-    fn u_updates_selected_installed_tools_else_all_outdated() {
-        // Selected but missing items (the seeded install set) are not update targets.
+    fn u_updates_every_outdated_tool_whatever_is_selected() {
         let mut a = app();
+        a.selected.insert("bat".into());
         a.on_key(key(KeyCode::Char('u')));
         assert_eq!(a.screen, Screen::Dashboard);
         assert_eq!(a.toast_text(), Some("Nothing is outdated (R checks again)"));
-        // An installed tool that is selected is.
-        a.selected.insert("bat".into());
+        a.on_latest(BTreeMap::from([(
+            "rust-toolchain".to_string(),
+            Latest::Version("2.0.0".into()),
+        )]));
         a.on_key(key(KeyCode::Char('u')));
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert_eq!(title, "update · 1 outdated");
+        let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, vec!["rust-toolchain"]);
+    }
+
+    #[test]
+    fn enter_installs_missing_and_updates_outdated_selected_items() {
+        let mut a = app();
+        a.on_latest(BTreeMap::from([(
+            "rust-toolchain".to_string(),
+            Latest::Version("2.0.0".into()),
+        )]));
+        a.selected.clear();
+        // Outdated, up to date, and missing.
+        for id in ["rust-toolchain", "bat", "codex"] {
+            a.selected.insert(id.into());
+        }
+        a.on_key(key(KeyCode::Enter));
         assert_eq!(a.screen, Screen::Plan);
-        assert_eq!(a.plan.as_ref().unwrap().1, "update · from 1 selected");
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert_eq!(title, "install · 2 items · update · 1");
+        let upd = plan
+            .units
+            .iter()
+            .find(|u| u.id == "rust-toolchain")
+            .expect("the outdated tool is updated");
+        assert_eq!(upd.action, crate::plan::Action::Update);
+        assert_eq!(upd.reason, "1.0.0 → 2.0.0");
+        assert!(
+            plan.units
+                .iter()
+                .any(|u| u.id == "codex" && u.action == crate::plan::Action::Install)
+        );
+        assert!(plan.units.iter().all(|u| u.id != "bat"));
+        assert!(plan.skipped.iter().any(|(id, _)| id == "bat"));
+        let cmds = a.on_key(key(KeyCode::Enter));
+        assert!(matches!(&cmds[..], [Cmd::StartRun { .. }]));
+
+        // Only outdated tools selected: an update plan.
+        let mut a = app();
+        a.on_latest(BTreeMap::from([(
+            "rust-toolchain".to_string(),
+            Latest::Version("2.0.0".into()),
+        )]));
+        a.selected = BTreeSet::from(["rust-toolchain".to_string()]);
+        a.on_key(key(KeyCode::Enter));
+        let (plan, title) = a.plan.as_ref().unwrap();
+        assert_eq!(title, "update · 1 item");
+        assert_eq!(plan.units[0].action, crate::plan::Action::Update);
     }
 
     #[test]

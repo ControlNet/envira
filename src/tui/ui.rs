@@ -390,7 +390,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             ("Panels", "← →"),
             ("Select", "space"),
             ("Install", "enter"),
-            ("Update", "u"),
+            ("Update all", "u"),
             ("Search", "/"),
             ("Filter", "f"),
             ("Help", "?"),
@@ -1669,8 +1669,8 @@ const DASHBOARD_KEYS: &[(&str, &str)] = &[
     ("space", "bundle: keep it and select what it misses"),
     ("space", "item: select or unselect it"),
     ("a  n", "select everything missing in view · nothing"),
-    ("enter", "install the selection"),
-    ("u", "update selected tools, else all outdated"),
+    ("enter", "install the selection, update its outdated tools"),
+    ("u", "update every outdated tool"),
     ("/  f", "search · cycle status filter"),
     ("tab  J K", "Info / Commands / Log · scroll it"),
     ("x", "revert selected configs"),
@@ -1892,7 +1892,7 @@ mod tests {
             "herdr",
             "Panels: ← →",
             "Install: enter",
-            "Update: u",
+            "Update all: u",
         ] {
             assert!(s.contains(needle), "missing {needle:?} in\n{s}");
         }
@@ -1931,7 +1931,7 @@ mod tests {
             row.contains('↑') && row.contains("2.0.0") && row.contains("outdated"),
             "{row}"
         );
-        assert!(s.contains("latest") && s.contains("Update: u"), "{s}");
+        assert!(s.contains("latest") && s.contains("Update all: u"), "{s}");
         assert!(s.contains("outdated · u updates"), "{s}");
     }
 
