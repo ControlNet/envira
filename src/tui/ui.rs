@@ -193,17 +193,6 @@ fn keybar(
     right: Option<Span>,
     right_key: Option<KeyEvent>,
 ) {
-    let mut spans = Vec::new();
-    let mut marks = Vec::new();
-    for (i, (name, key)) in keys.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" | ", t.s(t.dim)));
-        }
-        if let Some(k) = bar_key(name, key) {
-            marks.push((spans.len(), Hit::Key(k)));
-        }
-        spans.push(Span::styled(format!("{name}: {key}"), t.s(t.cyan)));
-    }
     // A right side wider than the bar would not be drawn at all: cut it to fit instead.
     let right = right
         .map(|s| {
@@ -216,6 +205,26 @@ fn keybar(
         .map(Line::from)
         .unwrap_or_default();
     let rw = right.width() as u16;
+    // Whole key hints only, with a gap before the right side.
+    let room = (area.width as usize).saturating_sub(if rw > 0 { rw as usize + 2 } else { 0 });
+    let mut spans = Vec::new();
+    let mut marks = Vec::new();
+    let mut used = 0;
+    for (i, (name, key)) in keys.iter().enumerate() {
+        let hint = format!("{name}: {key}");
+        let w = Span::raw(hint.as_str()).width() + if i > 0 { 3 } else { 0 };
+        if used + w > room {
+            break;
+        }
+        used += w;
+        if i > 0 {
+            spans.push(Span::styled(" | ", t.s(t.dim)));
+        }
+        if let Some(k) = bar_key(name, key) {
+            marks.push((spans.len(), Hit::Key(k)));
+        }
+        spans.push(Span::styled(hint, t.s(t.cyan)));
+    }
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(rw)]).areas(area);
     hit_spans(app, l, &spans, marks);
     if let Some(k) = right_key {
@@ -1973,6 +1982,21 @@ mod tests {
         assert!(!render(&a, 160, 40).contains("Retry: t"));
         a.last_run = Some(("r1".into(), Default::default(), true));
         assert!(render(&a, 160, 40).contains("Retry: t"));
+    }
+
+    #[test]
+    fn the_key_bar_leaves_a_gap_before_a_notice_and_drops_hints_that_do_not_fit() {
+        let mut a = app();
+        a.notify("Following AI agents: 2 items to install");
+        let s = render(&a, 150, 40);
+        let bar = s.lines().last().unwrap();
+        assert!(bar.contains("  Following AI agents"), "{bar}");
+        assert!(!bar.contains("qFollowing"), "{bar}");
+        // Every hint shown is whole.
+        let keys = bar.split("  Following").next().unwrap();
+        for hint in keys.split(" | ") {
+            assert!(hint.trim().contains(": "), "{bar}");
+        }
     }
 
     #[test]
