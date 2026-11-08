@@ -1727,8 +1727,12 @@ fn plan_view(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 ("Back", "esc"),
             ]
         } else {
-            // J/K (Commands) and PgUp/PgDn (Left out) are in the panel titles and help.
-            &[("Step", "↑↓"), ("Save as script", "c"), ("Back", "esc")]
+            &[
+                ("Step", "↑↓"),
+                ("Scroll", "J/K"),
+                ("Save as script", "c"),
+                ("Back", "esc"),
+            ]
         },
         toast.or_else(|| {
             Some(Span::styled(
