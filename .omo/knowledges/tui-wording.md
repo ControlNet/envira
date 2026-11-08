@@ -65,7 +65,8 @@ or user mode"), not a bare key or label ("[S]", "Go"). Shortening must not drop 
 - Selected: when it overflows, the last row reads `… N more · enter: see the plan`, or just
   `… N more` when that does not fit.
 - Long search: the title shows the end of the query after `/…`, so the caret stays visible.
-- Plan: J/K scroll Commands, and PgUp/PgDn (or the mouse wheel) scroll Left out. Each title
+- Plan: J/K scroll Commands, and PgUp/PgDn (or the mouse wheel) scroll Left out. Neither is
+  in the key bar, as on the dashboard where J/K scroll the detail panel: the titles hint them. Each title
   shows `↓ key: more` while lines are hidden. The limits come from `Paragraph::line_count`
   (ratatui feature `unstable-rendered-line-info`) and are stored in `App::plan_cmd_max` and
   `App::left_out_max` at draw time.
