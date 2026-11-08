@@ -68,7 +68,7 @@ grep -q "Nothing to do." <<<"$out"
 
 echo "=== Linux-only items are not planned"
 e plan docker 2>&1 | tee "$tmp/plan.txt"
-grep -q "os:linux" "$tmp/plan.txt"
+grep -q "docker: Linux only" "$tmp/plan.txt"
 
 echo "=== shell integration (zsh and the bash login profile)"
 grep -q "# >>> envira >>>" "$HOME/.zshrc"
