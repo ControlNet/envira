@@ -17,6 +17,16 @@
 
    The full run takes about 10 minutes.
 
+5. Write the release notes. CI creates the release with only the "Full Changelog" link, and
+   0.1.3 to 0.1.5 went out like that until they were filled in afterwards. Sections follow
+   v0.1.1/v0.1.2 (`## TUI`, `## Fixes`, …), are written for users, and keep the Full Changelog
+   line. Publish them with `gh release edit vX.Y.Z --notes-file notes.md`.
+6. Before tagging, check that the integration scripts (`tests/integration/*.sh`) do not grep
+   for wording that changed. 0.1.5's first tag failed on macOS because `macos.sh` looked for
+   the old skip reason `os:linux`, so nothing was published. The tag was moved to the fixed
+   commit (delete it on the remote, tag again, push), which is safe only while nothing has
+   been published.
+
 ## Checking that it went out
 
 ```bash
