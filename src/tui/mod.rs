@@ -7,7 +7,7 @@ pub mod ui;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -30,8 +30,9 @@ use theme::Theme;
 enum AppEvent {
     Term(TermEvent),
     Tick,
-    Snapshot(Box<Snapshot>, Option<State>),
-    Latest(BTreeMap<String, Latest>),
+    /// From detection number `.0` (see [`DETECTION`]).
+    Snapshot(u64, Box<Snapshot>, Option<State>),
+    Latest(u64, BTreeMap<String, Latest>),
     /// A newer envira release, if any.
     SelfLatest(Option<String>),
     Exec(exec::Event),
@@ -166,6 +167,21 @@ fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
     })
 }
 
+/// The latest detection started: the snapshot of an earlier one that ends later is older.
+static DETECTION: AtomicU64 = AtomicU64::new(0);
+/// The latest detection that checks latest versions online: an earlier one still checking when
+/// another starts (`r`, after a run) must not put its older answers over the newer ones, on
+/// screen or in the cache. A detection from the cache alone leaves it to finish.
+static FETCHING: AtomicU64 = AtomicU64::new(0);
+
+fn current_detection(n: u64) -> bool {
+    DETECTION.load(Ordering::SeqCst) == n
+}
+
+fn current_fetch(n: u64) -> bool {
+    FETCHING.load(Ordering::SeqCst) == n
+}
+
 /// Detects everything and sends the snapshot (with cached latest versions), then checks latest
 /// versions per `fetch` and sends those answers.
 /// `prefer_system` is the TUI's current scope choice (`S`), which can differ from `--scope`.
@@ -181,6 +197,10 @@ fn spawn_detect(
         sess.runner.clone(),
         sess.paths.clone(),
     );
+    let n = DETECTION.fetch_add(1, Ordering::SeqCst) + 1;
+    if fetch != Fetch::CacheOnly {
+        FETCHING.store(n, Ordering::SeqCst);
+    }
     tokio::spawn(async move {
         let state = match State::load(&paths) {
             Ok(s) => s,
@@ -203,14 +223,20 @@ fn spawn_detect(
         .await;
         snap.apply_latest(&cached);
         let fresh = (fetch != Fetch::CacheOnly).then(|| snap.clone());
-        if tx.send(AppEvent::Snapshot(Box::new(snap), state)).is_err() {
+        if tx
+            .send(AppEvent::Snapshot(n, Box::new(snap), state))
+            .is_err()
+        {
             return;
         }
         if let Some(snap) = fresh {
             let answers =
                 latest::check(&cat, &facts, &snap, runner.as_ref(), &mut cache, fetch).await;
+            if !current_fetch(n) {
+                return;
+            }
             let _ = cache.save(&paths, &facts);
-            let _ = tx.send(AppEvent::Latest(answers));
+            let _ = tx.send(AppEvent::Latest(n, answers));
         }
     });
 }
@@ -306,8 +332,9 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                 AppEvent::Term(TermEvent::Mouse(m)) => cmds.extend(app.on_mouse(m)),
                 AppEvent::Term(_) => {}
                 AppEvent::Tick => app.tick += 1,
-                AppEvent::Snapshot(s, st) => app.on_snapshot(*s, st),
-                AppEvent::Latest(a) => app.on_latest(a),
+                AppEvent::Snapshot(n, s, st) if current_detection(n) => app.on_snapshot(*s, st),
+                AppEvent::Latest(n, a) if current_fetch(n) => app.on_latest(a),
+                AppEvent::Snapshot(..) | AppEvent::Latest(..) => {}
                 AppEvent::SelfLatest(v) => app.on_self_latest(v),
                 AppEvent::Exec(e) => {
                     let finished = matches!(e, exec::Event::Finished(_));

@@ -550,6 +550,10 @@ pub fn fs_cmd(cmd: &FsCmd) -> Result<i32> {
             link,
             check,
         } => code(fs::link(&b, target, &fs::expand(link), *check)?),
+        FsCmd::Keep { path } => {
+            fs::keep(&b, &fs::expand(path))?;
+            0
+        }
         FsCmd::Restore { path, key } => {
             fs::restore(&b, &fs::expand(path), key.as_deref())?;
             0
@@ -797,32 +801,45 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     let state = sess.state()?.unwrap_or_default();
     let run_id = state.last_run.clone().context("no previous run to retry")?;
     let rec = RunRecord::load(&sess.paths, &run_id)?;
-    let t = crate::plan::RetryTargets::new(
+    let mut t = crate::plan::RetryTargets::new(
         rec.unfinished_units()
             .map(|u| (u.id.as_str(), u.action.as_str())),
     )
     .progress(&rec.units, Some(&sess.paths.run_dir(&run_id)));
     if t.is_empty() {
+        // Only the shell environment was left behind: bring it up to date.
+        if let Some(e) = &rec.shell_env_error {
+            println!("Run {run_id} left the shell environment behind ({e}).");
+            let code = env_cmd(sess).await?;
+            let mut rec = rec;
+            rec.shell_env_error = None;
+            rec.save(&sess.paths, &sess.facts)?;
+            return Ok(code);
+        }
         println!("Nothing failed in run {run_id}.");
         return Ok(0);
     }
     let mut snap = sess.snapshot(Some(&state)).await;
+    let present = snap.present();
+    let mut installs = t.install.clone();
+    installs.extend(t.take_gone(&present));
     let (updates, update_skipped) = if t.update.is_empty() {
         Default::default()
     } else {
         sess.apply_latest(&mut snap, Fetch::CacheOnly).await;
         snap.update_targets(&t.update)
     };
-    let present = snap.present();
     let build = || {
+        // Updates first: an install may depend on a tool being updated.
         let mut plan = Plan::default();
-        if !t.install.is_empty() {
-            plan.extend(sess.retry_install_plan(&present, &t.install, &t.install_done));
-        }
         if !t.update.is_empty() {
             let mut p = sess.update_plan(&present, &updates);
             p.skipped.extend(update_skipped.clone());
             plan.extend(p);
+        }
+        if !installs.is_empty() {
+            let p = sess.retry_install_plan(&present, &installs, &t.install_done);
+            plan.extend_after(p, &sess.catalog);
         }
         if !t.revert.is_empty() {
             plan.extend(sess.revert_plan(&present, &t.revert, Some(&t.revert_done)));
@@ -1111,6 +1128,7 @@ async fn run_plan(
     let ok = record.units.iter().filter(|u| u.outcome == "ok").count();
     let failed = record.units.len() - ok;
     let unrecorded = record.unrecorded.clone();
+    let shell_env_failed = record.shell_env_error.is_some();
     // The run is recorded; what is left is showing the end of it. A reader that stalls must not
     // keep envira from ending on a signal now: nothing is left to cancel or record.
     let show = tokio::task::spawn_blocking(move || {
@@ -1125,7 +1143,7 @@ async fn run_plan(
             say(format_args!(
                 "The run could not be recorded ({e}): `envira retry` may not know what it did."
             ));
-        } else if failed > 0 {
+        } else if failed > 0 || record.shell_env_error.is_some() {
             say(format_args!(
                 "Retry what did not finish with `envira retry`."
             ));
@@ -1137,7 +1155,7 @@ async fn run_plan(
         _ = int.recv() => std::process::exit(128 + libc::SIGINT),
         _ = term.recv() => std::process::exit(128 + libc::SIGTERM),
     }
-    Ok(if failed > 0 || unrecorded.is_some() {
+    Ok(if failed > 0 || unrecorded.is_some() || shell_env_failed {
         1
     } else {
         0

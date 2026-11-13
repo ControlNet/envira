@@ -59,18 +59,26 @@ check = 'case "$(getent passwd {user} | cut -d: -f7)" in */zsh) true ;; *) false
 # usermod (shadow) is on every distro; chsh is a separate package on Fedora (util-linux-user).
 # Unlike chsh it does not check /etc/shells, so take the path listed there: on Fedora PATH finds
 # /usr/sbin/zsh first, which is not.
-apply = '{sudo} usermod --shell "$(z=$(command -v zsh); grep -qx "$z" /etc/shells || z=$(grep -m1 "/zsh$" /etc/shells || echo "$z"); echo "$z")" {user}'
-revert = "{sudo} usermod --shell /bin/bash {user}"
+# The login shell it replaces is kept (once) in the state dir, and revert puts that one back.
+apply = 'd="${ENVIRA_STATE_DIR:-$HOME/.local/state/envira}"; mkdir -p "$d" && { [ -s "$d/default-shell.orig" ] || getent passwd {user} | cut -d: -f7 > "$d/default-shell.orig"; } && {sudo} usermod --shell "$(z=$(command -v zsh); grep -qx "$z" /etc/shells || z=$(grep -m1 "/zsh$" /etc/shells || echo "$z"); echo "$z")" {user}'
+revert = 'd="${ENVIRA_STATE_DIR:-$HOME/.local/state/envira}"; s=$(cat "$d/default-shell.orig" 2>/dev/null || true); case "$s" in */zsh | "") s=/bin/bash ;; esac; {sudo} usermod --shell "$s" {user} && rm -f "$d/default-shell.orig"'
 
 [configs.tmux-colors]
 desc = "tmux 256-colour terminal"
 steps = [{ use = "block", path = "~/.tmux.conf", block = "tmux-colors", content = "set -g default-terminal \"screen-256color\"\n" }]
 
 [configs.git-settings]
-desc = "git lsd alias (graph log) and the store credential helper"
+desc = "git lsd alias (graph log)"
 depends = ["git"]
 steps = [
   { use = "ini-set", file = "~/.gitconfig", section = "alias", key = "lsd", value = "log --graph --decorate --pretty=oneline --abbrev-commit --all" },
+]
+
+# Not in any bundle: `store` keeps git passwords and tokens in plain text (~/.git-credentials).
+[configs.git-credential-store]
+desc = "git keeps credentials in plain text in ~/.git-credentials (credential.helper = store)"
+depends = ["git"]
+steps = [
   { use = "ini-set", file = "~/.gitconfig", section = "credential", key = "helper", value = "store" },
 ]
 

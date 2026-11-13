@@ -280,6 +280,8 @@ pub enum FsCmd {
         #[arg(long)]
         check: bool,
     },
+    /// Back up a file (or that it is absent) before a command changes it; `restore` puts it back.
+    Keep { path: String },
     /// Undo envira's changes to a file (or one key).
     Restore {
         path: String,

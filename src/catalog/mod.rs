@@ -80,6 +80,11 @@ impl Catalog {
             .unwrap_or("")
     }
 
+    /// Whether `from` depends on `target`, directly or not, through any install entry.
+    pub fn depends_on(&self, from: &str, target: &str) -> bool {
+        from != target && validate::reaches(self, from, target, &mut Vec::new())
+    }
+
     /// Item-level dependencies of a tool or config.
     pub fn depends(&self, id: &str) -> &[String] {
         self.tools

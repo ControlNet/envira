@@ -7,8 +7,9 @@ scope = "system"
 when = ["os:linux", "!container"]
 steps = [
   { use = "line", file = "/etc/sysctl.conf", match = '^fs\.inotify\.max_user_watches=', line = "fs.inotify.max_user_watches=524288" },
-  # Also for the running kernel.
-  { check = '[ "$(cat /proc/sys/fs/inotify/max_user_watches)" -ge 524288 ]', run = "{sudo} sysctl -w fs.inotify.max_user_watches=524288" },
+  # Also for the running kernel. The limit it replaces is kept (once) in the state dir, and revert
+  # puts that one back; without it, the default returns at the next boot.
+  { check = '[ "$(cat /proc/sys/fs/inotify/max_user_watches)" -ge 524288 ]', run = 'd="${ENVIRA_STATE_DIR:-$HOME/.local/state/envira}"; mkdir -p "$d" && { [ -s "$d/inotify-watches.orig" ] || cat /proc/sys/fs/inotify/max_user_watches > "$d/inotify-watches.orig"; } && {sudo} sysctl -w fs.inotify.max_user_watches=524288', revert = 'd="${ENVIRA_STATE_DIR:-$HOME/.local/state/envira}"; v=$(cat "$d/inotify-watches.orig" 2>/dev/null || true); case "$v" in "" | *[!0-9]*) echo "the earlier limit was not kept; the default returns at the next boot" >&2 ;; *) {sudo} sysctl -w fs.inotify.max_user_watches="$v" && rm -f "$d/inotify-watches.orig" ;; esac' },
 ]
 
 [bundles.system]

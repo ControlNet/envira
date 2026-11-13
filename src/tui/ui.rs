@@ -2702,7 +2702,7 @@ mod tests {
         let mut a = app();
         a.selected = a.catalog.item_ids().into_iter().collect();
         let s = render(&a, 80, 24);
-        assert!(s.contains("… 106 more"), "{s}");
+        assert!(s.contains("… 107 more"), "{s}");
         let s = render(&a, 200, 60);
         assert!(s.contains("more · enter: see the plan"), "{s}");
     }

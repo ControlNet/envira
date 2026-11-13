@@ -88,5 +88,5 @@ install = [
 
 [bundles.extras]
 name = "Extras"
-desc = "Older or redundant tools from the legacy scripts (not in full/user)"
-items = ["lunarvim", "gedit", "tigervnc", "meslo-font", "screenfetch", "neofetch", "fastfetch", "archey4", "genact"]
+desc = "Older, redundant or opt-in items from the legacy scripts (not in full/user)"
+items = ["lunarvim", "gedit", "tigervnc", "meslo-font", "screenfetch", "neofetch", "fastfetch", "archey4", "genact", "git-credential-store"]

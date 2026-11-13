@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 use crate::catalog::Catalog;
 use crate::diagnose::diagnose;
 use crate::facts::Facts;
-use crate::plan::{Action, Kind, Plan, Unit};
+use crate::plan::{Action, Kind, Plan, Unit, UnitStep};
 use crate::runner::{Runner, StreamEnd};
 use crate::shellenv;
 use crate::state::{
@@ -437,9 +437,11 @@ pub async fn execute(
         } else {
             unless_cancelled(regenerate_shell_env(&ctx), &mut ctl, base).await
         };
-        tx.send(Event::ShellEnv(r.unwrap_or_else(|| {
+        let r = r.unwrap_or_else(|| {
             Err("not updated: the run was cancelled; `envira env` updates it".into())
-        })));
+        });
+        record.shell_env_error = r.as_ref().err().cloned();
+        tx.send(Event::ShellEnv(r));
     }
     state.mark_all_seen(&ctx.catalog);
     state.last_run = Some(ctx.run_id.clone());
@@ -457,12 +459,24 @@ pub async fn execute(
     (record, state)
 }
 
-/// The steps a unit got through, starting with those an earlier run got through (`resumed`). A
-/// revert also appends each to `<run dir>/<id>.steps` (a JSON string per line) as it ends: if
-/// envira dies midway, `retry` still knows where it stopped.
+/// The steps a unit got through ([`step_id`]), starting with those an earlier run got through
+/// (`resumed`). A revert also appends each to `<run dir>/<id>.steps` (a JSON string per line)
+/// as it ends: if envira dies midway, `retry` still knows where it stopped.
 struct Progress {
     done: Vec<String>,
+    /// Keys of the config steps whose command ran (a failed one may have changed part).
+    ran: Vec<String>,
     file: Option<std::fs::File>,
+}
+
+/// How progress names a step: a config step by its key, as labels repeat; an install step by
+/// its label, matched against the route it resumes on.
+fn step_id(step: &UnitStep) -> &str {
+    if step.key.is_empty() {
+        &step.label
+    } else {
+        &step.key
+    }
 }
 
 impl Progress {
@@ -486,18 +500,27 @@ impl Progress {
         }
         Ok(Progress {
             done: unit.resumed.clone(),
+            ran: vec![],
             file,
         })
     }
 
     /// Adds a step it got through; an error when the progress file cannot take it.
-    fn step(&mut self, label: &str) -> std::io::Result<()> {
-        self.done.push(label.to_string());
+    fn step(&mut self, step: &UnitStep) -> std::io::Result<()> {
+        let id = step_id(step);
+        self.done.push(id.to_string());
         if let Some(f) = &mut self.file {
-            f.write_all(journal_line(label).as_bytes())?;
+            f.write_all(journal_line(id).as_bytes())?;
             f.sync_data()?;
         }
         Ok(())
+    }
+
+    /// Notes that the command of a config step is about to run.
+    fn running(&mut self, step: &UnitStep) {
+        if !step.key.is_empty() {
+            self.ran.push(step.key.clone());
+        }
     }
 }
 
@@ -517,8 +540,10 @@ fn progress_lost<F: Fn(String)>(emit: &F, label: &str, e: std::io::Error) -> Out
 struct Trail {
     /// The last diagnosis hint.
     hint: Option<String>,
-    /// Labels of the steps it got through.
+    /// The steps it got through ([`step_id`]).
     done_steps: Vec<String>,
+    /// Keys of the config steps whose command ran: an apply records them as envira's changes.
+    ran: Vec<String>,
 }
 
 /// Records how a unit ended in the state and the run record, saves both, and reports it.
@@ -534,7 +559,7 @@ fn finish_unit(
     trail: Trail,
     elapsed: Duration,
 ) {
-    update_state(state, unit, &outcome, &ctx.run_id);
+    update_state(state, unit, &outcome, &trail, &ctx.run_id);
     let failed = !outcome.succeeded();
     record.units[idx] = UnitRecord {
         id: unit.id.clone(),
@@ -607,11 +632,19 @@ async fn run_unit(
         );
     }
     let started = Instant::now();
-    let (outcome, done) = match Progress::new(unit, run_dir, &ctx.facts) {
-        Ok(mut done) => (run_steps(unit, ctx, &emit, ctl, &mut done).await, done.done),
+    let (outcome, done, ran) = match Progress::new(unit, run_dir, &ctx.facts) {
+        Ok(mut p) => (
+            run_steps(unit, ctx, &emit, ctl, &mut p).await,
+            p.done,
+            p.ran,
+        ),
         Err(e) => {
             emit(format!("[envira] not started: {e:#}"));
-            (Outcome::Failed(format!("not started: {e:#}")), Vec::new())
+            (
+                Outcome::Failed(format!("not started: {e:#}")),
+                vec![],
+                vec![],
+            )
         }
     };
     if let Some(f) = log.lock().unwrap().as_mut() {
@@ -632,6 +665,7 @@ async fn run_unit(
         Trail {
             hint,
             done_steps: done,
+            ran,
         },
     )
 }
@@ -692,7 +726,7 @@ where
                 "[envira] {label} · {} · nothing to undo",
                 step.label
             ));
-            if let Err(e) = done.step(&step.label) {
+            if let Err(e) = done.step(step) {
                 return progress_lost(emit, &step.label, e);
             }
             continue;
@@ -702,21 +736,19 @@ where
                 "[envira] {label} · {} · already in place",
                 step.label
             ));
-            if let Err(e) = done.step(&step.label) {
+            if let Err(e) = done.step(step) {
                 return progress_lost(emit, &step.label, e);
             }
             continue;
         }
+        // Nothing in the catalog undoes this change: it is still there, and the config stays
+        // applied until it is undone by hand (then this step finds nothing to undo).
         let Some(cmd) = &step.cmd else {
-            emit(format!(
-                "[envira] {label} · {} · not described by the catalog, revert manually",
-                step.label
-            ));
-            if let Err(e) = done.step(&step.label) {
-                return progress_lost(emit, &step.label, e);
-            }
-            continue;
+            let m = format!("{}: no revert in the catalog; undo it by hand", step.label);
+            emit(format!("[envira] {label} · {m}"));
+            return Outcome::Failed(m);
         };
+        done.running(step);
         emit(format!("$ {cmd}"));
         // Under `sudo envira`, system-scope steps keep root (their `{sudo}` is empty); the rest
         // run as the user.
@@ -775,7 +807,7 @@ where
                 }
             }
         }
-        if let Err(e) = done.step(&step.label) {
+        if let Err(e) = done.step(step) {
             return progress_lost(emit, &step.label, e);
         }
     }
@@ -986,7 +1018,7 @@ pub fn redact(line: &str, secrets: &[String]) -> String {
     out
 }
 
-fn update_state(state: &mut State, unit: &Unit, outcome: &Outcome, run_id: &str) {
+fn update_state(state: &mut State, unit: &Unit, outcome: &Outcome, trail: &Trail, run_id: &str) {
     if matches!(outcome, Outcome::Skipped | Outcome::Blocked(_)) {
         return;
     }
@@ -1009,6 +1041,10 @@ fn update_state(state: &mut State, unit: &Unit, outcome: &Outcome, run_id: &str)
                 unit.id.clone(),
                 ToolRecord {
                     method: Some(unit.via.clone()),
+                    entry: match ok {
+                        true if !unit.entry.is_empty() => Some(unit.entry.clone()),
+                        _ => prev.as_ref().and_then(|p| p.entry.clone()),
+                    },
                     scope: Some(unit.scope),
                     version: match outcome {
                         Outcome::Ok { version } => version.clone(),
@@ -1028,10 +1064,33 @@ fn update_state(state: &mut State, unit: &Unit, outcome: &Outcome, run_id: &str)
                 (_, true) => true,
                 _ => prev.as_ref().is_some_and(|p| p.applied),
             };
+            // What envira changed and has not undone. A record without the list (an older
+            // envira's) stays without it while the config is applied: its revert undoes all.
+            let kept = match &prev {
+                Some(p) if p.changed.is_none() && p.applied => None,
+                Some(p) => Some(p.changed.clone().unwrap_or_default()),
+                None => Some(vec![]),
+            };
+            let changed = match unit.action {
+                Action::Revert if ok => Some(vec![]),
+                Action::Revert => kept.map(|mut k| {
+                    k.retain(|key| !trail.done_steps.contains(key));
+                    k
+                }),
+                _ => kept.map(|mut k| {
+                    for key in &trail.ran {
+                        if !k.contains(key) {
+                            k.push(key.clone());
+                        }
+                    }
+                    k
+                }),
+            };
             state.configs.insert(
                 unit.id.clone(),
                 ConfigRecord {
                     applied,
+                    changed,
                     applied_at: if applied && ok {
                         Some(state::now_rfc3339())
                     } else {
@@ -1471,6 +1530,7 @@ mod tests {
             crate::plan::UpdateTarget {
                 id: "codex".into(),
                 route: crate::plan::Route {
+                    key: String::new(),
                     entry: 0,
                     via: "npm".into(),
                     scope: crate::state::Scope::User,
@@ -1494,6 +1554,7 @@ mod tests {
     /// A unit outside the catalog; reverts skip the detection afterwards.
     fn unit(id: &str, cmd: &str, deps: &[&str]) -> Unit {
         Unit {
+            entry: String::new(),
             id: id.into(),
             kind: Kind::Tool,
             action: Action::Revert,
@@ -1878,10 +1939,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_shell_env_left_behind_is_in_the_run_record() {
+        let s = setup();
+        // The config dir cannot be made: the shell files cannot be written.
+        std::fs::create_dir_all(s.ctx.paths.config_dir.parent().unwrap()).unwrap();
+        std::fs::write(&s.ctx.paths.config_dir, "").unwrap();
+        s.runner.rule("ok", 0, "");
+        let mut ctx = ctx_of(&s);
+        ctx.shell_env = true;
+        let (tx, _rx) = events();
+        let (_c, ctl) = watch::channel(Control::default());
+        let plan = Plan {
+            units: vec![unit("a", "ok", &[])],
+            skipped: vec![],
+        };
+        let (rec, _) = execute(plan, ctx, State::default(), tx, ctl).await;
+        assert_eq!(outcomes(&rec), vec![("a", "ok")]);
+        assert!(rec.shell_env_error.is_some());
+        let disk = RunRecord::load(&s.ctx.paths, &s.ctx.run_id).unwrap();
+        assert_eq!(disk.shell_env_error, rec.shell_env_error);
+    }
+
+    #[test]
+    fn state_keeps_what_envira_changed() {
+        let mut st = State::default();
+        let cfg = |action| Unit {
+            kind: Kind::Config,
+            action,
+            ..unit("cfg", "", &[])
+        };
+        let ok = Outcome::Ok { version: None };
+        let failed = Outcome::Failed("x".into());
+        let trail = |done: &[&str], ran: &[&str]| Trail {
+            hint: None,
+            done_steps: done.iter().map(|s| s.to_string()).collect(),
+            ran: ran.iter().map(|s| s.to_string()).collect(),
+        };
+        let rec = |st: &State| st.configs["cfg"].clone();
+        // Step a was in place already; b is envira's.
+        update_state(
+            &mut st,
+            &cfg(Action::Apply),
+            &ok,
+            &trail(&["a", "b"], &["b"]),
+            "1",
+        );
+        assert_eq!(rec(&st).changed, Some(vec!["b".to_string()]));
+        // A later apply adds what it changed; a failed one too (it may have changed part).
+        update_state(
+            &mut st,
+            &cfg(Action::Apply),
+            &failed,
+            &trail(&[], &["c"]),
+            "2",
+        );
+        assert_eq!(
+            rec(&st).changed,
+            Some(vec!["b".to_string(), "c".to_string()])
+        );
+        // A revert that stops halfway drops what it undid; the config stays applied.
+        update_state(
+            &mut st,
+            &cfg(Action::Revert),
+            &failed,
+            &trail(&["c"], &["c"]),
+            "3",
+        );
+        assert!(rec(&st).applied);
+        assert_eq!(rec(&st).changed, Some(vec!["b".to_string()]));
+        update_state(
+            &mut st,
+            &cfg(Action::Revert),
+            &ok,
+            &trail(&["b"], &["b"]),
+            "4",
+        );
+        assert!(!rec(&st).applied);
+        assert_eq!(rec(&st).changed, Some(vec![]));
+        // A record of an older envira, without the list, stays without it while applied.
+        st.configs.get_mut("cfg").unwrap().changed = None;
+        st.configs.get_mut("cfg").unwrap().applied = true;
+        update_state(
+            &mut st,
+            &cfg(Action::Apply),
+            &ok,
+            &trail(&["a"], &["a"]),
+            "5",
+        );
+        assert_eq!(rec(&st).changed, None);
+        assert_eq!(st.config_changes()["cfg"], None);
+    }
+
+    #[tokio::test]
+    async fn a_revert_the_catalog_does_not_describe_fails() {
+        let s = setup();
+        s.runner.rule("undo-", 0, "");
+        let u = Unit {
+            steps: vec![
+                UnitStep {
+                    label: "a".into(),
+                    key: "a".into(),
+                    cmd: Some("undo-a".into()),
+                    ..Default::default()
+                },
+                UnitStep {
+                    label: "b".into(),
+                    key: "b".into(),
+                    ..Default::default()
+                },
+            ],
+            ..unit("cfg", "", &[])
+        };
+        let (rec, _, _) = run(
+            &s,
+            Plan {
+                units: vec![u],
+                skipped: vec![],
+            },
+        )
+        .await;
+        assert_eq!(outcomes(&rec), vec![("cfg", "failed")]);
+        let detail = rec.units[0].detail.clone().unwrap();
+        assert!(detail.contains("undo it by hand"), "{detail}");
+        // What it got through stays done for the retry.
+        assert_eq!(rec.units[0].done_steps, ["a"]);
+    }
+
+    #[tokio::test]
     async fn a_revert_that_stopped_halfway_resumes_where_it_failed() {
         let s = setup();
         let step = |l: &str| UnitStep {
             label: l.into(),
+            key: l.into(),
             cmd: Some(format!("undo-{l}")),
             only_if: Some(format!("in-place-{l}")),
             ..Default::default()

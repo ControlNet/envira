@@ -320,7 +320,49 @@ pub async fn check(
             },
         );
     }
+    flag_stale_apt(snap, &mut out, apt_lists_behind);
     out
+}
+
+/// apt's candidate comes from the local package lists: when they are behind (`apt::decide`),
+/// a candidate no newer than the installed package does not show the package is current.
+/// That answer becomes an error saying so; a newer candidate still counts.
+fn flag_stale_apt(
+    snap: &Snapshot,
+    out: &mut BTreeMap<String, Latest>,
+    behind: impl FnOnce() -> Option<String>,
+) {
+    let current: Vec<&str> = snap
+        .items
+        .iter()
+        .filter(|i| i.package_versions && i.route.as_ref().is_some_and(|r| r.via == "apt"))
+        .filter(|i| match (out.get(&i.id), &i.method_version) {
+            (Some(Latest::Version(l)), Some(v)) => !crate::version::is_newer_package(l, v),
+            _ => false,
+        })
+        .map(|i| i.id.as_str())
+        .collect();
+    if current.is_empty() {
+        return;
+    }
+    let Some(why) = behind() else { return };
+    for id in current {
+        out.insert(
+            id.to_string(),
+            Latest::Error(format!(
+                "apt's package lists may be behind ({why}); `sudo apt update` to check"
+            )),
+        );
+    }
+}
+
+/// Why apt's package lists on this machine may be behind the archive, or None when fresh.
+fn apt_lists_behind() -> Option<String> {
+    let now = std::time::SystemTime::now();
+    match crate::apt::decide(&crate::apt::Paths::default(), now, crate::apt::MAX_AGE) {
+        crate::apt::Decision::Refresh(why) => Some(why),
+        crate::apt::Decision::Fresh(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -369,7 +411,7 @@ mod tests {
         let q = query_for(&cat, &f, "build-tools", &gcc).unwrap().unwrap();
         assert_eq!(
             q.cmd.as_deref(),
-            Some("dnf -q -C repoquery --latest-limit=1 --qf '%{version}\\n' gcc make perl")
+            Some("dnf -q -C repoquery --latest-limit=1 --qf '%{evr}\\n' gcc make perl")
         );
         let tmux = route_of(&cat, "tmux", "zypper");
         let q = query_for(&cat, &f, "tmux", &tmux).unwrap().unwrap();
@@ -382,7 +424,7 @@ mod tests {
         let f = Facts::sample(Path::new("/home/user"));
         let r = FakeRunner::default();
         // Real output from Fedora and openSUSE Leap (a warning first, then the candidate).
-        r.rule("repoquery", 0, "15.2.1\n4.4.1\n5.40.2\n")
+        r.rule("repoquery", 0, "15.2.1-3.fc43\n1:4.4.1-10.fc43\n4:5.40.2-512.fc43\n")
             .rule(
                 "info tmux",
                 0,
@@ -395,12 +437,54 @@ mod tests {
                 .unwrap()
         };
         let gcc = run_query(&q("build-tools", "dnf"), &r).await;
-        assert_eq!(gcc.as_deref(), Ok("15.2.1"));
+        assert_eq!(gcc.as_deref(), Ok("15.2.1-3.fc43"));
         assert_eq!(
             run_query(&q("tmux", "zypper"), &r).await.as_deref(),
-            Ok("3.3a")
+            Ok("3.3a-150300.3.6.1")
         );
         assert!(run_query(&q("git", "zypper"), &r).await.is_err());
+    }
+
+    #[test]
+    fn apt_lists_behind_do_not_show_a_package_is_current() {
+        let item = |id: &str, installed: &str| {
+            let mut i = crate::tui::app::tests::item(
+                id,
+                crate::plan::Kind::Tool,
+                crate::status::Label::Installed,
+                true,
+            );
+            i.package_versions = true;
+            i.method_version = Some(installed.into());
+            i.route = Some(Route {
+                key: String::new(),
+                entry: 0,
+                via: "apt".into(),
+                scope: Scope::System,
+            });
+            i
+        };
+        let snap = Snapshot {
+            items: vec![item("bat", "0.24.0-1"), item("fd", "9.0.0-1")],
+            first_run: false,
+        };
+        let answers = || {
+            BTreeMap::from([
+                ("bat".to_string(), Latest::Version("0.24.0-1".into())),
+                ("fd".to_string(), Latest::Version("9.0.0-2".into())),
+            ])
+        };
+        // Fresh lists: as answered.
+        let mut out = answers();
+        flag_stale_apt(&snap, &mut out, || None);
+        assert_eq!(out, answers());
+        // Behind: the same version says nothing; a newer one still counts.
+        let mut out = answers();
+        flag_stale_apt(&snap, &mut out, || {
+            Some("the lists were refreshed 9 days ago".into())
+        });
+        assert!(matches!(&out["bat"], Latest::Error(e) if e.contains("9 days ago")));
+        assert_eq!(out["fd"], Latest::Version("9.0.0-2".into()));
     }
 
     fn route_of(cat: &Catalog, id: &str, via: &str) -> Route {
@@ -410,6 +494,7 @@ mod tests {
             .position(|e| e.method.as_deref().unwrap_or("run") == via)
             .unwrap();
         Route {
+            key: String::new(),
             entry,
             via: via.into(),
             scope: Scope::User,

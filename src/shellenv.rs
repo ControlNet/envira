@@ -56,8 +56,10 @@ fn home_rel(p: &Path, home: &Path) -> String {
 
 pub fn render(cat: &Catalog, facts: &Facts, paths: &Paths, present: &BTreeSet<String>) -> Rendered {
     let mut env = String::from(HEADER);
+    // A directory already on PATH moves to the front, where detection puts it: a user copy
+    // must win over a system one also on PATH (`$1` quoted in the patterns: taken literally).
     env.push_str(
-        "envira_path_prepend() {\n  [ -d \"$1\" ] || return 0\n  case \":$PATH:\" in *\":$1:\"*) ;; *) PATH=\"$1:$PATH\" ;; esac\n}\n",
+        "envira_path_prepend() {\n  [ -d \"$1\" ] || return 0\n  envira_p=\":$PATH:\"\n  while case \"$envira_p\" in *\":$1:\"*) true ;; *) false ;; esac; do\n    envira_p=\"${envira_p%%:\"$1\":*}:${envira_p#*:\"$1\":}\"\n  done\n  envira_p=\"${envira_p#:}\"\n  envira_p=\"${envira_p%:}\"\n  PATH=\"$1${envira_p:+:$envira_p}\"\n  unset envira_p\n}\n",
     );
     let mut zsh = String::from(HEADER);
     let mut bash = String::from(HEADER);
@@ -82,7 +84,14 @@ pub fn render(cat: &Catalog, facts: &Facts, paths: &Paths, present: &BTreeSet<St
                 env.push_str(&format!("envira_path_prepend {}\n", sh_path(p)));
             }
             for (k, v) in &sh.env {
-                env.push_str(&format!("export {k}={}\n", sh_path(v)));
+                // A path in the home (GOROOT=~/.go) only when it is there: a tool found
+                // elsewhere (Go from apt) must not be pointed at envira's layout.
+                if v.starts_with("~/") {
+                    let p = sh_path(v);
+                    env.push_str(&format!("[ -d {p} ] && export {k}={p}\n"));
+                } else {
+                    env.push_str(&format!("export {k}={}\n", sh_path(v)));
+                }
             }
         }
         let aliases: Vec<String> = sh
@@ -283,6 +292,45 @@ mod tests {
         (d, load(&[embedded_layer()]).unwrap().catalog, facts, paths)
     }
 
+    /// The generated env.sh, sourced by sh, bash and zsh: a managed dir already on PATH moves
+    /// to the front (all its copies go), absent dirs are left out, and GOROOT is set only when
+    /// ~/.go is there.
+    #[test]
+    fn env_sh_moves_managed_dirs_to_the_front() {
+        let (d, cat, facts, paths) = setup();
+        let present: BTreeSet<String> = ["go"].iter().map(|s| s.to_string()).collect();
+        let r = render(&cat, &facts, &paths, &present);
+        let env = d.path().join("env.sh");
+        std::fs::write(&env, &r.env_sh).unwrap();
+        std::fs::create_dir_all(d.path().join("go/bin")).unwrap();
+        let home = d.path().display().to_string();
+        for sh in ["sh", "bash", "zsh"] {
+            if std::process::Command::new("sh")
+                .args(["-c", &format!("command -v {sh}")])
+                .output()
+                .map_or(true, |o| !o.status.success())
+            {
+                continue;
+            }
+            let out = std::process::Command::new(sh)
+                .args([
+                    "-c",
+                    &format!(
+                        ". {} && printf '%s|%s' \"$PATH\" \"${{GOROOT-unset}}\"",
+                        env.display()
+                    ),
+                ])
+                .env("HOME", &home)
+                .env_remove("GOROOT")
+                .env_remove("ENV")
+                .env("PATH", format!("/usr/bin:{home}/go/bin:/bin:{home}/go/bin"))
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&out.stdout).to_string();
+            assert_eq!(out, format!("{home}/go/bin:/usr/bin:/bin|unset"), "{sh}");
+        }
+    }
+
     #[test]
     fn renders_only_present_tools_with_guards() {
         let (_d, cat, facts, paths) = setup();
@@ -293,7 +341,7 @@ mod tests {
         let r = render(&cat, &facts, &paths, &present);
         assert!(
             r.env_sh.contains(
-                "# bun\nenvira_path_prepend \"$HOME/.bun/bin\"\nexport BUN_INSTALL=\"$HOME/.bun\"\n"
+                "# bun\nenvira_path_prepend \"$HOME/.bun/bin\"\n[ -d \"$HOME/.bun\" ] && export BUN_INSTALL=\"$HOME/.bun\"\n"
             ),
             "{}",
             r.env_sh

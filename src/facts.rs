@@ -48,6 +48,10 @@ pub struct Facts {
     pub drop_to: Option<String>,
     /// Planned without sudo by choice (`without_sudo`), though sudo may be there.
     pub user_mode: bool,
+    /// envira's state dir, once known (`Session::open`): `envira fs` run through sudo gets it
+    /// explicitly, as sudo drops the environment, so backups are in one place whichever way
+    /// envira was started (`sudo envira` passes it as well).
+    pub state_dir: Option<PathBuf>,
 }
 
 impl Facts {
@@ -96,6 +100,7 @@ impl Facts {
             gid,
             drop_to,
             user_mode: false,
+            state_dir: None,
         }
     }
 
@@ -194,6 +199,7 @@ impl Facts {
             gid: 1000,
             drop_to: None,
             user_mode: false,
+            state_dir: None,
         }
     }
 }

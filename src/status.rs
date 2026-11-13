@@ -97,6 +97,10 @@ pub struct ItemStatus {
     /// latest version instead of `version`, which may come from another copy earlier on PATH.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method_version: Option<String>,
+    /// `method_version` and `latest` are whole package versions of a package manager
+    /// ([`PACKAGE_METHODS`]), compared as such.
+    #[serde(skip)]
+    pub package_versions: bool,
     pub ownership: Option<Ownership>,
     /// Resolved executable for present tools.
     pub path: Option<String>,
@@ -116,11 +120,27 @@ pub struct ItemStatus {
 }
 
 impl ItemStatus {
+    /// Whether the latest version known is newer than the one installed.
+    pub fn behind(&self) -> bool {
+        let Some(latest) = &self.latest else {
+            return false;
+        };
+        match (&self.method_version, self.package_versions) {
+            (Some(v), true) => crate::version::is_newer_package(latest, v),
+            (Some(v), false) => crate::version::is_newer(latest, v),
+            (None, _) => self
+                .version
+                .as_ref()
+                .is_some_and(|v| crate::version::is_newer(latest, v)),
+        }
+    }
+
     /// The state record that makes an adoptable tool managed, without reinstalling it.
     pub fn adoption(&self) -> Option<ToolRecord> {
         let r = self.route.as_ref()?;
         (self.ownership == Some(Ownership::Adoptable)).then(|| ToolRecord {
             method: Some(r.via.clone()),
+            entry: Some(r.key.clone()),
             scope: Some(r.scope),
             version: self.method_version.clone().or(self.version.clone()),
             installed_at: Some(crate::state::now_rfc3339()),
@@ -229,8 +249,7 @@ impl Snapshot {
                 }
                 Latest::Error(e) => i.latest_error = Some(e.clone()),
             }
-            let current = i.method_version.as_ref().or(i.version.as_ref());
-            let behind = matches!((&i.latest, current), (Some(l), Some(c)) if crate::version::is_newer(l, c));
+            let behind = i.behind();
             if i.label == Label::Installed && i.route.is_some() && behind {
                 i.label = Label::Outdated;
             } else if i.label == Label::Outdated && !behind {
@@ -453,7 +472,15 @@ pub async fn snapshot(
             } else if st.is_managed(id) {
                 let r = rec.and_then(|r| {
                     let m = r.method.as_deref()?;
-                    route_for(cat, facts, id, m, r.scope, planner.prefer_system)
+                    route_for(
+                        cat,
+                        facts,
+                        id,
+                        m,
+                        r.entry.as_deref(),
+                        r.scope,
+                        planner.prefer_system,
+                    )
                 });
                 if let Some(r) = rec {
                     via = r.method.clone().or(via.clone());
@@ -464,7 +491,9 @@ pub async fn snapshot(
                 let home = format!("{}/", facts.home.display());
                 let r = queried
                     .get(id)
-                    .and_then(|(m, _)| route_for(cat, facts, id, m, None, planner.prefer_system))
+                    .and_then(|(m, _)| {
+                        route_for(cat, facts, id, m, None, None, planner.prefer_system)
+                    })
                     .or_else(|| {
                         p.path
                             .as_deref()
@@ -525,6 +554,7 @@ pub async fn snapshot(
                 present: p.present,
                 version: p.version.clone(),
                 method_version: queried.get(id).and_then(|(_, v)| v.clone()),
+                package_versions: route.as_ref().is_some_and(|r| package_versions(cat, id, r)),
                 ownership,
                 path: p.path.clone(),
                 desired: is_desired,
@@ -543,6 +573,23 @@ pub async fn snapshot(
         items,
         first_run: state.is_none(),
     }
+}
+
+/// Methods of package managers: their `installed` and `latest` queries give whole package
+/// versions (`epoch:version-revision`), compared the way the package manager does (a new
+/// revision of the same version is newer).
+pub const PACKAGE_METHODS: [&str; 4] = ["apt", "dnf", "pacman", "zypper"];
+
+/// Whether the latest version of a tool on `route` comes from a package manager's own query
+/// (not from the entry's, an upstream release).
+pub fn package_versions(cat: &Catalog, id: &str, route: &Route) -> bool {
+    let Some(e) = cat.tools.get(id).and_then(|t| t.install.get(route.entry)) else {
+        return false;
+    };
+    e.latest.is_none()
+        && e.method
+            .as_deref()
+            .is_some_and(|m| PACKAGE_METHODS.contains(&m))
 }
 
 fn deps_present(
@@ -708,6 +755,7 @@ mod tests {
         st.tools.insert(
             "codex".into(),
             ToolRecord {
+                entry: None,
                 method: Some("npm".into()),
                 scope: Some(Scope::User),
                 version: Some("0.46.0".into()),
@@ -720,6 +768,7 @@ mod tests {
         st.tools.insert(
             "fnm".into(),
             ToolRecord {
+                entry: None,
                 method: None,
                 scope: None,
                 version: None,
@@ -733,6 +782,7 @@ mod tests {
             "codex-sandbox-network".into(),
             crate::state::ConfigRecord {
                 applied: true,
+                changed: None,
                 applied_at: None,
                 last_result: LastResult::Ok,
                 last_error: None,
@@ -748,7 +798,20 @@ mod tests {
             (Label::Installed, Some(Ownership::Adoptable), Some("apt"))
         );
         assert_eq!(bat.version.as_deref(), Some("0.24.0"));
-        assert_eq!(bat.method_version.as_deref(), Some("0.24.0"));
+        // The whole package version, revision included: a new revision is an update.
+        assert_eq!(bat.method_version.as_deref(), Some("0.24.0-1build1"));
+        assert!(bat.package_versions);
+        let mut s = snap.clone();
+        s.apply_latest(&BTreeMap::from([(
+            "bat".to_string(),
+            crate::latest::Latest::Version("0.24.0-1build2".into()),
+        )]));
+        assert_eq!(s.get("bat").unwrap().label, Label::Outdated);
+        s.apply_latest(&BTreeMap::from([(
+            "bat".to_string(),
+            crate::latest::Latest::Version("0.24.0-1build1".into()),
+        )]));
+        assert_eq!(s.get("bat").unwrap().label, Label::Installed);
         assert_eq!(get("herdr").ownership, Some(Ownership::Adoptable));
         assert_eq!(get("yazi").ownership, Some(Ownership::External));
         assert_eq!(get("codex").ownership, Some(Ownership::Managed));
@@ -797,6 +860,7 @@ mod tests {
         st.tools.insert(
             "codex".into(),
             ToolRecord {
+                entry: None,
                 method: Some("npm".into()),
                 scope: Some(Scope::User),
                 version: Some("0.46.0".into()),

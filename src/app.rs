@@ -68,8 +68,9 @@ pub fn scoped(facts: Facts, scope: Option<ScopeArg>, has_sudo: bool) -> Facts {
 
 impl Session {
     pub fn open(global: &Global) -> Result<Session> {
-        let facts = scoped(Facts::probe(), global.scope, crate::facts::which("sudo"));
+        let mut facts = scoped(Facts::probe(), global.scope, crate::facts::which("sudo"));
         let paths = Paths::new(&facts);
+        facts.state_dir = Some(paths.state_dir.clone());
         let loaded = load_valid(global, &paths, &facts)?;
         let budget = Arc::new(Budget::for_scans(paths.state_dir.join("probes.toml")));
         let runner = real_runner(&loaded.catalog, &facts, &paths, &budget);
@@ -210,6 +211,13 @@ impl Session {
         let mut p = Planner::new(&self.catalog, self.plan_facts(), present);
         p.prefer_system = self.prefer_system();
         p.retrying = retrying.cloned();
+        // State that cannot be read leaves no record: a config in place reverts in full.
+        p.changes = self
+            .state()
+            .ok()
+            .flatten()
+            .map(|s| s.config_changes())
+            .unwrap_or_default();
         p.revert(targets)
     }
 
@@ -233,13 +241,16 @@ pub fn catalog_options(global: &Global, paths: &Paths, facts: &Facts) -> Catalog
     CatalogOptions {
         explicit: global.catalog.clone(),
         overlay: (!global.no_overlay).then(|| paths.overlay_dir()),
-        remote: (!global.no_remote).then(|| catalog::remote::Remote {
-            url: std::env::var("ENVIRA_CATALOG_URL")
+        remote: (!global.no_remote).then(|| {
+            let url = std::env::var("ENVIRA_CATALOG_URL")
                 .ok()
                 .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| catalog::remote::URL.into()),
-            cache: paths.cache_dir.join("catalog.toml"),
-            owner: facts.drop_to.as_ref().map(|_| (facts.uid, facts.gid)),
+                .unwrap_or_else(|| catalog::remote::URL.into());
+            catalog::remote::Remote {
+                cache: catalog::remote::cache_file(&paths.cache_dir, &url),
+                url,
+                owner: facts.drop_to.as_ref().map(|_| (facts.uid, facts.gid)),
+            }
         }),
     }
 }

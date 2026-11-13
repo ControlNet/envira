@@ -618,7 +618,7 @@ impl App {
             .collect();
         // Updates first: an install may depend on a tool being updated.
         let mut plan = self.make_update_plan(&updates);
-        plan.extend(self.make_plan(&rest));
+        plan.extend_after(self.make_plan(&rest), &self.catalog);
         plan
     }
 
@@ -671,10 +671,11 @@ impl App {
 
     /// Retries each unit the way it ran: install/apply, update or revert.
     fn retry_plan(&self, t: &crate::plan::RetryTargets) -> Plan {
+        let mut t = t.clone();
+        let mut installs = t.install.clone();
+        installs.extend(t.take_gone(&self.present()));
+        // Updates first: an install may depend on a tool being updated.
         let mut plan = Plan::default();
-        if !t.install.is_empty() {
-            plan.extend(self.make_retry_install(&t.install, &t.install_done));
-        }
         if !t.update.is_empty() {
             let (targets, skipped) = self
                 .snap
@@ -684,6 +685,12 @@ impl App {
             let mut p = self.make_update_plan(&targets);
             p.skipped.extend(skipped);
             plan.extend(p);
+        }
+        if !installs.is_empty() {
+            plan.extend_after(
+                self.make_retry_install(&installs, &t.install_done),
+                &self.catalog,
+            );
         }
         if !t.revert.is_empty() {
             plan.extend(self.make_revert(&t.revert, Some(&t.revert_done)));
@@ -701,6 +708,11 @@ impl App {
         let present = self.present();
         let mut p = self.planner(&present);
         p.retrying = retrying.cloned();
+        p.changes = self
+            .state
+            .as_ref()
+            .map(State::config_changes)
+            .unwrap_or_default();
         p.revert(targets)
     }
 
@@ -1072,10 +1084,21 @@ impl App {
             }
             KeyCode::Char('x') => {
                 let present = self.present();
+                // Also configs applied in part, or changed since: envira's changes are undone.
+                let changes = self
+                    .state
+                    .as_ref()
+                    .map(State::config_changes)
+                    .unwrap_or_default();
+                let left = |id: &String| match changes.get(id) {
+                    Some(Some(keys)) => !keys.is_empty(),
+                    Some(None) => true,
+                    None => false,
+                };
                 let mut t: Vec<String> = self
                     .selected_ids()
                     .into_iter()
-                    .filter(|id| present.contains(id))
+                    .filter(|id| present.contains(id) || left(id))
                     .collect();
                 if t.is_empty() {
                     t = self
@@ -1669,6 +1692,7 @@ pub mod tests {
             present,
             version: present.then(|| "1.0.0".into()),
             method_version: None,
+            package_versions: false,
             ownership: present.then_some(Ownership::Adoptable),
             path: None,
             desired,
@@ -1676,6 +1700,7 @@ pub mod tests {
             via: Some("script".into()),
             scope: None,
             route: (present && kind == Kind::Tool).then(|| crate::plan::Route {
+                key: String::new(),
                 entry: 0,
                 via: "script".into(),
                 scope: crate::state::Scope::User,

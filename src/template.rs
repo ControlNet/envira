@@ -125,7 +125,19 @@ impl Vars {
                 String::new()
             },
         );
-        b.insert("envira", envira_exe());
+        // Through sudo, which drops the environment, `envira fs` is told the state dir (its
+        // backups): `sudo -A env ENVIRA_STATE_DIR=… envira`. Already shell words.
+        let exe = shell_quote(&envira_exe());
+        b.insert(
+            "envira",
+            match &facts.state_dir {
+                Some(d) if system_scope && !facts.is_root() => format!(
+                    "env ENVIRA_STATE_DIR={} {exe}",
+                    shell_quote(&d.display().to_string())
+                ),
+                _ => exe,
+            },
+        );
         b.insert("id", id.to_string());
         b.insert("bin", bin.to_string());
         Vars {
@@ -196,7 +208,7 @@ impl Vars {
         }
         if let Some(v) = self.builtins.get(name) {
             return Ok(match ctx {
-                Ctx::Shell if name == "sudo" || v.is_empty() => v.clone(),
+                Ctx::Shell if name == "sudo" || name == "envira" || v.is_empty() => v.clone(),
                 Ctx::Shell => shell_quote(v),
                 Ctx::Regex => regex::escape(v),
                 Ctx::Url => v.clone(),
@@ -544,6 +556,26 @@ mod tests {
         let facts = Facts::sample(Path::new("/home/user"));
         let v = Vars::new(&facts, "x", "x", "/usr/local/bin", true);
         assert_eq!(v.expand("{sudo} apt", Ctx::Shell).unwrap(), "sudo -A apt");
+    }
+
+    #[test]
+    fn envira_through_sudo_gets_the_state_dir() {
+        let mut facts = Facts::sample(Path::new("/home/user"));
+        facts.state_dir = Some("/home/user/my state".into());
+        let exe = shell_quote(&envira_exe());
+        let sys = Vars::new(&facts, "x", "x", "/usr/local/bin", true);
+        assert_eq!(
+            sys.expand("{sudo} {envira} fs restore f", Ctx::Shell)
+                .unwrap(),
+            format!("sudo -A env ENVIRA_STATE_DIR='/home/user/my state' {exe} fs restore f")
+        );
+        // Without sudo the steps have it in their environment already.
+        let user = Vars::new(&facts, "x", "x", "~/.local/bin", false);
+        assert_eq!(
+            user.expand("{sudo} {envira} fs restore f", Ctx::Shell)
+                .unwrap(),
+            format!("{exe} fs restore f")
+        );
     }
 
     #[test]

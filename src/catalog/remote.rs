@@ -25,6 +25,18 @@ pub struct Remote {
     pub owner: Option<(u32, u32)>,
 }
 
+/// Where the catalog from `url` is cached (with its ETag next to it): each source its own, so
+/// another `ENVIRA_CATALOG_URL` neither reuses nor revalidates the catalog of the last.
+pub fn cache_file(cache_dir: &Path, url: &str) -> PathBuf {
+    if url == URL {
+        return cache_dir.join("catalog.toml");
+    }
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(url.as_bytes());
+    let id: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+    cache_dir.join(format!("catalog-{id}.toml"))
+}
+
 pub enum Fetched {
     NotModified,
     New { text: String, etag: Option<String> },
@@ -233,6 +245,17 @@ fn describe(e: reqwest::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn each_catalog_source_has_its_own_cache() {
+        let d = Path::new("/c");
+        assert_eq!(cache_file(d, URL), d.join("catalog.toml"));
+        let a = cache_file(d, "https://example.org/a.toml");
+        let b = cache_file(d, "https://example.org/b.toml");
+        assert_ne!(a, b);
+        assert_ne!(a, d.join("catalog.toml"));
+        assert_eq!(a, cache_file(d, "https://example.org/a.toml"));
+    }
+
     use super::*;
     use crate::catalog::load::embedded_layer;
 

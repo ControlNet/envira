@@ -43,7 +43,10 @@ desc = "oh-my-opencode plugin for opencode (no provider logins)"
 depends = ["opencode", "bun"]
 # The plugin was renamed oh-my-openagent; the installer writes the new name.
 check = "grep -qsE 'oh-my-(opencode|openagent)' \"$HOME/.config/opencode/opencode.json\" \"$HOME/.config/opencode/opencode.jsonc\""
-apply = "bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no"
+# The opencode config is kept before the installer registers the plugin, and revert puts it back
+# (files of the plugin's own stay).
+apply = "{envira} fs keep ~/.config/opencode/opencode.json && {envira} fs keep ~/.config/opencode/opencode.jsonc && bunx oh-my-opencode install --no-tui --claude=no --openai=no --gemini=no --copilot=no"
+revert = "{envira} fs restore ~/.config/opencode/opencode.jsonc && {envira} fs restore ~/.config/opencode/opencode.json"
 
 [tools.openchamber]
 desc = "Web UI for opencode"

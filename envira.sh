@@ -62,7 +62,8 @@ main() {
   fi
 
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
+  staged=""
+  trap 'rm -rf "$tmp"; [ -z "$staged" ] || rm -f "$staged"' EXIT
   info "Downloading $asset from $base"
   fetch "$base/$asset" "$tmp/$asset" || fail "could not download $base/$asset"
   fetch "$base/$asset.sha256" "$tmp/$asset.sha256" || fail "could not download $base/$asset.sha256"
@@ -73,10 +74,16 @@ main() {
 
   chmod 755 "$tmp/$asset"
   version=$("$tmp/$asset" --version) || fail "the downloaded envira does not run on this machine."
-  mkdir -p "$dir"
-  # Replace atomically: a running envira keeps its old file.
-  mv -f "$tmp/$asset" "$dir/.envira.new"
-  mv -f "$dir/.envira.new" "$dir/envira"
+  mkdir -p "$dir" || fail "cannot create $dir"
+  # `mv` onto a directory (or a link to one) would move envira into it and succeed.
+  [ ! -d "$dir/envira" ] || fail "$dir/envira is a directory; move it away and run this again."
+  # Replace atomically: a running envira keeps its old file. Staged under a name of its own in
+  # the same directory, so the last step is a rename that cannot meet another file.
+  staged=$(mktemp "$dir/.envira.XXXXXX") || fail "cannot write to $dir"
+  mv -f "$tmp/$asset" "$staged"
+  chmod 755 "$staged"
+  mv -f "$staged" "$dir/envira" || fail "could not install $dir/envira"
+  staged=""
   printf "${GREEN}${BOLD}[envira]${RESET} %s installed to %s\n" "$version" "$dir/envira"
   # exec skips the EXIT trap.
   rm -rf "$tmp"

@@ -85,6 +85,9 @@ pub enum LastResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRecord {
     pub method: Option<String>,
+    /// Which install entry of that method (`plan::entry_key`): updates take the same one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
     pub scope: Option<Scope>,
     pub version: Option<String>,
     /// Set once envira installed the tool successfully: it is then `managed`.
@@ -97,10 +100,29 @@ pub struct ToolRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRecord {
     pub applied: bool,
+    /// Keys of the steps envira changed and has not undone (`plan::step_key`): a revert
+    /// undoes only those. None in a record of an envira that did not keep them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
     pub applied_at: Option<String>,
     pub last_result: LastResult,
     pub last_error: Option<String>,
     pub last_run: Option<String>,
+}
+
+impl State {
+    /// What envira changed per config (see `Planner::changes`): the keys (none when it found
+    /// everything in place), or None for an applied config whose record does not list them.
+    pub fn config_changes(&self) -> BTreeMap<String, Option<Vec<String>>> {
+        self.configs
+            .iter()
+            .filter_map(|(id, r)| match &r.changed {
+                Some(keys) => Some((id.clone(), Some(keys.clone()))),
+                None if r.applied => Some((id.clone(), None)),
+                None => None,
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -428,6 +450,9 @@ pub struct RunRecord {
     pub finished: Option<String>,
     #[serde(default)]
     pub units: Vec<UnitRecord>,
+    /// Why the shell environment was not brought up to date after the units: `retry` does it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_env_error: Option<String>,
     /// Set when saving the run failed: why the record on disk (and the state) is behind this
     /// one, so `retry` may not know what the run did.
     #[serde(skip)]
@@ -474,6 +499,7 @@ impl RunRecord {
                     ..Default::default()
                 })
                 .collect(),
+            shell_env_error: None,
             unrecorded: None,
         }
     }
@@ -650,6 +676,7 @@ mod tests {
         run.tools.insert(
             "bat".into(),
             ToolRecord {
+                entry: None,
                 method: Some("apt".into()),
                 scope: None,
                 version: None,
@@ -710,6 +737,7 @@ mod tests {
         st.tools.insert(
             "bat".into(),
             ToolRecord {
+                entry: None,
                 method: Some("apt".into()),
                 scope: Some(Scope::System),
                 version: Some("0.24.0".into()),

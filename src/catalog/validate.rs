@@ -100,7 +100,7 @@ pub fn validate(loaded: &Loaded) -> Report {
 }
 
 /// True when item `from` is `target` or depends on it, directly or through any install entry.
-fn reaches(cat: &Catalog, from: &str, target: &str, seen: &mut Vec<String>) -> bool {
+pub(crate) fn reaches(cat: &Catalog, from: &str, target: &str, seen: &mut Vec<String>) -> bool {
     if from == target {
         return true;
     }
@@ -421,6 +421,13 @@ fn check_configs(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
             if cf.check.is_none() {
                 c.err("configs", id, "raw `apply` without `check` is not allowed");
             }
+            if cf.revert.is_none() {
+                c.warn(
+                    "configs",
+                    id,
+                    "no `revert`: reverting it fails until the change is undone by hand",
+                );
+            }
             for (what, cmd) in [
                 ("check", &cf.check),
                 ("apply", &cf.apply),
@@ -450,8 +457,16 @@ fn check_configs(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                         any_check = true;
                         check_raw(c, "configs", id, &what, chk);
                     }
-                    if let Some(rev) = &s.revert {
-                        check_raw(c, "configs", id, &what, rev);
+                    match &s.revert {
+                        Some(rev) => check_raw(c, "configs", id, &what, rev),
+                        None => c.warn(
+                            "configs",
+                            id,
+                            format!(
+                                "{what}: {}",
+                                "no `revert`: reverting it fails until the change is undone by hand"
+                            ),
+                        ),
                     }
                     for k in s.params.keys() {
                         c.err(
@@ -473,6 +488,13 @@ fn check_configs(c: &mut Ctx, cat: &Catalog, ids: &BTreeSet<&str>) {
                         None => c.err("configs", id, format!("{what}: unknown action {a:?}")),
                         Some(act) => {
                             any_check |= act.check.is_some();
+                            if act.revert.is_none() {
+                                c.warn(
+                                    "configs",
+                                    id,
+                                    format!("{what}: action {a:?} has no `revert` template"),
+                                );
+                            }
                             let tpls: Vec<&str> = [&act.check, &act.apply, &act.revert]
                                 .into_iter()
                                 .flatten()

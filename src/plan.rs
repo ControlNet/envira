@@ -58,7 +58,7 @@ pub struct RetryTargets {
     pub install: Vec<String>,
     pub update: Vec<String>,
     pub revert: Vec<String>,
-    /// The steps each revert got through (labels), from the run record.
+    /// The steps each revert got through (step keys), from the run record.
     pub revert_done: BTreeMap<String, Vec<String>>,
     /// The steps each failed install got through (see `Planner::finishing`).
     pub install_done: InstallsDone,
@@ -76,6 +76,16 @@ impl RetryTargets {
             }
         }
         t
+    }
+
+    /// Takes out the updates of tools no longer present (an update that failed after it removed
+    /// the old version): an update plan skips those as not installed, so they are installed.
+    pub fn take_gone(&mut self, present: &BTreeSet<String>) -> Vec<String> {
+        let (keep, gone) = std::mem::take(&mut self.update)
+            .into_iter()
+            .partition(|id| present.contains(id));
+        self.update = keep;
+        gone
     }
 
     /// Adds how far the reverts got, from the run's records, or for a unit still `pending`
@@ -143,6 +153,23 @@ pub struct UnitStep {
     /// after the one that failed undoes its change only while the change is in place.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub only_if: Option<String>,
+    /// Identity of a config step, the same for its apply and its revert ([`step_key`]): what
+    /// state records as changed by envira and a revert's progress refer to it, as labels
+    /// repeat (two `ini-set ~/.gitconfig`) and the catalog may reorder steps.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key: String,
+}
+
+/// [`UnitStep::key`] of a config step: from what undoes it (its revert command; the apply
+/// when it has none), which stays when only the value it sets changes.
+pub fn step_key(revert: Option<&str>, apply: &str) -> String {
+    use sha2::Digest;
+    let text = match revert {
+        Some(r) => format!("revert\0{r}"),
+        None => format!("apply\0{apply}"),
+    };
+    let hash = sha2::Sha256::digest(text.as_bytes());
+    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,6 +198,9 @@ pub struct Unit {
     /// left out; empty for other actions.
     #[serde(skip)]
     pub route: String,
+    /// [`entry_key`] of the install entry a tool unit runs (empty otherwise).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub entry: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -184,6 +214,24 @@ impl Plan {
     /// Appends `other` (a plan for other ids).
     pub fn extend(&mut self, other: Plan) {
         self.units.extend(other.units);
+        self.skipped.extend(other.skipped);
+    }
+
+    /// [`extend`](Self::extend) with a plan made on its own, which took the tools this one
+    /// changes (updates) as present: its units also wait for those they depend on.
+    pub fn extend_after(&mut self, other: Plan, cat: &Catalog) {
+        let before: Vec<String> = self.units.iter().map(|u| u.id.clone()).collect();
+        for mut u in other.units {
+            if before.contains(&u.id) {
+                continue;
+            }
+            for id in &before {
+                if !u.deps.contains(id) && cat.depends_on(&u.id, id) {
+                    u.deps.push(id.clone());
+                }
+            }
+            self.units.push(u);
+        }
         self.skipped.extend(other.skipped);
     }
 
@@ -269,6 +317,8 @@ fn uses_sudo(cmd: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct Choice {
     pub via: String,
+    /// [`entry_key`] of the install entry (empty for a config).
+    pub entry: String,
     pub scope: Scope,
     pub deps: Vec<String>,
     pub steps: Vec<UnitStep>,
@@ -310,6 +360,18 @@ pub struct Route {
     pub entry: usize,
     pub via: String,
     pub scope: Scope,
+    /// [`entry_key`] of the entry.
+    pub key: String,
+}
+
+/// Identity of an install entry, kept with a tool envira manages: its method, command and
+/// parameters, which stay when the catalog reorders entries (another `run` takes the place the
+/// one that installed the tool had) or edits how one is updated.
+pub fn entry_key(e: &InstallEntry) -> String {
+    use sha2::Digest;
+    let text = serde_json::to_string(&(&e.method, &e.run, &e.params)).unwrap_or_default();
+    let hash = sha2::Sha256::digest(text.as_bytes());
+    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Whether the item's own `when` holds here. A dependency that does not apply to this machine
@@ -353,36 +415,56 @@ fn install_template<'c>(cat: &'c Catalog, e: &'c InstallEntry) -> Option<&'c str
     }
 }
 
-/// Route of a tool recorded (managed) or matched (adoption query) with method `via`.
+/// Route of a tool recorded (managed) or matched (adoption query) with method `via`: the entry
+/// recorded (`key`, see [`entry_key`]) while the catalog has it, else the first with that name.
 pub fn route_for(
     cat: &Catalog,
     facts: &Facts,
     id: &str,
     via: &str,
+    key: Option<&str>,
     scope: Option<Scope>,
     prefer_system: bool,
 ) -> Option<Route> {
     let tool = cat.tools.get(id)?;
-    let (idx, e) = tool
-        .install
-        .iter()
-        .enumerate()
-        .find(|(_, e)| entry_name(e) == via && entry_usable(cat, facts, e))?;
+    let usable = |e: &&InstallEntry| entry_name(e) == via && entry_usable(cat, facts, e);
+    let mut entries = tool.install.iter().enumerate();
+    let (idx, e) = key
+        .and_then(|k| {
+            entries
+                .clone()
+                .find(|(_, e)| usable(e) && entry_key(e) == k)
+        })
+        .or_else(|| entries.find(|(_, e)| usable(e)))?;
     Some(Route {
         entry: idx,
         via: via.to_string(),
         scope: scope.unwrap_or_else(|| resolve_scope(entry_scope_spec(cat, e), prefer_system)),
+        key: entry_key(e),
     })
 }
 
 /// Route of a tool found only by its binary path in the user's home: the first usable user-scope
 /// entry that would install it there. Entries whose method has an `installed` query are skipped
 /// (that query already said no), and entries that install into `{bin_dir}` must match the
-/// binary's directory, so an update never leaves a second copy elsewhere.
+/// binary's directory, so an update never leaves a second copy elsewhere. Other entries install
+/// where their installer puts the tool: when the tool's shell paths say where that is
+/// (`~/.fzf/bin`), the binary must be in there (`~/.fzf`), not anywhere in the home (a `fzf`
+/// in `~/go/bin` is not the one `~/.fzf/install` updates).
 pub fn path_route(cat: &Catalog, facts: &Facts, id: &str, path: &str) -> Option<Route> {
     let tool = cat.tools.get(id)?;
     let user_bin = facts.expand_home(bin_dir(cat, Scope::User));
     let parent = std::path::Path::new(path).parent()?;
+    let declared: Vec<std::path::PathBuf> = tool
+        .shell
+        .iter()
+        .flat_map(|s| &s.path)
+        .map(|p| facts.expand_home(p).into())
+        .collect();
+    let in_declared = declared.is_empty()
+        || declared.iter().any(|d| {
+            parent == d.as_path() || d.parent().is_some_and(|top| parent.starts_with(top))
+        });
     tool.install.iter().enumerate().find_map(|(idx, e)| {
         let user_ok = matches!(
             entry_scope_spec(cat, e),
@@ -395,12 +477,17 @@ pub fn path_route(cat: &Catalog, facts: &Facts, id: &str, path: &str) -> Option<
             .is_some_and(|m| m.installed.is_some());
         let dir_ok = !queried
             && install_template(cat, e).is_some_and(|t| {
-                !t.contains("{bin_dir}") || parent == std::path::Path::new(&user_bin)
+                if t.contains("{bin_dir}") {
+                    parent == std::path::Path::new(&user_bin)
+                } else {
+                    in_declared
+                }
             });
         (entry_usable(cat, facts, e) && user_ok && dir_ok).then(|| Route {
             entry: idx,
             via: entry_name(e).to_string(),
             scope: Scope::User,
+            key: entry_key(e),
         })
     })
 }
@@ -533,6 +620,12 @@ pub struct Planner<'a> {
     /// is present now gets the steps it did not get through (the system-wide copy of a portable
     /// build), not "already present".
     pub finishing: InstallsDone,
+    /// What envira changed per config, from state (`State::config_changes`): the steps it
+    /// changed and has not undone, `None` for a record of an envira that did not keep them.
+    /// A revert undoes only those steps, and is possible while any are left, even when the
+    /// config no longer passes its checks (applied in part, or changed since). A config with
+    /// no record is not reverted (envira did not change it, or kept no state then).
+    pub changes: BTreeMap<String, Option<Vec<String>>>,
     memo: BTreeMap<String, Result<Choice, String>>,
     visiting: BTreeSet<String>,
 }
@@ -546,6 +639,7 @@ impl<'a> Planner<'a> {
             prefer_system: facts.privilege.can_elevate(),
             retrying: None,
             finishing: BTreeMap::new(),
+            changes: BTreeMap::new(),
             memo: BTreeMap::new(),
             visiting: BTreeSet::new(),
         }
@@ -639,6 +733,7 @@ impl<'a> Planner<'a> {
                 Ok(steps) => {
                     return Ok(Choice {
                         via: name.to_string(),
+                        entry: entry_key(entry),
                         scope,
                         deps,
                         steps,
@@ -714,6 +809,7 @@ impl<'a> Planner<'a> {
             cmd: Some(vars.expand(&tpl, Ctx::Shell)?),
             as_root: false,
             only_if: None,
+            key: String::new(),
         }];
         if entry.portable
             && scope == Scope::User
@@ -740,6 +836,7 @@ impl<'a> Planner<'a> {
                     cmd: Some(c),
                     as_root: true,
                     only_if: None,
+                    key: String::new(),
                 });
             }
         }
@@ -820,6 +917,7 @@ impl<'a> Planner<'a> {
                         expect: t.expect.clone(),
                         resumed: vec![],
                         route: String::new(),
+                        entry: t.route.key.clone(),
                     });
                 }
                 Err(e) => plan.skipped.push((t.id.clone(), e)),
@@ -844,6 +942,7 @@ impl<'a> Planner<'a> {
         let steps = cs
             .into_iter()
             .map(|s| UnitStep {
+                key: step_key(s.revert.as_deref(), &s.apply),
                 label: s.label,
                 check: s.check,
                 cmd: Some(s.apply),
@@ -853,6 +952,7 @@ impl<'a> Planner<'a> {
             .collect();
         Ok(Choice {
             via: "config".into(),
+            entry: String::new(),
             scope,
             deps: cf.depends.clone(),
             steps,
@@ -937,6 +1037,7 @@ impl<'a> Planner<'a> {
                 Action::Install
             },
             route,
+            entry: choice.entry,
             via: choice.via,
             scope: choice.scope,
             steps: choice.steps,
@@ -957,8 +1058,20 @@ impl<'a> Planner<'a> {
                     .push((id.clone(), "only configs can be reverted".into()));
                 continue;
             };
-            if !self.present.contains(id) && self.retrying.is_none() {
-                plan.skipped.push((id.clone(), "not applied".into()));
+            let changed = self.changes.get(id);
+            let left = match changed {
+                Some(Some(keys)) => !keys.is_empty(),
+                Some(None) => true,
+                None => false,
+            };
+            // Only what envira changed is undone: a config it never applied here, or found in
+            // place (a theme file, a group the user was in), is the user's.
+            if !left && self.retrying.is_none() {
+                let why = match self.present.contains(id) {
+                    true => "envira did not change it (it was in place already)",
+                    false => "not applied",
+                };
+                plan.skipped.push((id.clone(), why.into()));
                 continue;
             }
             let scope = resolve_scope(cf.scope, self.prefer_system);
@@ -977,10 +1090,16 @@ impl<'a> Planner<'a> {
                 .into_iter()
                 .rev()
                 .map(|s| UnitStep {
+                    key: step_key(s.revert.as_deref(), &s.apply),
                     label: format!("revert {}", s.label),
                     cmd: s.revert,
                     only_if: s.check,
                     ..Default::default()
+                })
+                // Only the steps envira changed: one that was in place is not envira's to undo.
+                .filter(|s| match changed {
+                    Some(Some(keys)) => keys.contains(&s.key),
+                    _ => true,
                 })
                 .collect();
             let (steps, resumed) = match &self.retrying {
@@ -996,6 +1115,7 @@ impl<'a> Planner<'a> {
                 ),
             };
             plan.units.push(Unit {
+                entry: String::new(),
                 id: id.clone(),
                 kind: Kind::Config,
                 action: Action::Revert,
@@ -1015,19 +1135,21 @@ impl<'a> Planner<'a> {
 }
 
 /// The steps of a revert still to run after a run that stopped halfway got through `done`
-/// (labels, in order), and the labels of those left out. The one that failed runs again as it
-/// is (it may have undone part of its change), the ones after it only while their change is in
-/// place.
+/// (step keys), and the keys of those left out. The first left (the one that failed) runs again
+/// as it is (it may have undone part of its change), the others only while their change is in
+/// place. A run record of an older envira has labels: nothing matches, and every step runs
+/// again under that rule.
 pub fn resume_revert(steps: Vec<UnitStep>, done: &[String]) -> (Vec<UnitStep>, Vec<String>) {
-    let skip = steps
+    // Steps by identity (labels repeat, and the catalog may have reordered them since).
+    let is_done = |s: &UnitStep| done.contains(&s.key) && !s.key.is_empty();
+    let resumed: Vec<String> = steps
         .iter()
-        .zip(done)
-        .take_while(|(s, d)| &s.label == *d)
-        .count();
-    let resumed = done[..skip].to_vec();
+        .filter(|s| is_done(s))
+        .map(|s| s.key.clone())
+        .collect();
     let left = steps
         .into_iter()
-        .skip(skip)
+        .filter(|s| !is_done(s))
         .enumerate()
         .map(|(i, s)| {
             if i == 0 {
@@ -1075,15 +1197,28 @@ pub fn as_script(plan: &Plan) -> String {
             u.via,
             u.reason
         ));
+        // As envira runs it: in a temp dir of its own (`ENVIRA_TMP`), removed afterwards, so
+        // a download into the working directory does not land in (or over) the caller's files.
+        s.push_str(
+            "(\n  ENVIRA_TMP=$(mktemp -d) && export ENVIRA_TMP && trap 'rm -rf \"$ENVIRA_TMP\"' EXIT && cd \"$ENVIRA_TMP\"\n",
+        );
         for st in &u.steps {
             let cmd = st.cmd.as_deref().map(by_hand);
-            match (&st.check, &st.only_if, &cmd) {
-                (_, Some(c), Some(cmd)) => s.push_str(&format!("if {c}; then {cmd}; fi\n")),
-                (Some(c), None, Some(cmd)) => s.push_str(&format!("{c} || {{ {cmd}; }}\n")),
-                (None, None, Some(cmd)) => s.push_str(&format!("{cmd}\n")),
-                (_, _, None) => s.push_str(&format!("# {}: manual\n", shell_quote(&st.label))),
-            }
+            let line = match (&st.check, &st.only_if, &cmd) {
+                (_, Some(c), Some(cmd)) => format!("if {c}; then {cmd}; fi"),
+                (Some(c), None, Some(cmd)) => format!("{c} || {{ {cmd}; }}"),
+                (None, None, Some(cmd)) => cmd.clone(),
+                (_, _, None) => format!(
+                    "echo {} >&2; false",
+                    shell_quote(&format!(
+                        "{}: no revert in the catalog; undo it by hand",
+                        st.label
+                    ))
+                ),
+            };
+            s.push_str(&format!("  {line}\n"));
         }
+        s.push_str(")\n");
     }
     s
 }
@@ -1441,9 +1576,10 @@ mod tests {
             "{check}"
         );
         assert!(u.steps[0].cmd.as_deref().unwrap().starts_with("sudo -A "));
-        assert_eq!(
-            u.steps[1].cmd.as_deref().unwrap(),
-            "sudo -A sysctl -w fs.inotify.max_user_watches=524288"
+        let cmd = u.steps[1].cmd.as_deref().unwrap();
+        assert!(
+            cmd.ends_with("&& sudo -A sysctl -w fs.inotify.max_user_watches=524288"),
+            "{cmd}"
         );
         assert_eq!(u.verify.len(), 2);
     }
@@ -1452,7 +1588,10 @@ mod tests {
     fn revert_runs_steps_backwards() {
         let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
         let present = set(&["yazi-theme"]);
-        let plan = Planner::new(&c, &f, &present).revert(&["yazi-theme".into(), "bat".into()]);
+        let mut p = Planner::new(&c, &f, &present);
+        // Applied by an envira that did not list what it changed: all of it.
+        p.changes.insert("yazi-theme".into(), None);
+        let plan = p.revert(&["yazi-theme".into(), "bat".into()]);
         let u = &plan.units[0];
         assert!(
             u.steps[0]
@@ -1461,7 +1600,10 @@ mod tests {
                 .unwrap()
                 .contains("fs restore /home/user/.config/yazi/theme.toml --key flavor.dark")
         );
-        assert!(u.steps[1].cmd.is_none());
+        assert_eq!(
+            u.steps[1].cmd.as_deref(),
+            Some("ya pkg delete damjee/onedark")
+        );
         assert!(u.steps.iter().all(|s| s.only_if.is_none()));
         assert_eq!(
             plan.skipped,
@@ -1492,9 +1634,159 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_made_on_its_own_waits_for_the_updates_before_it() {
+        let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
+        let present = set(&["fnm", "nodejs", "curl", "unzip", "libatomic"]);
+        let install = Planner::new(&c, &f, &present).plan(&["codex".into()], false);
+        let codex = |p: &Plan| p.units.iter().find(|u| u.id == "codex").unwrap().clone();
+        // Taken as present on its own: no edge to nodejs.
+        assert!(!codex(&install).deps.contains(&"nodejs".to_string()));
+        let update = Unit {
+            id: "nodejs".into(),
+            deps: vec![],
+            ..codex(&install)
+        };
+        let mut plan = Plan {
+            units: vec![update],
+            skipped: vec![],
+        };
+        plan.extend_after(install, &c);
+        assert!(codex(&plan).deps.contains(&"nodejs".to_string()));
+        assert_eq!(plan.units.iter().filter(|u| u.id == "nodejs").count(), 1);
+    }
+
+    #[test]
+    fn a_managed_tool_keeps_the_entry_that_installed_it() {
+        let (mut c, f) = (cat(), Facts::sample(Path::new("/home/user")));
+        let fzf = c.tools.get_mut("fzf").unwrap();
+        let mine = fzf.install[0].clone();
+        let key = entry_key(&mine);
+        // The catalog puts another `run` entry first.
+        let other = InstallEntry {
+            run: Some("echo another installer".into()),
+            ..mine.clone()
+        };
+        fzf.install.insert(0, other);
+        let r = route_for(&c, &f, "fzf", "run", Some(&key), None, false).unwrap();
+        assert_eq!((r.entry, r.key.as_str()), (1, key.as_str()));
+        // Without a record of it (or one the catalog no longer has): the first of that name.
+        let r = route_for(&c, &f, "fzf", "run", None, None, false).unwrap();
+        assert_eq!(r.entry, 0);
+        let r = route_for(&c, &f, "fzf", "run", Some("gone"), None, false).unwrap();
+        assert_eq!(r.entry, 0);
+    }
+
+    #[test]
+    fn a_binary_elsewhere_in_the_home_is_not_taken_for_its_installers() {
+        let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
+        assert!(path_route(&c, &f, "fzf", "/home/user/go/bin/fzf").is_none());
+        let r = path_route(&c, &f, "fzf", "/home/user/.fzf/bin/fzf").unwrap();
+        assert_eq!(r.scope, Scope::User);
+        // Next to the declared dir, in the same tree: conda in ~/miniconda3/bin.
+        assert!(path_route(&c, &f, "miniconda", "/home/user/miniconda3/bin/conda").is_some());
+    }
+
+    #[test]
+    fn an_exported_unit_runs_in_a_temp_dir_of_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("out");
+        let step = |c: &str| UnitStep {
+            label: "s".into(),
+            cmd: Some(c.into()),
+            ..Default::default()
+        };
+        let unit = Unit {
+            entry: String::new(),
+            id: "t".into(),
+            kind: Kind::Tool,
+            action: Action::Install,
+            via: "run".into(),
+            scope: Scope::User,
+            steps: vec![
+                step("printf x > f"),
+                step(r#"[ "$PWD" = "$ENVIRA_TMP" ] && test -f f && echo "$ENVIRA_TMP" > "$OUT""#),
+            ],
+            verify: vec![],
+            deps: vec![],
+            reason: "requested".into(),
+            expect: None,
+            resumed: vec![],
+            route: String::new(),
+        };
+        let script = as_script(&Plan {
+            units: vec![unit],
+            skipped: vec![],
+        });
+        let st = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(d.path())
+            .env("OUT", &out)
+            .status()
+            .unwrap();
+        assert!(st.success(), "{script}");
+        // Not in the caller's directory, and the temp dir is gone afterwards.
+        assert!(!d.path().join("f").exists());
+        let tmp = std::fs::read_to_string(&out).unwrap();
+        assert!(!Path::new(tmp.trim()).exists(), "{tmp}");
+    }
+
+    #[test]
+    fn a_retried_update_of_a_tool_now_gone_installs_it() {
+        let mut t = RetryTargets::new([("go", "update"), ("bat", "update"), ("fd", "install")]);
+        assert_eq!(t.take_gone(&set(&["bat"])), ["go"]);
+        assert_eq!(t.update, ["bat"]);
+        assert_eq!(t.install, ["fd"]);
+    }
+
+    #[test]
+    fn revert_undoes_only_what_envira_changed() {
+        let (c, f) = (cat(), Facts::sample(Path::new("/home/user")));
+        let id = "yazi-theme".to_string();
+        let present = set(&[id.as_str()]);
+        let mut p = Planner::new(&c, &f, &present);
+        p.changes.insert(id.clone(), None);
+        let full = p.revert(std::slice::from_ref(&id));
+        // Backwards: the theme key, then the flavor.
+        let keys: Vec<String> = full.units[0].steps.iter().map(|s| s.key.clone()).collect();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.iter().all(|k| k.len() == 16));
+        let revert = |present: &[&str], changed: Option<Vec<String>>| {
+            let present = set(present);
+            let mut p = Planner::new(&c, &f, &present);
+            p.changes.insert(id.clone(), changed);
+            p.revert(std::slice::from_ref(&id))
+        };
+        // Everything was in place when envira applied it, or envira has no record: nothing.
+        let plan = revert(&["yazi-theme"], Some(vec![]));
+        assert!(plan.units.is_empty());
+        let why = &plan.skipped[0].1;
+        assert!(why.contains("did not change it"), "{why}");
+        let present = set(&["yazi-theme"]);
+        let plan = Planner::new(&c, &f, &present).revert(std::slice::from_ref(&id));
+        let why = &plan.skipped[0].1;
+        assert!(why.contains("did not change it"), "{why}");
+        // Only the key was envira's: the flavor stays.
+        let plan = revert(&["yazi-theme"], Some(vec![keys[0].clone()]));
+        assert_eq!(plan.units[0].steps.len(), 1);
+        assert_eq!(plan.units[0].steps[0].key, keys[0]);
+        // No longer (fully) in place, but envira installed the flavor: that is undone.
+        let plan = revert(&[], Some(vec![keys[1].clone()]));
+        assert_eq!(
+            plan.units[0].steps[0].cmd.as_deref(),
+            Some("ya pkg delete damjee/onedark")
+        );
+        let plan = revert(&[], Some(vec![]));
+        assert_eq!(plan.skipped[0].1, "not applied");
+        // A record of an older envira: the whole config, as before.
+        assert_eq!(revert(&["yazi-theme"], None).units[0].steps.len(), 2);
+    }
+
+    #[test]
     fn a_retried_revert_starts_at_the_step_that_failed() {
         let step = |l: &str| UnitStep {
             label: l.into(),
+            key: l.into(),
             cmd: Some(format!("undo {l}")),
             only_if: Some(format!("check {l}")),
             ..Default::default()
@@ -1510,6 +1802,7 @@ mod tests {
         assert_eq!(resumed, ["a"]);
         let script = as_script(&Plan {
             units: vec![Unit {
+                entry: String::new(),
                 id: "cfg".into(),
                 kind: Kind::Config,
                 action: Action::Revert,
@@ -1526,13 +1819,22 @@ mod tests {
             skipped: vec![],
         });
         assert!(
-            script.ends_with("undo b\nif check c; then undo c; fi\n"),
+            script.ends_with("  undo b\n  if check c; then undo c; fi\n)\n"),
             "{script}"
         );
-        // Steps that changed since are not skipped past their first difference.
+        // Steps go by identity, not position: one the catalog moved since is still done, and
+        // one it no longer has is ignored.
         let (left, resumed) = resume_revert(steps.clone(), &["x".into(), "b".into()]);
-        assert_eq!(labels(&left).len(), 3);
-        assert!(resumed.is_empty());
+        assert_eq!(labels(&left), [("a".into(), false), ("c".into(), true)]);
+        assert_eq!(resumed, ["b"]);
+        // Labels repeat (two edits of one file): only the step with the key is done.
+        let twin = |k: &str| UnitStep {
+            label: "revert ini-set ~/.gitconfig".into(),
+            ..step(k)
+        };
+        let (left, _) = resume_revert(vec![twin("p"), twin("q")], &["q".into()]);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].key, "p");
         assert!(
             resume_revert(steps, &["a".into(), "b".into(), "c".into()])
                 .0
@@ -1674,6 +1976,7 @@ mod tests {
         UpdateTarget {
             id: id.into(),
             route: Route {
+                key: String::new(),
                 entry,
                 via: via.into(),
                 scope,

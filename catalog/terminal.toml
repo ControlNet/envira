@@ -63,7 +63,9 @@ shell = { alias = { zel = "zellij" } }
 desc = "zellij starts locked, Ctrl-b passes through to tmux (fix_zellij_kdl.py)"
 depends = ["zellij", "python3", "curl"]
 check = "grep -Eq '^[[:space:]]*default_mode[[:space:]]+\"locked\"' \"$HOME/.config/zellij/config.kdl\""
-apply = "curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3"
+# The file is kept before the script edits it, and revert puts it back.
+apply = "{envira} fs keep ~/.config/zellij/config.kdl && curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3"
+revert = "{envira} fs restore ~/.config/zellij/config.kdl"
 
 [tools.herdr]
 desc = "Terminal workspace manager"
@@ -204,7 +206,8 @@ install = [
 desc = "superfile default config without update checks"
 depends = ["superfile", "curl"]
 steps = [
-  { check = 'test -f "$HOME/.config/superfile/config.toml"', run = 'mkdir -p "$HOME/.config/superfile" && curl -fsSL https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml -o "$HOME/.config/superfile/config.toml"' },
+  # Revert moves the file aside rather than deleting it: it may have been edited since.
+  { check = 'test -f "$HOME/.config/superfile/config.toml"', run = 'mkdir -p "$HOME/.config/superfile" && curl -fsSL https://raw.githubusercontent.com/yorukot/superfile/main/src/superfile_config/config.toml -o "$HOME/.config/superfile/config.toml"', revert = 'f="$HOME/.config/superfile/config.toml"; if [ -e "$f" ]; then mv -f "$f" "$f.envira-old" && echo "moved to $f.envira-old"; fi' },
   { use = "toml-set", file = "~/.config/superfile/config.toml", key = "auto_check_update", value = false },
 ]
 
@@ -226,7 +229,7 @@ desc = "yazi onedark flavor"
 # `ya pkg` clones the flavor with git.
 depends = ["yazi", "git"]
 steps = [
-  { check = 'test -d "$HOME/.config/yazi/flavors/onedark.yazi"', run = "ya pkg add damjee/onedark" },
+  { check = 'test -d "$HOME/.config/yazi/flavors/onedark.yazi"', run = "ya pkg add damjee/onedark", revert = "ya pkg delete damjee/onedark" },
   { use = "toml-set", file = "~/.config/yazi/theme.toml", key = "flavor.dark", value = "onedark" },
 ]
 

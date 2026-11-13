@@ -41,6 +41,10 @@ struct Meta {
     owner: Option<(u32, u32)>,
     #[serde(default)]
     keys: BTreeMap<String, KeyRecord>,
+    /// A whole-file edit (write, block, link) needs `orig`: restoring the last key must not
+    /// drop the backup then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    whole: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,18 +90,53 @@ impl Backups {
         toml::from_str::<Meta>(&text).ok().map(|m| m.path)
     }
 
-    fn load(&self, path: &Path) -> Option<Meta> {
-        let text = std::fs::read_to_string(self.slot(path).join("meta.toml")).ok()?;
-        toml::from_str(&text).ok()
+    /// The backup of `path`: `None` when there is none, an error when there is one that cannot
+    /// be read (metadata gone or corrupt): treating that as "none" would let the next edit
+    /// back up the already edited file over the original.
+    fn load(&self, path: &Path) -> Result<Option<Meta>> {
+        let slot = self.slot(path);
+        let meta = slot.join("meta.toml");
+        match std::fs::read_to_string(&meta) {
+            Ok(text) => toml::from_str(&text).map(Some).with_context(|| {
+                format!(
+                    "the envira backup record {} is corrupt; fix or remove it (the original \
+                     file is kept next to it as `orig`)",
+                    meta.display()
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(slot.join("orig")).is_ok() {
+                    bail!(
+                        "the envira backup of {} has lost its record {}; envira will not \
+                         replace the original kept there (`orig`)",
+                        path.display(),
+                        meta.display()
+                    );
+                }
+                Ok(None)
+            }
+            Err(e) => Err(e).with_context(|| format!("reading {}", meta.display())),
+        }
+    }
+
+    /// Backups hold previous contents and values of files that may be private: the dirs are
+    /// 0700 and the records 0600, whatever the umask.
+    fn private_dirs(&self, slot: &Path) -> Result<()> {
+        for d in [&self.dir, slot] {
+            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("making {} private", d.display()))?;
+        }
+        Ok(())
     }
 
     fn save(&self, meta: &Meta, path: &Path) -> Result<()> {
         let slot = self.slot(path);
-        std::fs::create_dir_all(&slot)?;
+        self.private_dirs(&slot)?;
         crate::files::replace(
             &slot.join("meta.toml"),
             toml::to_string_pretty(meta)?.as_bytes(),
-            None,
+            Some(0o600),
         )?;
         self.own(&[
             &self.dir,
@@ -129,11 +168,11 @@ impl Backups {
 
     /// Saves the original file once, before the first modification.
     fn ensure(&self, path: &Path) -> Result<Meta> {
-        if let Some(m) = self.load(path) {
+        if let Some(m) = self.load(path)? {
             return Ok(m);
         }
         let slot = self.slot(path);
-        std::fs::create_dir_all(&slot).with_context(|| format!("creating {}", slot.display()))?;
+        self.private_dirs(&slot)?;
         let lmeta = std::fs::symlink_metadata(path).ok();
         let mut meta = Meta {
             path: abs(path).display().to_string(),
@@ -158,6 +197,16 @@ impl Backups {
         }
         self.save(&meta, path)?;
         Ok(meta)
+    }
+
+    /// `ensure` for an edit of the whole file: the backup stays until a whole restore.
+    fn ensure_whole(&self, path: &Path) -> Result<()> {
+        let mut meta = self.ensure(path)?;
+        if !meta.whole {
+            meta.whole = true;
+            self.save(&meta, path)?;
+        }
+        Ok(())
     }
 
     fn record_key(&self, path: &Path, key: &str, kind: &str, prior: Option<String>) -> Result<()> {
@@ -339,6 +388,14 @@ fn write_atomic(path: &Path, data: &str, mode: Option<u32>) -> Result<()> {
         .with_context(|| format!("replacing {}", path.display()))
 }
 
+/// Backs up a file, or that it is absent, before a command of the catalog's changes it as a
+/// whole (`run` steps envira cannot see into): a whole restore puts it back. An earlier backup
+/// of envira's stays: it holds the file from before envira.
+pub fn keep(b: &Backups, path: &Path) -> Result<()> {
+    let path = &edit_target(path, true)?;
+    b.ensure_whole(path)
+}
+
 /// Whole-file content. Returns whether the file is (or now is) in the desired state.
 pub fn write(
     b: &Backups,
@@ -356,7 +413,7 @@ pub fn write(
     if check || ok {
         return Ok(ok);
     }
-    b.ensure(path)?;
+    b.ensure_whole(path)?;
     write_atomic(path, content, mode)?;
     Ok(true)
 }
@@ -400,7 +457,7 @@ pub fn block(
     if s.is_some() && e.is_none() {
         bail!("{}: found `{start}` without `{end}`", path.display());
     }
-    b.ensure(path)?;
+    b.ensure_whole(path)?;
     let mut out: Vec<String> = Vec::new();
     match (s, e) {
         (Some(s), Some(e)) => {
@@ -614,9 +671,23 @@ pub fn line(
     let text_now = read_opt(path)?.unwrap_or_default();
     let mut lines: Vec<String> = text_now.lines().map(String::from).collect();
     let found = lines.iter().position(|l| re.is_match(l));
-    let ok = found.is_some_and(|i| lines[i] == text);
+    // Every matching line counts: the shell applies the last of several assignments, so a
+    // later conflicting one keeps the setting from taking effect.
+    let others: Vec<&String> = lines
+        .iter()
+        .filter(|l| re.is_match(l) && *l != text)
+        .collect();
+    let ok = found.is_some() && others.is_empty();
     if check || ok {
         return Ok(ok);
+    }
+    let matching = lines.iter().filter(|l| re.is_match(l)).count();
+    if matching > 1 {
+        bail!(
+            "{}: {matching} lines match {pattern:?} and not all are `{text}`; envira edits one \
+             line, so leave one of them and run it again",
+            path.display()
+        );
     }
     b.record_key(path, pattern, "line", found.map(|i| lines[i].clone()))?;
     match found {
@@ -656,7 +727,7 @@ pub fn link(b: &Backups, target: &str, link: &Path, check: bool) -> Result<bool>
         return Ok(ok);
     }
     guard_parent(link)?;
-    b.ensure(link)?;
+    b.ensure_whole(link)?;
     if let Some(parent) = link.parent() {
         create_dirs(parent)?;
     }
@@ -674,14 +745,14 @@ pub fn link(b: &Backups, target: &str, link: &Path, check: bool) -> Result<bool>
 pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
     // A backup of the path itself (a link envira made, an older backup), else of the file an
     // edit through a link changed.
-    let path = &match b.load(path) {
+    let path = &match b.load(path)? {
         Some(_) => {
             guard_parent(path)?;
             path.to_path_buf()
         }
         None => edit_target(path, true)?,
     };
-    let Some(mut meta) = b.load(path) else {
+    let Some(mut meta) = b.load(path)? else {
         bail!("no envira backup for {}", path.display());
     };
     if let Some(key) = key {
@@ -720,7 +791,7 @@ pub fn restore(b: &Backups, path: &Path, key: Option<&str>) -> Result<()> {
             "line" => restore_line(target, key, rec.prior.as_deref())?,
             other => bail!("unknown key record kind {other}"),
         }
-        if meta.keys.is_empty() {
+        if meta.keys.is_empty() && !meta.whole {
             // Nothing else recorded: forget the file so a later apply starts a fresh backup.
             let _ = std::fs::remove_dir_all(b.slot(path));
         } else {
@@ -816,6 +887,91 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let b = Backups::new(d.path().join("backups"));
         (d, b)
+    }
+
+    #[test]
+    fn backup_records_are_private() {
+        let (d, b) = setup();
+        let f = d.path().join("secret.toml");
+        std::fs::write(&f, "token = \"old\"\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(toml_set(&b, &f, "token", "\"new\"", false).unwrap());
+        let slot = b.slot(&f);
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(&slot.join("meta.toml")), 0o600);
+        assert_eq!(mode(&slot), 0o700);
+        assert_eq!(mode(&d.path().join("backups")), 0o700);
+    }
+
+    #[test]
+    fn a_corrupt_backup_record_is_not_replaced() {
+        let (d, b) = setup();
+        let f = d.path().join("rc");
+        std::fs::write(&f, "original\n").unwrap();
+        assert!(line(&b, &f, "^x=", "x=1", None, false).unwrap());
+        let slot = b.slot(&f);
+        std::fs::write(slot.join("meta.toml"), "not = [valid").unwrap();
+        // The next edit refuses instead of backing up the edited file over the original.
+        assert!(line(&b, &f, "^y=", "y=1", None, false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(slot.join("orig")).unwrap(),
+            "original\n"
+        );
+        // A lost record with the original still there: refused too.
+        std::fs::remove_file(slot.join("meta.toml")).unwrap();
+        assert!(line(&b, &f, "^y=", "y=1", None, false).is_err());
+        assert!(restore(&b, &f, None).is_err());
+    }
+
+    #[test]
+    fn restoring_the_last_key_keeps_a_whole_file_backup() {
+        let (d, b) = setup();
+        let f = d.path().join("rc");
+        std::fs::write(&f, "original\n").unwrap();
+        assert!(block(&b, &f, "x", "#", Some("managed"), false).unwrap());
+        assert!(line(&b, &f, "^k=", "k=1", None, false).unwrap());
+        restore(&b, &f, Some("^k=")).unwrap();
+        // The block's backup is still there: the whole file comes back.
+        restore(&b, &f, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "original\n");
+    }
+
+    #[test]
+    fn a_kept_file_comes_back_after_a_command_changed_it() {
+        let (d, b) = setup();
+        let f = d.path().join("app/config.kdl");
+        // Absent before: the restore removes what the command made.
+        keep(&b, &f).unwrap();
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "made\n").unwrap();
+        restore(&b, &f, None).unwrap();
+        assert!(!f.exists());
+        // Present: it comes back as it was, from the first keep.
+        std::fs::write(&f, "mine\n").unwrap();
+        keep(&b, &f).unwrap();
+        std::fs::write(&f, "edited\n").unwrap();
+        keep(&b, &f).unwrap();
+        std::fs::write(&f, "edited twice\n").unwrap();
+        restore(&b, &f, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "mine\n");
+    }
+
+    #[test]
+    fn a_line_counts_every_match() {
+        let (d, b) = setup();
+        let f = d.path().join("zshrc");
+        std::fs::write(&f, "export A=true\nexport A=false\n").unwrap();
+        // The later assignment wins in the shell: not in place.
+        assert!(!line(&b, &f, "^export A=", "export A=true", None, true).unwrap());
+        // Several differing matches: refused, the file left as it is.
+        assert!(line(&b, &f, "^export A=", "export A=true", None, false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "export A=true\nexport A=false\n"
+        );
+        // Duplicates of the wanted line are in place.
+        std::fs::write(&f, "export A=true\nexport A=true\n").unwrap();
+        assert!(line(&b, &f, "^export A=", "export A=true", None, true).unwrap());
     }
 
     #[test]

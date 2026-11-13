@@ -37,8 +37,9 @@ depends = ["curl"]
 bins = ["go", "gofmt"]
 detect = { cmd = "go version", version = 'go(\d\S*)' }
 # Same layout as ControlNet/golang-tools-install-script (GOROOT ~/.go), but always the newest
-# release and without rc-file edits; the environment comes from `shell`. Updating replaces ~/.go.
-install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | sed -n 1p) && o=$(uname -s | tr '[:upper:]' '[:lower:]') && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.$o-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go\" && mkdir -p \"$HOME/.go\" && tar -C \"$HOME/.go\" --strip-components=1 -xzf go.tar.gz", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
+# release and without rc-file edits; the environment comes from `shell`. Updating replaces ~/.go,
+# only once the new release is unpacked next to it and runs: a bad download keeps the old one.
+install = [{ run = "v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | sed -n 1p) && o=$(uname -s | tr '[:upper:]' '[:lower:]') && a=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && curl -fsSL \"https://go.dev/dl/$v.$o-$a.tar.gz\" -o go.tar.gz && rm -rf \"$HOME/.go.envira-new\" \"$HOME/.go.envira-old\" && mkdir -p \"$HOME/.go.envira-new\" && tar -C \"$HOME/.go.envira-new\" --strip-components=1 -xzf go.tar.gz && GOROOT=\"$HOME/.go.envira-new\" \"$HOME/.go.envira-new/bin/go\" version && { [ ! -e \"$HOME/.go\" ] || mv \"$HOME/.go\" \"$HOME/.go.envira-old\"; } && { mv \"$HOME/.go.envira-new\" \"$HOME/.go\" || { mv \"$HOME/.go.envira-old\" \"$HOME/.go\"; false; }; } && rm -rf \"$HOME/.go.envira-old\"", latest = { http = "https://go.dev/VERSION?m=text", regex = 'go(\d\S*)' } }]
 shell = { path = ["~/.go/bin", "~/go/bin"], env = { GOROOT = "~/.go", GOPATH = "~/go" } }
 
 [tools.fnm]
