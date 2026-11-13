@@ -138,7 +138,10 @@ remote http://127.0.0.1:8765/catalog.toml | tee /tmp/remote.txt
 grep -q "remote http://127.0.0.1:8765/catalog.toml (updated now)" /tmp/remote.txt
 remote http://127.0.0.1:8765/catalog.toml | grep -q "(cached just now)"
 # The cached file is the download, byte for byte (coreutils only: cmp is missing on some images).
-[ "$(sha256sum < /tmp/site/catalog.toml)" = "$(sha256sum < /tmp/cache/catalog.toml)" ]
+# A URL other than the published one has a cache of its own, never the published catalog's.
+[ ! -e /tmp/cache/catalog.toml ]
+cached=$(ls /tmp/cache/catalog-*.toml)
+[ "$(sha256sum < /tmp/site/catalog.toml)" = "$(sha256sum < "$cached")" ]
 kill "$web"
 # Unreachable and no cache: the embedded catalog, within the 3 s timeout.
 rm -rf /tmp/cache
