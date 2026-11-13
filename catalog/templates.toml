@@ -61,12 +61,13 @@ scope = "system"
 # than the sources, at most once a day however many packages follow. The install still retries
 # after `apt-get update` when it fails (lists cleaned since, a source added by hand).
 install = "{sudo} {envira} apt-refresh && { {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package} || { {sudo} apt-get update && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install -y {package}; }; }"
-installed = { cmd = "dpkg-query -W -f='${Version}\\n' {package}", regex = '^(\S+)' }
+installed = { cmd = "dpkg-query -W -f='${Version}\\n' {package}", regex = '^(?:\d+:)?(\S+)' }
 update = "{sudo} {envira} apt-refresh && {sudo} env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {package}"
 # Candidate from the local package lists (what an upgrade would install), no network.
-latest = { cmd = "apt-cache policy {package}", regex = 'Candidate: (\d\S*)' }
-# Whole package versions (epoch:version-revision): envira compares those of the package managers
-# (apt, dnf, pacman, zypper) as they do, so 1.2.3-1 → 1.2.3-2 is an update.
+latest = { cmd = "apt-cache policy {package}", regex = 'Candidate: (?:\d+:)?(\d\S*)' }
+# Package versions with their revision, without the epoch (an older envira compares the leading
+# numbers only): envira compares those of the package managers (apt, dnf, pacman, zypper) as they
+# do, so 1.2.3-1 → 1.2.3-2 is an update.
 
 [methods.dnf]
 desc = "Fedora/RHEL package"
@@ -74,10 +75,10 @@ when = ["family:fedora"]
 scope = "system"
 install = "{sudo} dnf install -y {package}"
 update = "{sudo} dnf upgrade -y {package}"
-installed = { cmd = "rpm -q --qf '%{{EVR}}\\n' {package}", regex = '^(\S+)' }
+installed = { cmd = "rpm -q --qf '%{{EVR}}\\n' {package}", regex = '^(?:\d+:)?(\S+)' }
 # Newest version in the local metadata cache, like apt-cache policy: -C keeps it off the network
 # (without it dnf downloads the metadata for a normal user, far beyond the query timeout).
-latest = { cmd = "dnf -q -C repoquery --latest-limit=1 --qf '%{{evr}}\\n' {package}", regex = '^(\S+)' }
+latest = { cmd = "dnf -q -C repoquery --latest-limit=1 --qf '%{{evr}}\\n' {package}", regex = '^(?:\d+:)?(\S+)' }
 
 [methods.pacman]
 desc = "Arch package"
@@ -86,9 +87,9 @@ scope = "system"
 # Fresh images have no sync database: retry with a full sync and upgrade like run.sh (a bare
 # `-Sy` would be a partial upgrade).
 install = "{sudo} pacman -S --needed --noconfirm {package} || {sudo} pacman -Syu --needed --noconfirm {package}"
-installed = { cmd = "pacman -Q {package}", regex = '^\S+ (\S+)' }
+installed = { cmd = "pacman -Q {package}", regex = '^\S+ (?:\d+:)?(\S+)' }
 # Version in the local sync database.
-latest = { cmd = "pacman -Si {package}", regex = 'Version\s*: (\S+)' }
+latest = { cmd = "pacman -Si {package}", regex = 'Version\s*: (?:\d+:)?(\S+)' }
 
 [methods.zypper]
 desc = "openSUSE package"
@@ -96,9 +97,9 @@ when = ["family:suse"]
 scope = "system"
 install = "{sudo} zypper --non-interactive install {package}"
 update = "{sudo} zypper --non-interactive update {package}"
-installed = { cmd = "rpm -q --qf '%{{EVR}}\\n' {package}", regex = '^(\S+)' }
+installed = { cmd = "rpm -q --qf '%{{EVR}}\\n' {package}", regex = '^(?:\d+:)?(\S+)' }
 # `Version` is the candidate from the local repository cache (--no-refresh: no network, no root).
-latest = { cmd = "zypper -n --no-refresh info {package}", regex = 'Version\s*:\s*(\S+)' }
+latest = { cmd = "zypper -n --no-refresh info {package}", regex = 'Version\s*:\s*(?:\d+:)?(\S+)' }
 
 [methods.brew]
 desc = "Homebrew formula (macOS)"

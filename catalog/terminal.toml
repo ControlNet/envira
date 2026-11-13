@@ -63,8 +63,9 @@ shell = { alias = { zel = "zellij" } }
 desc = "zellij starts locked, Ctrl-b passes through to tmux (fix_zellij_kdl.py)"
 depends = ["zellij", "python3", "curl"]
 check = "grep -Eq '^[[:space:]]*default_mode[[:space:]]+\"locked\"' \"$HOME/.config/zellij/config.kdl\""
-# The file is kept before the script edits it, and revert puts it back.
-apply = "{envira} fs keep ~/.config/zellij/config.kdl && curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3"
+# The file is kept before the script edits it, and revert puts it back. An envira older than
+# 0.1.6 (no `fs keep`) edits it without a backup, as it did before.
+apply = "{ {envira} fs keep ~/.config/zellij/config.kdl || ! {envira} fs keep --help >/dev/null 2>&1; } && curl -fsSL https://raw.githubusercontent.com/ControlNet/envira/master/files/fix_zellij_kdl.py | python3"
 revert = "{envira} fs restore ~/.config/zellij/config.kdl"
 
 [tools.herdr]

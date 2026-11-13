@@ -37,6 +37,12 @@ after fixing the 2026-11-13 deep-review findings (R1–R23, D1, D2).
   - `keep` records a whole-file backup, including the fact that the file was absent, so restore
     removes a file the command created.
   - An earlier backup is kept, since it holds the pre-envira content.
+  - The remote catalog is deployed on every push to main and read by released envira binaries.
+    Until `min_envira` is at least 0.1.6, the step is written as
+    `{ {envira} fs keep F || ! {envira} fs keep --help >/dev/null 2>&1; } && <edit>`. That
+    stops only when `keep` exists and fails; an older envira, which has no `keep`, edits the
+    file without a backup, as it did before.
+  - The same rule applies to any new `envira` subcommand that the catalog calls.
 - **Command changes a value of the system** (login shell, sysctl): apply saves the old value
   once in `${ENVIRA_STATE_DIR:-$HOME/.local/state/envira}/<name>.orig`, and revert restores it
   and then removes the file. `ENVIRA_STATE_DIR` is set for every step.
@@ -77,11 +83,14 @@ after fixing the 2026-11-13 deep-review findings (R1–R23, D1, D2).
 
 ## Package versions
 
-- `apt`, `dnf`, `pacman` and `zypper` (`status::PACKAGE_METHODS`) report whole versions:
+- `apt`, `dnf`, `pacman` and `zypper` (`status::PACKAGE_METHODS`) report the version with its
+  revision:
   - dpkg: `${Version}` and `Candidate:`;
   - rpm: `%{EVR}`;
   - dnf: `%{evr}`;
   - pacman and zypper: `Version :`.
+- The regex drops the epoch (`(?:\d+:)?`), because an older envira compares only the leading
+  numbers and `2:9.1-1` would become `[2]`. Epoch bumps are rare, so they are the accepted loss.
 - These versions are compared with `version::compare_package`, which follows dpkg's algorithm, so
   `1.2.3-1` → `1.2.3-2` counts as an update.
 - The list is hardcoded, not a catalog field. The catalog schema uses `deny_unknown_fields`, so a
