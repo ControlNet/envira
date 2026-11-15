@@ -160,6 +160,10 @@ pub struct UnitStep {
     pub key: String,
 }
 
+/// [`UnitStep::key`] of the step a revert ends with when the state records changes that no
+/// catalog step undoes any more: it fails, and the record stays.
+pub const STALE_KEY: &str = "stale";
+
 /// [`UnitStep::key`] of a config step: from what undoes it (its revert command; the apply
 /// when it has none), which stays when only the value it sets changes.
 pub fn step_key(revert: Option<&str>, apply: &str) -> String {
@@ -343,6 +347,8 @@ pub struct ConfigStep {
     pub check: Option<String>,
     pub apply: String,
     pub revert: Option<String>,
+    /// [`UnitStep::key`]: [`step_key`] of the commands expanded with [`Vars::identity`].
+    pub key: String,
 }
 
 fn resolve_scope(spec: Option<ScopeSpec>, prefer_system: bool) -> Scope {
@@ -530,8 +536,16 @@ pub fn config_steps(
     let vars = Vars::new(facts, id, id, bd, sys);
     // Checks are read-only and run without sudo.
     let check_vars = Vars::new(facts, id, id, bd, false);
+    // Identity of a step: its revert (or apply) as it reads with any envira binary, with or
+    // without sudo.
+    let key = |v: &Vars, revert: Option<&String>, apply: &str| -> Result<String, String> {
+        let v = v.clone().identity();
+        let revert = revert.map(|r| v.expand(r, Ctx::Shell)).transpose()?;
+        Ok(step_key(revert.as_deref(), &v.expand(apply, Ctx::Shell)?))
+    };
     if let Some(apply) = &cf.apply {
         return Ok(vec![ConfigStep {
+            key: key(&vars, cf.revert.as_ref(), apply)?,
             label: short(apply),
             check: cf
                 .check
@@ -565,14 +579,16 @@ pub fn config_steps(
                 .iter()
                 .find_map(|k| s.params.get(*k).and_then(|v| v.as_str()))
                 .unwrap_or("");
+            let apply = act.apply.as_deref().unwrap_or("false");
             out.push(ConfigStep {
+                key: key(&v, act.revert.as_ref(), apply)?,
                 label: format!("{name} {target}").trim().to_string(),
                 check: act
                     .check
                     .as_ref()
                     .map(|c| cv.expand(c, Ctx::Shell))
                     .transpose()?,
-                apply: v.expand(act.apply.as_deref().unwrap_or("false"), Ctx::Shell)?,
+                apply: v.expand(apply, Ctx::Shell)?,
                 revert: act
                     .revert
                     .as_ref()
@@ -581,6 +597,7 @@ pub fn config_steps(
             });
         } else if let Some(run) = &s.run {
             out.push(ConfigStep {
+                key: key(&vars, s.revert.as_ref(), run)?,
                 label: short(run),
                 check: s
                     .check
@@ -942,7 +959,7 @@ impl<'a> Planner<'a> {
         let steps = cs
             .into_iter()
             .map(|s| UnitStep {
-                key: step_key(s.revert.as_deref(), &s.apply),
+                key: s.key,
                 label: s.label,
                 check: s.check,
                 cmd: Some(s.apply),
@@ -1086,11 +1103,20 @@ impl<'a> Planner<'a> {
                     continue;
                 }
             };
-            let steps: Vec<UnitStep> = cs
+            // Changes recorded by steps the catalog no longer has (or whose undo it changed):
+            // nothing here undoes them, and the revert must not report them undone.
+            let stale = match changed {
+                Some(Some(keys)) => keys
+                    .iter()
+                    .filter(|k| !cs.iter().any(|s| &s.key == *k))
+                    .count(),
+                _ => 0,
+            };
+            let mut steps: Vec<UnitStep> = cs
                 .into_iter()
                 .rev()
                 .map(|s| UnitStep {
-                    key: step_key(s.revert.as_deref(), &s.apply),
+                    key: s.key,
                     label: format!("revert {}", s.label),
                     cmd: s.revert,
                     only_if: s.check,
@@ -1102,6 +1128,17 @@ impl<'a> Planner<'a> {
                     _ => true,
                 })
                 .collect();
+            if stale > 0 {
+                // Fails the unit (no command) and keeps the record, after the steps it can undo.
+                steps.push(UnitStep {
+                    label: format!(
+                        "{stale} change(s) by steps the catalog no longer has (once undone by \
+                         hand, `envira config revert --forget {id}`)"
+                    ),
+                    key: STALE_KEY.into(),
+                    ..Default::default()
+                });
+            }
             let (steps, resumed) = match &self.retrying {
                 Some(done) => {
                     resume_revert(steps, done.get(id).map(Vec::as_slice).unwrap_or_default())
@@ -1780,6 +1817,35 @@ mod tests {
         assert_eq!(plan.skipped[0].1, "not applied");
         // A record of an older envira: the whole config, as before.
         assert_eq!(revert(&["yazi-theme"], None).units[0].steps.len(), 2);
+        // A change by a step the catalog no longer has: the revert undoes what it can and
+        // then fails, so the record stays.
+        let plan = revert(&["yazi-theme"], Some(vec![keys[0].clone(), "gone".into()]));
+        let steps = &plan.units[0].steps;
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].key, keys[0]);
+        assert_eq!(
+            (steps[1].key.as_str(), steps[1].cmd.as_deref()),
+            (STALE_KEY, None)
+        );
+        assert!(steps[1].label.contains("--forget"), "{}", steps[1].label);
+        let plan = revert(&[], Some(vec!["gone".into()]));
+        assert_eq!(plan.units[0].steps.len(), 1);
+        assert_eq!(plan.units[0].steps[0].key, STALE_KEY);
+    }
+
+    #[test]
+    fn a_config_step_is_the_same_step_through_sudo_and_as_root() {
+        let (c, mut f) = (cat(), Facts::sample(Path::new("/home/user")));
+        f.state_dir = Some("/home/user/.local/state/envira".into());
+        let id = "inotify-watches";
+        let user = config_steps(&c, &f, id, Scope::System).unwrap();
+        f.privilege = Privilege::Root;
+        let root = config_steps(&c, &f, id, Scope::System).unwrap();
+        // `sudo -A env ENVIRA_STATE_DIR=… <exe>` against `<exe>`: the same identity.
+        assert_ne!(user[0].apply, root[0].apply);
+        let keys = |s: &[ConfigStep]| s.iter().map(|s| s.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&user), keys(&root));
+        assert!(!user[0].key.is_empty());
     }
 
     #[test]

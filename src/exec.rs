@@ -453,6 +453,10 @@ pub async fn execute(
     {
         tx.send(Event::Notice(format!("the run cannot be recorded: {e:#}")));
         record.unrecorded = Some(format!("{e:#}"));
+    } else if record.unrecorded.is_none() {
+        // The state just saved has the keys of every apply that ran, this run's and those of
+        // runs that died (added when it was loaded).
+        state::clear_unfinished_applies(&ctx.paths);
     }
     state::prune_runs(&ctx.paths, KEEP_RUNS);
     tx.send(Event::Finished(record.clone()));
@@ -461,12 +465,15 @@ pub async fn execute(
 
 /// The steps a unit got through ([`step_id`]), starting with those an earlier run got through
 /// (`resumed`). A revert also appends each to `<run dir>/<id>.steps` (a JSON string per line)
-/// as it ends: if envira dies midway, `retry` still knows where it stopped.
+/// as it ends: if envira dies midway, `retry` still knows where it stopped. An apply notes the
+/// key of each step in `<run dir>/<id>.applying` before its command runs: if envira dies
+/// midway, the next load of the state still has the change as envira's.
 struct Progress {
     done: Vec<String>,
     /// Keys of the config steps whose command ran (a failed one may have changed part).
     ran: Vec<String>,
     file: Option<std::fs::File>,
+    applying: Option<std::fs::File>,
 }
 
 /// How progress names a step: a config step by its key, as labels repeat; an install step by
@@ -498,10 +505,19 @@ impl Progress {
             }
             file = Some(f);
         }
+        let mut applying = None;
+        if unit.kind == Kind::Config && unit.action != Action::Revert {
+            let path = state::applying_file(run_dir, &unit.id);
+            applying = Some(
+                state::open_run_file(&path, true, facts)
+                    .with_context(|| format!("cannot record progress in {}", path.display()))?,
+            );
+        }
         Ok(Progress {
             done: unit.resumed.clone(),
             ran: vec![],
             file,
+            applying,
         })
     }
 
@@ -516,11 +532,18 @@ impl Progress {
         Ok(())
     }
 
-    /// Notes that the command of a config step is about to run.
-    fn running(&mut self, step: &UnitStep) {
-        if !step.key.is_empty() {
-            self.ran.push(step.key.clone());
+    /// Notes that the command of a config step is about to run; an error when an apply cannot
+    /// note it on disk (the step then does not run).
+    fn running(&mut self, step: &UnitStep) -> std::io::Result<()> {
+        if step.key.is_empty() {
+            return Ok(());
         }
+        self.ran.push(step.key.clone());
+        if let Some(f) = &mut self.applying {
+            f.write_all(journal_line(&step.key).as_bytes())?;
+            f.sync_data()?;
+        }
+        Ok(())
     }
 }
 
@@ -748,7 +771,14 @@ where
             emit(format!("[envira] {label} · {m}"));
             return Outcome::Failed(m);
         };
-        done.running(step);
+        if let Err(e) = done.running(step) {
+            let m = format!(
+                "cannot record progress before {} ({e}); stopped",
+                step.label
+            );
+            emit(format!("[envira] {m}"));
+            return Outcome::Failed(m);
+        }
         emit(format!("$ {cmd}"));
         // Under `sudo envira`, system-scope steps keep root (their `{sudo}` is empty); the rest
         // run as the user.
@@ -2028,6 +2058,49 @@ mod tests {
         );
         assert_eq!(rec(&st).changed, None);
         assert_eq!(st.config_changes()["cfg"], None);
+    }
+
+    #[tokio::test]
+    async fn an_apply_notes_each_step_before_it_runs() {
+        let s = setup();
+        // Every command succeeds, the config's checks after the apply too.
+        s.runner.rule("", 0, "");
+        let u = Unit {
+            kind: Kind::Config,
+            action: Action::Apply,
+            steps: vec![UnitStep {
+                label: "a".into(),
+                key: "a".into(),
+                cmd: Some("set-a".into()),
+                ..Default::default()
+            }],
+            ..unit("git-settings", "", &[])
+        };
+        // What an apply that died left in an earlier run.
+        let old = s.ctx.paths.run_dir("20261029-130000");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(state::applying_file(&old, "other"), "\"x\"\n").unwrap();
+        let loaded = State::load(&s.ctx.paths).unwrap().unwrap();
+        let (tx, _rx) = events();
+        let (_ctl_tx, ctl_rx) = watch::channel(Control::default());
+        let plan = Plan {
+            units: vec![u],
+            skipped: vec![],
+        };
+        let (rec, st) = execute(plan, ctx_of(&s), loaded, tx, ctl_rx).await;
+        assert_eq!(outcomes(&rec), vec![("git-settings", "ok")]);
+        assert_eq!(
+            st.configs["git-settings"].changed,
+            Some(vec!["a".to_string()])
+        );
+        // Saved with the state, the notes are gone: none would come back after a revert.
+        assert!(state::unfinished_applies(&s.ctx.paths).is_empty());
+        let disk = State::load(&s.ctx.paths).unwrap().unwrap();
+        assert_eq!(disk.configs["other"].changed, Some(vec!["x".to_string()]));
+        assert_eq!(
+            disk.configs["git-settings"].changed,
+            Some(vec!["a".to_string()])
+        );
     }
 
     #[tokio::test]

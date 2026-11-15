@@ -337,7 +337,7 @@ fn flag_stale_apt(
         .iter()
         .filter(|i| i.package_versions && i.route.as_ref().is_some_and(|r| r.via == "apt"))
         .filter(|i| match (out.get(&i.id), &i.method_version) {
-            (Some(Latest::Version(l)), Some(v)) => !crate::version::is_newer_package(l, v),
+            (Some(Latest::Version(l)), Some(v)) => !crate::version::is_newer_package("apt", l, v),
             _ => false,
         })
         .map(|i| i.id.as_str())

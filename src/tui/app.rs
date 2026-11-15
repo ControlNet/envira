@@ -221,6 +221,9 @@ pub enum Cmd {
     SelfUpdate,
     /// Check the password typed in the sudo dialog.
     Sudo(crate::sudo_prompt::Secret),
+    /// Write the shell environment, which run `.0` left behind (`envira env`), and clear that
+    /// failure from its record.
+    WriteShellEnv(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1115,6 +1118,12 @@ impl App {
                 }
             }
             KeyCode::Char('t') => match self.last_run.clone() {
+                // Only the shell environment was left behind.
+                Some((id, t, _)) if t.is_empty() => {
+                    self.last_run = None;
+                    self.notify("Writing the shell environment");
+                    return vec![Cmd::WriteShellEnv(id)];
+                }
                 Some((id, t, _)) => {
                     let n = t.len();
                     self.open_req(
@@ -1507,7 +1516,18 @@ impl App {
                         .map(|u| (u.id.as_str(), u.action.as_str())),
                 )
                 .progress(run.finished.iter().flat_map(|(rec, _)| &rec.units), None);
-                if t.is_empty() {
+                let env_left = run
+                    .finished
+                    .as_ref()
+                    .is_some_and(|(rec, _)| rec.shell_env_error.is_some());
+                if t.is_empty() && env_left {
+                    let id = run.run_id.clone();
+                    self.run = None;
+                    self.screen = Screen::Dashboard;
+                    self.last_run = None;
+                    self.notify("Writing the shell environment");
+                    return vec![Cmd::WriteShellEnv(id)];
+                } else if t.is_empty() {
                     self.notify("Nothing to retry");
                 } else {
                     // Planned once detection has seen what the run changed: a build that
@@ -1558,6 +1578,12 @@ impl App {
         };
         let t = self.retry_targets(&id, &rec);
         if t.is_empty() {
+            if rec.shell_env_error.is_some() && rec.finished.is_some() {
+                self.notify(format!(
+                    "Run {id} could not write the shell environment · t writes it"
+                ));
+                self.last_run = Some((id, t, true));
+            }
             return;
         }
         if rec.finished.is_none()
@@ -1573,6 +1599,22 @@ impl App {
             format!("Run {id} left {n} unfinished · t retries")
         });
         self.last_run = Some((id, t, rec.finished.is_some()));
+    }
+
+    /// The shell environment a run left behind was written (`Cmd::WriteShellEnv`), or not.
+    pub fn on_shell_env(&mut self, run_id: String, r: Result<Vec<String>, String>) {
+        match r {
+            Ok(files) if files.is_empty() => self.notify("The shell environment is up to date"),
+            Ok(_) => self.notify("Shell environment written · open a new shell to use it"),
+            Err(e) => {
+                // `t` tries again.
+                if self.last_run.is_none() {
+                    let t = crate::plan::RetryTargets::new(std::iter::empty::<(&str, &str)>());
+                    self.last_run = Some((run_id, t, true));
+                }
+                self.warn(format!("The shell environment could not be written: {e}"));
+            }
+        }
     }
 
     /// SIGTERM or SIGHUP: true when the TUI can exit now; during a run it stops the run and
@@ -1668,7 +1710,8 @@ impl App {
         // Dashboard `t` retries what this run left, without a restart.
         if let Some((id, rec)) = finished {
             let t = self.retry_targets(&id, &rec);
-            self.last_run = (!t.is_empty()).then_some((id, t, true));
+            let left = !t.is_empty() || rec.shell_env_error.is_some();
+            self.last_run = left.then_some((id, t, true));
         }
     }
 }
@@ -2156,6 +2199,45 @@ pub mod tests {
         assert!(title.starts_with("retry"), "{title}");
         let ids: Vec<&str> = plan.units.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(ids, vec!["fnm", "nodejs", "npm-prefix", "codex"]);
+    }
+
+    #[test]
+    fn a_shell_environment_left_behind_is_written_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app();
+        a.paths = Paths {
+            state_dir: dir.path().join("state"),
+            config_dir: dir.path().join("config"),
+            cache_dir: dir.path().join("cache"),
+        };
+        // Every unit went through; only env.sh could not be written.
+        let plan = a.make_plan(&["herdr".into()]);
+        let mut rec = RunRecord::planned(&plan, "20261029-140500", "install");
+        for u in &mut rec.units {
+            u.outcome = "ok".into();
+        }
+        rec.finished = Some("t".into());
+        rec.shell_env_error = Some("env.sh: is a directory".into());
+        rec.save(&a.paths, &a.facts).unwrap();
+        a.state.as_mut().unwrap().last_run = Some("20261029-140500".into());
+        a.load_last_run();
+        let toast = a.toast_text().unwrap().to_string();
+        assert!(toast.contains("t writes it"), "{toast}");
+        let cmds = a.on_key(key(KeyCode::Char('t')));
+        assert!(matches!(&cmds[..], [Cmd::WriteShellEnv(id)] if id == "20261029-140500"));
+        // It failed again: `t` is offered again.
+        a.on_shell_env("20261029-140500".into(), Err("still a directory".into()));
+        let cmds = a.on_key(key(KeyCode::Char('t')));
+        assert!(matches!(&cmds[..], [Cmd::WriteShellEnv(_)]));
+        // From the run screen, `r` does the same.
+        a.start_run(plan, "r2".into(), None);
+        a.on_exec(Event::Finished(RunRecord {
+            shell_env_error: Some("env.sh: is a directory".into()),
+            ..Default::default()
+        }));
+        let cmds = a.on_key(key(KeyCode::Char('r')));
+        assert!(matches!(&cmds[..], [Cmd::WriteShellEnv(id)] if id == "r2"));
+        assert_eq!(a.screen, Screen::Dashboard);
     }
 
     #[test]

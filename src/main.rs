@@ -153,7 +153,15 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 cmd: ConfigCmd::Apply { items, run },
             }) => commands::config(&sess, &items, false, &run).await,
             Some(Command::Config {
-                cmd: ConfigCmd::Revert { items, run },
+                cmd:
+                    ConfigCmd::Revert {
+                        items,
+                        forget: true,
+                        ..
+                    },
+            }) => commands::forget_configs(&sess, &items),
+            Some(Command::Config {
+                cmd: ConfigCmd::Revert { items, run, .. },
             }) => commands::config(&sess, &items, true, &run).await,
             Some(Command::Plan { items, script }) => {
                 commands::plan_cmd(&sess, &items, script).await

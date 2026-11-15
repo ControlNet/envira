@@ -39,6 +39,8 @@ enum AppEvent {
     Error(String),
     /// SIGTERM or SIGHUP (the terminal went away).
     Terminate,
+    /// The shell environment written for run `.0` (the files changed), or why not.
+    ShellEnv(String, Result<Vec<String>, String>),
     /// What sudo said to the password typed in the dialog, with the password when it took it.
     Sudo(
         crate::sudo_prompt::Check,
@@ -353,6 +355,7 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         };
                     }
                 }
+                AppEvent::ShellEnv(id, r) => app.on_shell_env(id, r),
                 AppEvent::Sudo(check, pw) => {
                     password = pw;
                     cmds.extend(app.on_sudo(check));
@@ -427,6 +430,20 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         Ok(st) => app.state = Some(st),
                         Err(e) => app.notify(format!("not adopted: {e:#}")),
                     }
+                }
+                Cmd::WriteShellEnv(run_id) => {
+                    let (tx, ctx) = (tx.clone(), sess.exec_ctx("env".into(), true));
+                    tokio::spawn(async move {
+                        let r = exec::regenerate_shell_env(&ctx).await;
+                        if r.is_ok()
+                            && let Ok(mut rec) = state::RunRecord::load(&ctx.paths, &run_id)
+                        {
+                            // `envira retry` and the next start no longer offer it.
+                            rec.shell_env_error = None;
+                            let _ = rec.save(&ctx.paths, &ctx.facts);
+                        }
+                        let _ = tx.send(AppEvent::ShellEnv(run_id, r));
+                    });
                 }
                 Cmd::ExportScript(plan) => {
                     let f = sess.paths.state_dir.join("plan.sh");

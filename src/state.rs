@@ -146,7 +146,45 @@ pub struct State {
 
 impl State {
     /// Loads state; `Ok(None)` when this machine has never run envira.
+    /// Changes of an apply that envira did not live to record (see [`unfinished_applies`]) are
+    /// added, so they are envira's to undo.
     pub fn load(paths: &Paths) -> Result<Option<State>> {
+        let st = Self::load_file(paths)?;
+        let applies = unfinished_applies(paths);
+        if applies.is_empty() {
+            return Ok(st);
+        }
+        let mut st = st.unwrap_or_default();
+        for (run, id, keys) in applies {
+            st.add_interrupted(&run, &id, keys);
+        }
+        Ok(Some(st))
+    }
+
+    /// Adds the keys of steps an apply was running when envira died to what it changed.
+    fn add_interrupted(&mut self, run: &str, id: &str, keys: Vec<String>) {
+        let rec = self
+            .configs
+            .entry(id.to_string())
+            .or_insert_with(|| ConfigRecord {
+                applied: false,
+                changed: Some(vec![]),
+                applied_at: None,
+                last_result: LastResult::Failed,
+                last_error: Some("the run was interrupted".into()),
+                last_run: Some(run.to_string()),
+            });
+        // A record without the list already undoes all of the config.
+        if let Some(changed) = &mut rec.changed {
+            for k in keys {
+                if !changed.contains(&k) {
+                    changed.push(k);
+                }
+            }
+        }
+    }
+
+    fn load_file(paths: &Paths) -> Result<Option<State>> {
         let f = paths.state_file();
         if !f.exists() {
             return Ok(None);
@@ -183,7 +221,7 @@ impl State {
     /// first: a run never changes it, while the TUI or `install <bundle>` may have meanwhile.
     pub fn save_run(&mut self, paths: &Paths, facts: &Facts) -> Result<()> {
         let _lock = StateFileLock::take(paths, facts)?;
-        if let Ok(Some(disk)) = State::load(paths) {
+        if let Ok(Some(disk)) = State::load_file(paths) {
             self.bundles = disk.bundles;
             self.include = disk.include;
             self.exclude = disk.exclude;
@@ -525,11 +563,59 @@ pub fn progress_file(run_dir: &Path, id: &str) -> PathBuf {
     run_dir.join(format!("{id}.steps"))
 }
 
+/// Where an apply notes the key of each config step before its command runs (see
+/// `exec::Progress`). A run removes these files once its state is saved; one that is left
+/// belongs to an apply envira did not live to record.
+pub fn applying_file(run_dir: &Path, id: &str) -> PathBuf {
+    run_dir.join(format!("{id}.applying"))
+}
+
+/// The applies that died midway: (run id, config id, keys of the steps they started).
+pub fn unfinished_applies(paths: &Paths) -> Vec<(String, String, Vec<String>)> {
+    let mut out = Vec::new();
+    for run in list_runs(paths) {
+        let dir = paths.run_dir(&run);
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(id) = name.strip_suffix(".applying") else {
+                continue;
+            };
+            let keys = read_journal(&e.path());
+            if !keys.is_empty() {
+                out.push((run.clone(), id.to_string(), keys));
+            }
+        }
+    }
+    out
+}
+
+/// Removes the files of [`unfinished_applies`], once a state that has their keys is saved.
+pub fn clear_unfinished_applies(paths: &Paths) {
+    for run in list_runs(paths) {
+        let Ok(rd) = std::fs::read_dir(paths.run_dir(&run)) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().ends_with(".applying") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
 /// The steps noted in a progress file, in order.
 pub fn read_progress(run_dir: &Path, id: &str) -> Vec<String> {
+    read_journal(&progress_file(run_dir, id))
+}
+
+/// A journal of JSON strings, one per line.
+fn read_journal(path: &Path) -> Vec<String> {
     use std::io::Read;
     let mut text = String::new();
-    if let Ok(f) = open_to_read(&progress_file(run_dir, id)) {
+    if let Ok(f) = open_to_read(path) {
         // Step labels: far below this.
         let _ = f.take(1 << 20).read_to_string(&mut text);
     }
@@ -781,6 +867,51 @@ mod tests {
         let disk = State::load(&paths).unwrap().unwrap();
         assert_eq!(disk.bundles, vec!["base", "terminal"]);
         assert_eq!(disk.last_run.as_deref(), Some("r1"));
+    }
+
+    #[test]
+    fn an_apply_that_died_midway_leaves_its_changes_to_envira() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
+        };
+        assert!(State::load(&paths).unwrap().is_none());
+        let run = paths.run_dir("20260101-000000");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(applying_file(&run, "cfg"), "\"a\"\n\"b\"\n").unwrap();
+        // Even before any state was saved: the config's changes are envira's to undo.
+        let st = State::load(&paths).unwrap().unwrap();
+        let rec = &st.configs["cfg"];
+        assert_eq!(rec.changed, Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(rec.last_result, LastResult::Failed);
+        assert_eq!(st.config_changes()["cfg"].as_ref().unwrap().len(), 2);
+        // Added to a record that has some already, once each.
+        let facts = Facts::sample(dir.path());
+        let mut st = State::default();
+        st.configs.insert(
+            "cfg".into(),
+            ConfigRecord {
+                changed: Some(vec!["b".into(), "c".into()]),
+                ..rec.clone()
+            },
+        );
+        st.save(&paths, &facts).unwrap();
+        let back = State::load(&paths).unwrap().unwrap();
+        assert_eq!(
+            back.configs["cfg"].changed.as_ref().unwrap(),
+            &["b", "c", "a"]
+        );
+        clear_unfinished_applies(&paths);
+        assert!(unfinished_applies(&paths).is_empty());
+        assert_eq!(
+            State::load(&paths).unwrap().unwrap().configs["cfg"]
+                .changed
+                .as_ref()
+                .unwrap(),
+            &["b", "c"]
+        );
     }
 
     #[test]

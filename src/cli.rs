@@ -202,6 +202,10 @@ pub enum ConfigCmd {
     Revert {
         #[arg(required = true)]
         items: Vec<String>,
+        /// Run nothing; drop envira's record of the changes it made, after they were undone by
+        /// hand (changes by steps the catalog no longer has).
+        #[arg(long)]
+        forget: bool,
         #[command(flatten)]
         run: RunOpts,
     },

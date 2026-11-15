@@ -849,6 +849,25 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     run_plan(sess, &build, state, "retry", opts).await
 }
 
+/// `config revert --forget`: drops the records of what envira changed, so it no longer offers to
+/// undo it. For changes it cannot undo (their step left the catalog), once undone by hand.
+pub fn forget_configs(sess: &Session, items: &[String]) -> Result<i32> {
+    for i in items {
+        if !sess.catalog.configs.contains_key(i) {
+            bail!("{i:?} is not a config");
+        }
+    }
+    State::update(&sess.paths, &sess.facts, |st| {
+        for i in items {
+            st.configs.remove(i);
+        }
+    })?;
+    for i in items {
+        println!("{i}: envira no longer records changes to undo");
+    }
+    Ok(0)
+}
+
 pub async fn config(sess: &Session, items: &[String], revert: bool, opts: &RunOpts) -> Result<i32> {
     let state = sess.state()?;
     let snap = sess.snapshot(state.as_ref()).await;

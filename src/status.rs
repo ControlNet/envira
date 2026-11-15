@@ -126,7 +126,11 @@ impl ItemStatus {
             return false;
         };
         match (&self.method_version, self.package_versions) {
-            (Some(v), true) => crate::version::is_newer_package(latest, v),
+            (Some(v), true) => crate::version::is_newer_package(
+                self.route.as_ref().map_or("", |r| r.via.as_str()),
+                latest,
+                v,
+            ),
             (Some(v), false) => crate::version::is_newer(latest, v),
             (None, _) => self
                 .version
@@ -160,6 +164,14 @@ impl ItemStatus {
             return Err("not installed (use `envira install`)".into());
         }
         let Some(route) = i.route.clone() else {
+            if i.ownership == Some(Ownership::Managed) {
+                return Err(format!(
+                    "the installer envira used ({}) is no longer in the catalog or not usable \
+                     here; `envira install --force {}` installs it again",
+                    i.via.as_deref().unwrap_or("?"),
+                    i.id
+                ));
+            }
             return Err(format!(
                 "installed outside envira's reach{}",
                 i.path
@@ -268,8 +280,26 @@ impl Snapshot {
     }
 }
 
-/// PATH used for detection and execution: catalog dirs, tool shell dirs, the caller's PATH and
-/// the standard system dirs, de-duplicated.
+/// The PATH directories envira manages, first one first: the catalog's `env.path`, its
+/// `env.shell_path`, then each tool's `shell.path` (tools by id), each once. Detection searches
+/// them in this order, and env.sh puts those it renders in front of PATH in this order too, so
+/// a shell runs the copy of a command that status reports.
+pub fn managed_dirs(cat: &Catalog) -> Vec<&str> {
+    let mut dirs: Vec<&str> = Vec::new();
+    let tools = cat
+        .tools
+        .values()
+        .flat_map(|t| t.shell.iter().flat_map(|s| &s.path));
+    for d in cat.env.path.iter().chain(&cat.env.shell_path).chain(tools) {
+        if !d.is_empty() && !dirs.contains(&d.as_str()) {
+            dirs.push(d);
+        }
+    }
+    dirs
+}
+
+/// PATH used for detection and execution: the [`managed_dirs`], the caller's PATH and the
+/// standard system dirs, de-duplicated.
 pub fn effective_path(cat: &Catalog, facts: &Facts) -> String {
     let mut dirs: Vec<String> = Vec::new();
     let mut push = |d: String| {
@@ -277,13 +307,8 @@ pub fn effective_path(cat: &Catalog, facts: &Facts) -> String {
             dirs.push(d);
         }
     };
-    for d in &cat.env.path {
+    for d in managed_dirs(cat) {
         push(facts.expand_home(d));
-    }
-    for t in cat.tools.values() {
-        for d in t.shell.iter().flat_map(|s| &s.path) {
-            push(facts.expand_home(d));
-        }
     }
     if let Some(p) = std::env::var_os("PATH") {
         for d in std::env::split_paths(&p) {
@@ -470,9 +495,10 @@ pub async fn snapshot(
             let (ownership, route) = if !(p.present && kind == Kind::Tool) {
                 (None, None)
             } else if st.is_managed(id) {
+                let home = format!("{}/", facts.home.display());
                 let r = rec.and_then(|r| {
                     let m = r.method.as_deref()?;
-                    route_for(
+                    let route = route_for(
                         cat,
                         facts,
                         id,
@@ -480,7 +506,19 @@ pub async fn snapshot(
                         r.entry.as_deref(),
                         r.scope,
                         planner.prefer_system,
-                    )
+                    )?;
+                    match &r.entry {
+                        // The raw installer it came from left the catalog (or was rewritten):
+                        // another one is that installer only when the binary is where it puts
+                        // it, else an update would run an installer that never installed it.
+                        Some(k) if *k != route.key && m == "run" => p
+                            .path
+                            .as_deref()
+                            .filter(|path| path.starts_with(&home))
+                            .and_then(|path| path_route(cat, facts, id, path))
+                            .filter(|pr| pr.via == "run"),
+                        _ => Some(route),
+                    }
                 });
                 if let Some(r) = rec {
                     via = r.method.clone().or(via.clone());
@@ -824,6 +862,46 @@ mod tests {
         assert_eq!(get("pipx").label, Label::Available);
         assert!(snap.to_install().contains(&"yazi-theme".to_string()));
         assert!(!snap.to_install().contains(&"bat".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_managed_tool_keeps_off_raw_installers_that_did_not_install_it() {
+        let c = cat();
+        let f = Facts::sample(Path::new("/home/user"));
+        let mut st = State::default();
+        st.tools.insert(
+            "fzf".into(),
+            ToolRecord {
+                // Installed by a `run` entry the catalog no longer has (or has rewritten).
+                entry: Some("gone".into()),
+                method: Some("run".into()),
+                scope: Some(Scope::User),
+                version: Some("0.60.0".into()),
+                installed_at: Some("t".into()),
+                last_result: LastResult::Ok,
+                last_error: None,
+                last_run: None,
+            },
+        );
+        let at = |path: &str| {
+            let r = FakeRunner::default();
+            r.rule("fzf --version", 0, "0.60.0\n")
+                .rule("command -v fzf", 0, &format!("{path}\n"));
+            r
+        };
+        // Where ~/.fzf/install puts it: that installer, rewritten.
+        let r = at("/home/user/.fzf/bin/fzf");
+        let snap = snapshot(&c, &f, Some(&st), &r, false).await;
+        let fzf = snap.get("fzf").unwrap();
+        assert_eq!(fzf.route.as_ref().unwrap().via, "run");
+        // Elsewhere: no installer of the catalog is the one that installed it.
+        let r = at("/usr/bin/fzf");
+        let snap = snapshot(&c, &f, Some(&st), &r, false).await;
+        let fzf = snap.get("fzf").unwrap();
+        assert_eq!(fzf.ownership, Some(Ownership::Managed));
+        assert_eq!(fzf.route, None);
+        let why = fzf.update_target(true).unwrap_err();
+        assert!(why.contains("install --force fzf"), "{why}");
     }
 
     #[tokio::test]

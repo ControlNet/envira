@@ -1,4 +1,5 @@
-//! Lenient version comparison for tool versions (`v1.2.3`, `0.24.0`, `1.93.0-nightly`, `2:9.1`).
+//! Lenient version comparison for tool versions (`v1.2.3`, `0.24.0`, `1.93.0-nightly`, `2:9.1`)
+//! and the package managers' own ordering of package versions.
 
 use std::cmp::Ordering;
 
@@ -35,11 +36,33 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     compare(latest, current) == Some(Ordering::Greater)
 }
 
-/// Compares whole package versions, `[epoch:]version[-revision]`, the way dpkg does (rpm and
-/// pacman order the usual versions the same): epochs numerically, then version and revision
-/// part by part, digits numerically, `~` before anything (`1.0~rc1` is older than `1.0`).
-/// `None` when either side does not start with a digit (`(none)`, an error message).
-pub fn compare_package(a: &str, b: &str) -> Option<Ordering> {
+/// How a package manager orders its versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scheme {
+    /// apt: dpkg's algorithm.
+    Dpkg,
+    /// dnf and zypper: rpm's `rpmvercmp` (`~` before anything, `^` after the base version).
+    Rpm,
+    /// pacman: libalpm's `alpm_pkg_vercmp`, rpm's older algorithm (`1.0a` older than `1.0`).
+    Pacman,
+}
+
+impl Scheme {
+    /// The scheme of a package method (`status::PACKAGE_METHODS`); dpkg's for others.
+    pub fn of(method: &str) -> Scheme {
+        match method {
+            "dnf" | "zypper" => Scheme::Rpm,
+            "pacman" => Scheme::Pacman,
+            _ => Scheme::Dpkg,
+        }
+    }
+}
+
+/// Compares whole package versions, `[epoch:]version[-revision]`, the way the package manager
+/// does: epochs numerically, then the version, then the revision (pacman compares revisions
+/// only when both have one). `None` when either side does not start with a digit (`(none)`, an
+/// error message).
+pub fn compare_package(scheme: Scheme, a: &str, b: &str) -> Option<Ordering> {
     let split = |v: &str| -> Option<(u64, String, String)> {
         let v = v.trim();
         let (epoch, rest) = match v.split_once(':') {
@@ -56,11 +79,136 @@ pub fn compare_package(a: &str, b: &str) -> Option<Ordering> {
     };
     let (ea, va, ra) = split(a)?;
     let (eb, vb, rb) = split(b)?;
-    Some(
-        ea.cmp(&eb)
-            .then_with(|| verrevcmp(&va, &vb))
-            .then_with(|| verrevcmp(&ra, &rb)),
-    )
+    let cmp = |x: &str, y: &str| match scheme {
+        Scheme::Dpkg => verrevcmp(x, y),
+        Scheme::Rpm => rpmvercmp(x, y, false),
+        Scheme::Pacman => rpmvercmp(x, y, true),
+    };
+    Some(ea.cmp(&eb).then_with(|| cmp(&va, &vb)).then_with(|| {
+        if scheme == Scheme::Pacman && (ra.is_empty() || rb.is_empty()) {
+            Ordering::Equal
+        } else {
+            cmp(&ra, &rb)
+        }
+    }))
+}
+
+/// rpm's `rpmvercmp` (`alpm`: libalpm's copy of an older one, without `~` and `^`, where a
+/// letter left over is older and longer separators are newer). Alphanumeric segments in turn:
+/// numbers numerically and newer than letters, letters by bytes.
+fn rpmvercmp(a: &str, b: &str, alpm: bool) -> Ordering {
+    if a == b {
+        return Ordering::Equal;
+    }
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (mut i, mut j) = (0, 0);
+    let special = |c: u8| !alpm && (c == b'~' || c == b'^');
+    while i < a.len() || j < b.len() {
+        let (si, sj) = (i, j);
+        while i < a.len() && !a[i].is_ascii_alphanumeric() && !special(a[i]) {
+            i += 1;
+        }
+        while j < b.len() && !b[j].is_ascii_alphanumeric() && !special(b[j]) {
+            j += 1;
+        }
+        let (ca, cb) = (a.get(i).copied(), b.get(j).copied());
+        if !alpm {
+            // `~` sorts before everything, the end included.
+            if ca == Some(b'~') || cb == Some(b'~') {
+                if ca != Some(b'~') {
+                    return Ordering::Greater;
+                }
+                if cb != Some(b'~') {
+                    return Ordering::Less;
+                }
+                i += 1;
+                j += 1;
+                continue;
+            }
+            // `^` sorts after the end (the base version) and before anything else.
+            if ca == Some(b'^') || cb == Some(b'^') {
+                if ca.is_none() {
+                    return Ordering::Less;
+                }
+                if cb.is_none() {
+                    return Ordering::Greater;
+                }
+                if ca != Some(b'^') {
+                    return Ordering::Greater;
+                }
+                if cb != Some(b'^') {
+                    return Ordering::Less;
+                }
+                i += 1;
+                j += 1;
+                continue;
+            }
+        }
+        if ca.is_none() || cb.is_none() {
+            break;
+        }
+        if alpm && i - si != j - sj {
+            return (i - si).cmp(&(j - sj));
+        }
+        let num = a[i].is_ascii_digit();
+        let seg = |s: &[u8], k: usize| -> usize {
+            let mut e = k;
+            while e < s.len()
+                && (if num {
+                    s[e].is_ascii_digit()
+                } else {
+                    s[e].is_ascii_alphabetic()
+                })
+            {
+                e += 1;
+            }
+            e
+        };
+        let (ei, ej) = (seg(a, i), seg(b, j));
+        // Different kinds: a number is newer than letters.
+        if ej == j {
+            return if num {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
+        }
+        let (mut x, mut y) = (&a[i..ei], &b[j..ej]);
+        if num {
+            while x.first() == Some(&b'0') {
+                x = &x[1..];
+            }
+            while y.first() == Some(&b'0') {
+                y = &y[1..];
+            }
+            if x.len() != y.len() {
+                return x.len().cmp(&y.len());
+            }
+        }
+        match x.cmp(y) {
+            Ordering::Equal => {}
+            o => return o,
+        }
+        i = ei;
+        j = ej;
+    }
+    let (ra, rb) = (&a[i.min(a.len())..], &b[j.min(b.len())..]);
+    if ra.is_empty() && rb.is_empty() {
+        return Ordering::Equal;
+    }
+    if alpm {
+        // A letter left over never beats the end.
+        let alpha = |s: &[u8]| s.first().is_some_and(u8::is_ascii_alphabetic);
+        if (ra.is_empty() && !alpha(rb)) || alpha(ra) {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    } else if ra.is_empty() {
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    }
 }
 
 /// dpkg's ordering of one version or revision string.
@@ -113,9 +261,9 @@ fn verrevcmp(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
-/// [`is_newer`] for whole package versions ([`compare_package`]).
-pub fn is_newer_package(latest: &str, current: &str) -> bool {
-    compare_package(latest, current) == Some(Ordering::Greater)
+/// [`is_newer`] for whole package versions of a package method ([`compare_package`]).
+pub fn is_newer_package(method: &str, latest: &str, current: &str) -> bool {
+    compare_package(Scheme::of(method), latest, current) == Some(Ordering::Greater)
 }
 
 #[cfg(test)]
@@ -147,15 +295,45 @@ mod tests {
 
     #[test]
     fn compares_package_versions_like_dpkg() {
-        assert!(is_newer_package("1.2.3-2", "1.2.3-1"));
-        assert!(is_newer_package("1:0.9-1", "2.0-1"));
-        assert!(!is_newer_package("1.2.3-1ubuntu1", "1.2.3-1ubuntu1"));
-        assert!(is_newer_package("1.2.3-1ubuntu2", "1.2.3-1ubuntu1"));
-        assert!(is_newer_package("1.0", "1.0~rc1"));
-        assert!(is_newer_package("2.39.2-1.fc41", "2.39.1-3.fc41"));
-        assert!(is_newer_package("1.10-1", "1.9-1"));
-        assert!(is_newer_package("1.0a-1", "1.0-1"));
-        assert!(!is_newer_package("(none)", "1.0-1"));
-        assert_eq!(compare_package("1.0-1", "01.0-1"), Some(Ordering::Equal));
+        let newer = |a, b| is_newer_package("apt", a, b);
+        assert!(newer("1.2.3-2", "1.2.3-1"));
+        assert!(newer("1:0.9-1", "2.0-1"));
+        assert!(!newer("1.2.3-1ubuntu1", "1.2.3-1ubuntu1"));
+        assert!(newer("1.2.3-1ubuntu2", "1.2.3-1ubuntu1"));
+        assert!(newer("1.0", "1.0~rc1"));
+        assert!(newer("1.10-1", "1.9-1"));
+        assert!(newer("1.0a-1", "1.0-1"));
+        assert!(!newer("(none)", "1.0-1"));
+        assert_eq!(
+            compare_package(Scheme::Dpkg, "1.0-1", "01.0-1"),
+            Some(Ordering::Equal)
+        );
+    }
+
+    /// Expected orders from `rpm --eval '%{lua:print(rpm.vercmp(a, b))}'` (rpm 4.19) and
+    /// pacman's `vercmp a b`.
+    #[test]
+    fn compares_package_versions_like_rpm_and_pacman() {
+        use Ordering::*;
+        let rpm = |a, b| compare_package(Scheme::Rpm, a, b).unwrap();
+        assert_eq!(rpm("1.0.1-1", "1.0^git-1"), Greater);
+        assert_eq!(rpm("1.0^git-1", "1.0-1"), Greater);
+        assert_eq!(rpm("1.0~rc1-1", "1.0-1"), Less);
+        assert_eq!(rpm("1.0~rc1-1", "1.0~rc2-1"), Less);
+        assert_eq!(rpm("2.39.2-1.fc41", "2.39.1-3.fc41"), Greater);
+        assert_eq!(rpm("1.10-1", "1.9-1"), Greater);
+        assert_eq!(rpm("1.0a-1", "1.0-1"), Greater);
+        assert_eq!(rpm("1.0.a-1", "1.0.1-1"), Less);
+        assert_eq!(rpm("1.0_1-1", "1.0.1-1"), Equal);
+        assert_eq!(rpm("1.0-2", "1.0-10"), Less);
+        assert!(is_newer_package("dnf", "1.0.1-1", "1.0^git-1"));
+        assert!(is_newer_package("zypper", "1.2.3-2.1", "1.2.3-1.1"));
+        let pac = |a, b| compare_package(Scheme::Pacman, a, b).unwrap();
+        assert_eq!(pac("1.0a-1", "1.0-1"), Less);
+        assert_eq!(pac("1.0-2", "1.0-1"), Greater);
+        assert_eq!(pac("1.0", "1.0-1"), Equal);
+        assert_eq!(pac("1.0..1", "1.0.1"), Greater);
+        assert_eq!(pac("1:1.0-1", "2.0-1"), Greater);
+        assert_eq!(pac("6.12.1.arch1-1", "6.12.arch1-1"), Greater);
     }
 }

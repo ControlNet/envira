@@ -74,18 +74,38 @@ pub fn render(cat: &Catalog, facts: &Facts, paths: &Paths, present: &BTreeSet<St
         .filter(|id| present.contains(*id))
         .collect();
     ids.sort_by_key(|id| (cat.category(id), *id));
+    // PATH: `env.shell_path` and the dirs of present tools, in the order detection searches
+    // them (`status::managed_dirs`).
+    let rendered: Vec<&String> = cat
+        .env
+        .shell_path
+        .iter()
+        .chain(
+            ids.iter()
+                .filter_map(|id| cat.tools[*id].shell.as_ref())
+                .flat_map(|s| &s.path),
+        )
+        .collect();
+    let order: Vec<&str> = crate::status::managed_dirs(cat)
+        .into_iter()
+        .filter(|d| rendered.iter().any(|r| r.as_str() == *d))
+        .collect();
+    if !order.is_empty() {
+        // Each one goes in front of the ones before it: last first.
+        env.push_str("# PATH, from the last to the first\n");
+        for d in order.iter().rev() {
+            env.push_str(&format!("envira_path_prepend {}\n", sh_path(d)));
+        }
+    }
     for id in ids {
         let tool = &cat.tools[id];
         let Some(sh) = &tool.shell else { continue };
         let guard = format!("command -v {} >/dev/null 2>&1", tool.bin(id));
-        if !sh.path.is_empty() || !sh.env.is_empty() {
+        if !sh.env.is_empty() {
             env.push_str(&format!("# {id}\n"));
-            for p in &sh.path {
-                env.push_str(&format!("envira_path_prepend {}\n", sh_path(p)));
-            }
             for (k, v) in &sh.env {
-                // A path in the home (GOROOT=~/.go) only when it is there: a tool found
-                // elsewhere (Go from apt) must not be pointed at envira's layout.
+                // A path in the home (BUN_INSTALL=~/.bun) only when it is there: a tool found
+                // elsewhere must not be pointed at envira's layout.
                 if v.starts_with("~/") {
                     let p = sh_path(v);
                     env.push_str(&format!("[ -d {p} ] && export {k}={p}\n"));
@@ -121,13 +141,6 @@ pub fn render(cat: &Catalog, facts: &Facts, paths: &Paths, present: &BTreeSet<St
                 }
                 out.push_str("fi\n");
             }
-        }
-    }
-    let shell_path: Vec<&String> = cat.env.shell_path.iter().collect();
-    if !shell_path.is_empty() {
-        env.push_str("# envira\n");
-        for p in shell_path {
-            env.push_str(&format!("envira_path_prepend {}\n", sh_path(p)));
         }
     }
     env.push_str("export PATH\nunset -f envira_path_prepend\n");
@@ -293,8 +306,8 @@ mod tests {
     }
 
     /// The generated env.sh, sourced by sh, bash and zsh: a managed dir already on PATH moves
-    /// to the front (all its copies go), absent dirs are left out, and GOROOT is set only when
-    /// ~/.go is there.
+    /// to the front (all its copies go), absent dirs are left out, and GOROOT is never set (go
+    /// finds it from where its binary is).
     #[test]
     fn env_sh_moves_managed_dirs_to_the_front() {
         let (d, cat, facts, paths) = setup();
@@ -331,6 +344,47 @@ mod tests {
         }
     }
 
+    /// A shell searches the managed dirs in the order detection does: the copy of a command
+    /// that status reports is the one the shell runs.
+    #[test]
+    fn env_sh_orders_path_as_detection_does() {
+        let (d, cat, facts, paths) = setup();
+        let present: BTreeSet<String> = cat.tools.keys().cloned().collect();
+        let r = render(&cat, &facts, &paths, &present);
+        // Rendered: `env.shell_path` and the tools' dirs (`env.path` is detection's alone).
+        let rendered: Vec<&String> = cat
+            .tools
+            .values()
+            .filter_map(|t| t.shell.as_ref())
+            .flat_map(|s| &s.path)
+            .chain(&cat.env.shell_path)
+            .collect();
+        let expected: Vec<String> = crate::status::managed_dirs(&cat)
+            .into_iter()
+            .filter(|p| rendered.iter().any(|r| r.as_str() == *p))
+            .map(|p| facts.expand_home(p))
+            .filter(|p| p.starts_with(&d.path().display().to_string()))
+            .collect();
+        assert!(expected.len() > 5, "{expected:?}");
+        for p in &expected {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        let env = d.path().join("env.sh");
+        std::fs::write(&env, &r.env_sh).unwrap();
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!(". '{}' && echo \"$PATH\"", env.display())])
+            .env("HOME", d.path())
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let got: Vec<&str> = path
+            .split(':')
+            .filter(|p| p.starts_with(&d.path().display().to_string()))
+            .collect();
+        assert_eq!(got, expected);
+    }
+
     #[test]
     fn renders_only_present_tools_with_guards() {
         let (_d, cat, facts, paths) = setup();
@@ -341,8 +395,14 @@ mod tests {
         let r = render(&cat, &facts, &paths, &present);
         assert!(
             r.env_sh.contains(
-                "# bun\nenvira_path_prepend \"$HOME/.bun/bin\"\n[ -d \"$HOME/.bun\" ] && export BUN_INSTALL=\"$HOME/.bun\"\n"
+                "# PATH, from the last to the first\nenvira_path_prepend \"$HOME/.bun/bin\"\nenvira_path_prepend \"$HOME/.local/share/fnm\"\nenvira_path_prepend \"$HOME/.local/bin\"\n"
             ),
+            "{}",
+            r.env_sh
+        );
+        assert!(
+            r.env_sh
+                .contains("# bun\n[ -d \"$HOME/.bun\" ] && export BUN_INSTALL=\"$HOME/.bun\"\n"),
             "{}",
             r.env_sh
         );
@@ -350,9 +410,10 @@ mod tests {
             !r.env_sh.contains(".cargo/bin"),
             "rust-toolchain is not present"
         );
-        assert!(r.env_sh.ends_with(
-            "envira_path_prepend \"$HOME/.local/bin\"\nexport PATH\nunset -f envira_path_prepend\n"
-        ));
+        assert!(
+            r.env_sh
+                .ends_with("export PATH\nunset -f envira_path_prepend\n")
+        );
         assert!(r.init_zsh.contains(
             "[ -f \"$HOME/.config/envira/env.sh\" ] && . \"$HOME/.config/envira/env.sh\"\n"
         ));

@@ -147,6 +147,15 @@ impl Vars {
         }
     }
 
+    /// The same values with `{envira}` and `{sudo}` as plain words: a command as it reads apart
+    /// from how this run reaches it (the binary's path, sudo, the state dir it passes on). Step
+    /// identities come from it, so another envira binary or `sudo envira` finds them again.
+    pub fn identity(mut self) -> Vars {
+        self.builtins.insert("envira", "envira".into());
+        self.builtins.insert("sudo", String::new());
+        self
+    }
+
     /// Adds parameters; later calls override earlier ones (defaults first, then the entry).
     pub fn with_params(mut self, params: &Params) -> Vars {
         for (k, v) in params {
