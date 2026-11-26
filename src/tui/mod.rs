@@ -347,13 +347,14 @@ async fn event_loop(term: &mut DefaultTerminal, mut sess: Session, theme: Theme)
                         }
                         drop(askpass.take());
                     }
-                    app.on_exec(e);
+                    let after = app.on_exec(e);
                     if finished && app.quitting {
                         return match broken.take() {
                             Some(e) => Err(e.into()),
                             None => Ok(1),
                         };
                     }
+                    cmds.extend(after);
                 }
                 AppEvent::ShellEnv(id, r) => app.on_shell_env(id, r),
                 AppEvent::Sudo(check, pw) => {

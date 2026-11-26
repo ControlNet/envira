@@ -508,13 +508,18 @@ impl App {
         }
         if self.reseed {
             self.reseed = false;
-            self.selected = self
-                .snap
-                .as_ref()
-                .map(|s| s.to_install().into_iter().collect())
-                .unwrap_or_default();
+            self.reseed_selection();
         }
         self.clamp();
+    }
+
+    /// Selects what is left to install.
+    fn reseed_selection(&mut self) {
+        self.selected = self
+            .snap
+            .as_ref()
+            .map(|s| s.to_install().into_iter().collect())
+            .unwrap_or_default();
     }
 
     pub fn rows(&self) -> Vec<&ItemStatus> {
@@ -1004,6 +1009,17 @@ impl App {
             }
             self.cursor = 0;
             self.clamp();
+            return vec![];
+        }
+        // A plan made from the status shown before a run (or a refresh) finished detecting
+        // would do again what the run just did.
+        if self.detecting
+            && matches!(
+                k.code,
+                KeyCode::Enter | KeyCode::Char('u') | KeyCode::Char('x') | KeyCode::Char('t')
+            )
+        {
+            self.notify("Still detecting · try again in a moment");
             return vec![];
         }
         match k.code {
@@ -1530,22 +1546,28 @@ impl App {
                 } else if t.is_empty() {
                     self.notify("Nothing to retry");
                 } else {
-                    // Planned once detection has seen what the run changed: a build that
-                    // went through is not run again for a copy that failed after it.
+                    // Planned once detection (started as the run ended) has seen what the run
+                    // changed: a build that went through is not run again for a copy that
+                    // failed after it.
                     self.run = None;
                     self.screen = Screen::Dashboard;
-                    self.pending_retry = Some(t);
-                    self.detecting = true;
-                    self.notify("Checking what the run changed before the retry");
-                    return vec![Cmd::Refresh(Fetch::IfStale)];
+                    if self.detecting {
+                        self.pending_retry = Some(t);
+                        self.notify("Checking what the run changed before the retry");
+                    } else {
+                        let title = format!("retry · {} unfinished", t.len());
+                        self.open_req(PlanReq::Retry(t), title);
+                    }
                 }
             }
             KeyCode::Enter | KeyCode::Esc if finished => {
                 self.run = None;
                 self.screen = Screen::Dashboard;
-                self.reseed = true;
-                self.detecting = true;
-                return vec![Cmd::Refresh(Fetch::IfStale)];
+                if self.detecting {
+                    self.reseed = true;
+                } else {
+                    self.reseed_selection();
+                }
             }
             KeyCode::Char('q') if finished => return vec![Cmd::Quit],
             _ => {}
@@ -1644,8 +1666,12 @@ impl App {
         self.screen = Screen::Run;
     }
 
-    pub fn on_exec(&mut self, ev: Event) {
-        let Some(run) = &mut self.run else { return };
+    /// Events of the run on screen. When it ends, detection starts at once, so the dashboard
+    /// behind its summary catches up with what it changed.
+    pub fn on_exec(&mut self, ev: Event) -> Vec<Cmd> {
+        let Some(run) = &mut self.run else {
+            return vec![];
+        };
         let mut finished: Option<(String, RunRecord)> = None;
         match ev {
             Event::UnitStarted(i) => {
@@ -1708,11 +1734,14 @@ impl App {
             }
         }
         // Dashboard `t` retries what this run left, without a restart.
-        if let Some((id, rec)) = finished {
-            let t = self.retry_targets(&id, &rec);
-            let left = !t.is_empty() || rec.shell_env_error.is_some();
-            self.last_run = left.then_some((id, t, true));
-        }
+        let Some((id, rec)) = finished else {
+            return vec![];
+        };
+        let t = self.retry_targets(&id, &rec);
+        let left = !t.is_empty() || rec.shell_env_error.is_some();
+        self.last_run = left.then_some((id, t, true));
+        self.detecting = true;
+        vec![Cmd::Refresh(Fetch::IfStale)]
     }
 }
 
@@ -1971,8 +2000,7 @@ pub mod tests {
         ));
         a.on_exec(Event::Finished(RunRecord::default()));
         // Planned once detection has caught up with the run.
-        let cmds = a.on_key(key(KeyCode::Char('r')));
-        assert!(matches!(cmds[..], [Cmd::Refresh(_)]));
+        assert!(a.on_key(key(KeyCode::Char('r'))).is_empty());
         assert_eq!(a.screen, Screen::Dashboard);
         let snap = a.snap.clone().unwrap();
         a.on_snapshot(snap, None);
@@ -2108,8 +2136,7 @@ pub mod tests {
             vec!["fnm", "nodejs", "npm-prefix", "codex"]
         );
         // Planned once detection has caught up with the run.
-        let cmds = a.on_key(key(KeyCode::Char('r')));
-        assert!(matches!(cmds[..], [Cmd::Refresh(_)]));
+        assert!(a.on_key(key(KeyCode::Char('r'))).is_empty());
         assert_eq!(a.screen, Screen::Dashboard);
         let snap = a.snap.clone().unwrap();
         a.on_snapshot(snap, None);
@@ -2464,7 +2491,9 @@ pub mod tests {
         assert!(!a.prefer_system);
         assert!(matches!(cmds[..], [Cmd::Refresh(Fetch::CacheOnly)]));
         assert!(a.toast_text().unwrap().contains("user scope"));
-        // Plans follow the choice.
+        // Plans follow the choice, once detection has shown the routes it takes.
+        let snap = a.snap.clone().unwrap();
+        a.on_snapshot(snap, None);
         a.on_key(key(KeyCode::Enter));
         let (plan, _) = a.plan.as_ref().unwrap();
         assert!(
@@ -2526,6 +2555,32 @@ pub mod tests {
         let state = a.state.clone();
         a.on_snapshot(snap, state);
         assert_eq!(ids(&a.selected), vec!["codex", "fnm"]);
+    }
+
+    #[test]
+    fn the_dashboard_plans_only_from_what_detection_saw_after_a_run() {
+        let mut a = app();
+        let plan = a.make_plan(&["codex".into()]);
+        a.start_run(plan, "r1".into(), None);
+        // Detection starts as the run ends, while its summary is on screen.
+        let cmds = a.on_exec(Event::Finished(RunRecord::default()));
+        assert!(matches!(cmds[..], [Cmd::Refresh(_)]));
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(a.screen, Screen::Dashboard);
+        // The table still shows the status from before the run: no plan is made from it.
+        a.selected.insert("codex".into());
+        for k in [KeyCode::Enter, KeyCode::Char('u'), KeyCode::Char('x')] {
+            assert!(a.on_key(key(k)).is_empty());
+            assert_eq!(a.screen, Screen::Dashboard);
+        }
+        assert_eq!(
+            a.toast_text(),
+            Some("Still detecting · try again in a moment")
+        );
+        let snap = a.snap.clone().unwrap();
+        a.on_snapshot(snap, None);
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.screen, Screen::Plan);
     }
 
     #[test]

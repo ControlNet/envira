@@ -115,6 +115,13 @@ Lessons from building the Rust + ratatui rewrite. Design: `.omo/plans/envira-rew
   plus `HOME`, `ENVIRA_STATE_DIR`, `ENVIRA_CONFIG_DIR` in a scratch dir and `ENVIRA_PRIVILEGE=none`;
   `shell_env` regeneration then writes rc blocks into the scratch home, not the real one.
 - ratatui: `Line::styled` puts the style on the line (`line.style`), not on its spans.
+- The TUI snapshot is only replaced by detection. Detection used to start when the run summary was
+  left, so for its few seconds (~4 s on a cluster login node) the dashboard showed every tool the
+  run updated as still outdated, and Enter planned the update again (seen with go: updated twice).
+  Detection now starts when the run ends, and Enter/u/x/t wait while `detecting` is set.
+- A tool's install waits for an update of what it builds with only since `Plan::extend_after`:
+  v0.1.5 ran `go install` (gotify) during the go update, and the running go 1.20 picked up the
+  swapped-in 1.27 toolchain (`compile: version "go1.27.4" does not match go tool version`).
 
 - Diagnose before retrying: only network errors and a busy dpkg lock are worth repeating; a 404,
   PEP 668 or a full disk fails the same way every time. Skip `[envira]` and `$ cmd` lines when
