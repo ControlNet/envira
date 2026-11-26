@@ -87,6 +87,7 @@ shell = { alias = { ls = "lsd" } }
 desc = "Syntax-highlighting pager for git diffs"
 install = [
   { method = "brew", package = "git-delta", depends = ["homebrew"] },
+  { method = "github-release", repo = "dandavison/delta", asset = { x86_64 = "delta-*-x86_64-unknown-linux-musl.tar.gz", aarch64 = "delta-*-aarch64-unknown-linux-gnu.tar.gz" } },
   { method = "cargo", package = "git-delta", depends = ["cargo-binstall"], portable = true },
 ]
 
