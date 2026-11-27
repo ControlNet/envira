@@ -29,6 +29,9 @@
 
 ## Checking that it went out
 
+- A tag push also starts `Lagacy Test` (`lagacy_test.yaml`), so `gh run list --branch vX.Y.Z` can
+  return it first; watch the run whose `workflowName` is `Release to PyPI` (34 jobs for 0.1.6).
+
 ```bash
 gh release view vX.Y.Z --json assets --jq '.assets[].name'
 curl -s https://pypi.org/pypi/envira/json | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
