@@ -23,10 +23,33 @@ There are three kinds of output:
   - `json::plan()` rewrites it to `{id, reason}` objects and adds `needs_sudo` and `low_space`, both of which need facts.
 - Error codes come from `json::coded(code, msg)`. `json::code_of` searches the whole anyhow chain, so a `.context()` added later keeps the code.
   - Codes in use: `unknown_item`, `not_a_config`, `no_runs`, `run_locked`, `sudo_required`, `confirmation_required`, `aborted`.
-- In JSON mode a run never asks `Proceed?`: without `-y` it fails with `confirmation_required`.
-  - The sudo password prompt still goes to /dev/tty, which keeps stdout clean.
+- In JSON mode a run without `-y` fails with `confirmation_required` before anything asks, including the sudo password prompt.
+  - With `-y`, the sudo prompt still goes to /dev/tty, which keeps stdout clean.
+- Signal handlers are installed before the executor is spawned.
+  - Otherwise a signal in that gap kills envira while its steps keep running in their own sessions.
+- JSON never serializes `PathBuf`: `serde_json` errors on non-UTF-8 paths, and `json!` panics on that error.
+  - Convert paths with `display().to_string()`.
+  - `exec::secrets()` reads `vars_os`, because `std::env::vars()` panics on any variable that isn't UTF-8.
+- `log`: only the newest run can be `running`. Older unfinished runs are `interrupted`, even while another run holds the lock.
 - The executor sets `RunRecord.unrecorded` before it sends `Event::Finished`, so the `finished` event can report it.
 - Hints are not a separate field: they are `[envira] hint ...` lines and also appear in the run record.
+
+## Review history
+
+- On 2026-11-28 codex (default model) reviewed the feature; the report is under the session scratchpad.
+- Fixed:
+  - the `-y` check now runs before the sudo prompt;
+  - the dry-run writes in `retry` (shell env only) and `config revert --forget`;
+  - the signal gap;
+  - the non-UTF-8 path panic;
+  - text `doctor` keeps its report when state.toml is unreadable;
+  - text `explain` keeps trailing empty probe lines;
+  - `log --run` showing an old run as running.
+- Left as is:
+  - one Ctrl-C lets steps finish (by design);
+  - `status --json` errors on stdout (the issue asked for that);
+  - `install <bundle>` records the bundle before confirmation (pre-existing, also in text mode);
+  - `config revert <tool>` is a plan skip, not `not_a_config`.
 
 ## Testing a run end to end
 

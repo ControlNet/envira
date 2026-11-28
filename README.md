@@ -107,17 +107,26 @@ Bundles (`envira install <bundle>`):
 - `status`, `plan`, `doctor`, `explain <id>`, `log`, `log --list`, `update --check`, `adopt`,
   `catalog check` and `catalog show` print one JSON document.
 - `install`, `update`, `retry`, `config apply` and `config revert` print one object per line
-  (NDJSON), each with an `event` key: `plan` first, then `unit_started`, `line`
-  (`-q` keeps only envira's own lines), `unit_finished` with its `outcome` (`ok`, `failed`,
-  `blocked`, `cancelled`, `skipped`), `shell_env`, `notice`, and `finished` with the run record.
-  These commands never ask for confirmation in this mode: pass `-y`, or they stop with
-  `confirmation_required`. Ctrl-C and SIGTERM still end with `unit_finished` and `finished`.
-  Two runs have no units: `retry` after a run that only left the shell environment behind
-  prints a `notice` and a `shell_env`, and `config revert --forget` prints `forgotten` with
-  the `ids`.
-- A command that fails prints `{"event": "error", "code": …, "message": …}` and exits with 2
-  (1 for `aborted`, when the sudo password prompt is cancelled). The codes are `unknown_item`, `not_a_config`, `no_runs`, `run_locked`, `sudo_required`,
-  `confirmation_required`, `aborted`, and `error` for anything else.
+  (NDJSON), each with an `event` key:
+  - `plan` comes first. A run then prints `unit_started`, `line` (`-q` keeps only envira's own
+    lines), `unit_finished` with its `outcome` (`ok`, `failed`, `blocked`, `cancelled`,
+    `skipped`), `shell_env`, and last `finished` with the run record. `notice` can come at
+    any point, also before `plan`.
+  - With nothing to run or with `--dry-run`, the stream is only the `plan`. `retry` after a
+    run that only left the shell environment behind prints a `notice` and a `shell_env`, and
+    `config revert --forget` prints `forgotten` with the `ids`.
+  - Without `-y` a run stops with `confirmation_required` before it asks anything. With
+    `-y`, a plan that needs sudo asks for its password on the terminal (not on stdout), as
+    without `--json`; `--scope user` plans without sudo. The first Ctrl-C lets the running steps finish, the
+    second cancels them; SIGTERM cancels them at once. Either way the stream ends with
+    `finished`.
+  - The exit code is 0 when everything succeeded and 1 when a unit or the shell environment
+    failed; the `unit_finished` and `finished` events say which.
+- A command that cannot run prints `{"event": "error", "code": …, "message": …}` and exits
+  with 2. The codes are `unknown_item`, `not_a_config`, `no_runs`, `run_locked`,
+  `sudo_required`, `confirmation_required`, and `error` for anything else; a cancelled sudo
+  password prompt prints `aborted` and exits with 1. Invalid arguments are reported by the
+  argument parser on stderr, as usual.
 
 ```shell
 envira install bat fd -y --json --scope user | jq -c 'select(.event == "unit_finished")'
