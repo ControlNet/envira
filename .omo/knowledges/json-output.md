@@ -30,7 +30,12 @@ There are three kinds of output:
 - JSON never serializes `PathBuf`: `serde_json` errors on non-UTF-8 paths, and `json!` panics on that error.
   - Convert paths with `display().to_string()`.
   - `exec::secrets()` reads `vars_os`, because `std::env::vars()` panics on any variable that isn't UTF-8.
-- `log`: only the newest run can be `running`. Older unfinished runs are `interrupted`, even while another run holds the lock.
+- `log`: a run is `running` only when it is state's `last_run` and the run lock is held.
+  - Don't use the newest run id: ids are local times, and after a DST rollback a live run sorts below older ones.
+- `Facts.home` and `Facts.state_dir` serialize through `path_text`. A non-UTF-8 home must not break `doctor --json`.
+- `json::print` (query documents) returns write errors, so `> /dev/full` exits 2. `json::emit` (run events) ignores them, so a run always finishes.
+- The executor reads a unit's cancel baseline when it sends `UnitStarted`, not after the unit has opened its log and temp dir.
+  - Otherwise a SIGTERM in that gap was missed and the unit ran to the end.
 - The executor sets `RunRecord.unrecorded` before it sends `Event::Finished`, so the `finished` event can report it.
 - Hints are not a separate field: they are `[envira] hint ...` lines and also appear in the run record.
 
@@ -45,6 +50,11 @@ There are three kinds of output:
   - text `doctor` keeps its report when state.toml is unreadable;
   - text `explain` keeps trailing empty probe lines;
   - `log --run` showing an old run as running.
+- Round 2 fixed:
+  - the SIGTERM race right after `unit_started`;
+  - non-UTF-8 home/state paths in `doctor --json`;
+  - `log` status after a clock rollback;
+  - query JSON ignoring write errors.
 - Left as is:
   - one Ctrl-C lets steps finish (by design);
   - `status --json` errors on stdout (the issue asked for that);
