@@ -100,6 +100,26 @@ Bundles (`envira install <bundle>`):
 - Variables for the install script: `ENVIRA_VERSION=v0.2.0` pins a release,
   `ENVIRA_INSTALL_DIR` changes where it puts the binary, and `ENVIRA_NO_LAUNCH=1` only installs.
 
+### JSON output for scripts
+
+`--json` prints JSON on stdout and nothing else:
+
+- `status`, `plan`, `doctor`, `explain <id>`, `log`, `log --list`, `update --check`, `adopt`,
+  `catalog check` and `catalog show` print one JSON document.
+- `install`, `update`, `retry`, `config apply` and `config revert` print one object per line
+  (NDJSON), each with an `event` key: `plan` first, then `unit_started`, `line`
+  (`-q` keeps only envira's own lines), `unit_finished` with its `outcome` (`ok`, `failed`,
+  `blocked`, `cancelled`, `skipped`), `shell_env`, `notice`, and `finished` with the run record.
+  These commands never ask for confirmation in this mode: pass `-y`, or they stop with
+  `confirmation_required`. Ctrl-C and SIGTERM still end with `unit_finished` and `finished`.
+- A command that fails prints `{"event": "error", "code": …, "message": …}` and exits with 2
+  (1 for `aborted`, when the sudo password prompt is cancelled). The codes are `unknown_item`, `not_a_config`, `no_runs`, `run_locked`, `sudo_required`,
+  `confirmation_required`, `aborted`, and `error` for anything else.
+
+```shell
+envira install bat fd -y --json --scope user | jq -c 'select(.event == "unit_finished")'
+```
+
 The prompt that `shell` sets up (the mzz-ys theme):
 
 ![theme](https://raw.githubusercontent.com/ControlNet/envira/main/assets/theme_preview.jpg)

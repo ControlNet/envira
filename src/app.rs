@@ -230,7 +230,10 @@ impl Session {
             } else if self.catalog.tools.contains_key(n) || self.catalog.configs.contains_key(n) {
                 out.push(n.clone());
             } else {
-                bail!("unknown item or bundle {n:?}");
+                return Err(crate::json::coded(
+                    "unknown_item",
+                    format!("unknown item or bundle {n:?}"),
+                ));
             }
         }
         Ok(out)

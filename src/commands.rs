@@ -4,6 +4,7 @@ use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::app::{self, Session};
@@ -123,9 +124,54 @@ pub fn summary_line(snap: &Snapshot) -> String {
     )
 }
 
-pub async fn doctor(sess: &Session) -> Result<i32> {
+/// What `doctor` reports.
+#[derive(Serialize)]
+struct Doctor<'a> {
+    envira: &'static str,
+    /// How this envira was installed, and the latest release known.
+    install: Option<SelfInstall>,
+    facts: &'a crate::facts::Facts,
+    disk_free: Vec<DiskFree>,
+    state_dir: &'a std::path::Path,
+    config_dir: &'a std::path::Path,
+    catalog_layers: &'a [String],
+    catalog_warnings: &'a [String],
+    /// PATH used for detection and installs.
+    path: Vec<PathDir>,
+    shell_integration: Vec<RcFile>,
+    /// rc lines that duplicate the managed environment.
+    rc_duplicates: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SelfInstall {
+    channel: &'static str,
+    exe: std::path::PathBuf,
+    latest: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DiskFree {
+    dir: std::path::PathBuf,
+    free_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct PathDir {
+    dir: String,
+    exists: bool,
+}
+
+#[derive(Serialize)]
+struct RcFile {
+    shell: &'static str,
+    rc: std::path::PathBuf,
+    /// Has envira's block.
+    ok: bool,
+}
+
+pub async fn doctor(sess: &Session, json: bool) -> Result<i32> {
     let f = &sess.facts;
-    println!("envira {}", env!("CARGO_PKG_VERSION"));
     let (paths, facts) = (sess.paths.clone(), sess.facts.clone());
     let install = tokio::task::spawn_blocking(move || {
         let (exe, channel) = crate::selfupdate::this_install(&facts).ok()?;
@@ -140,17 +186,71 @@ pub async fn doctor(sess: &Session) -> Result<i32> {
         };
         let latest =
             crate::selfupdate::latest(&paths, &facts, fetch, crate::selfupdate::NOTICE_TIMEOUT);
-        Some((exe, channel, latest))
+        Some(SelfInstall {
+            channel: channel.label(),
+            exe,
+            latest,
+        })
     })
     .await
     .ok()
     .flatten();
-    if let Some((exe, channel, latest)) = install {
-        let newer = latest
-            .filter(|v| crate::version::is_newer(v, env!("CARGO_PKG_VERSION")))
+    let disk_free = [f.home.clone(), std::env::temp_dir(), "/usr/local".into()]
+        .into_iter()
+        .filter_map(|dir| {
+            crate::plan::disk_free(&dir).map(|(_, free_bytes)| DiskFree { dir, free_bytes })
+        })
+        .collect();
+    let path = crate::status::effective_path(&sess.catalog, f)
+        .split(':')
+        .map(|d| PathDir {
+            dir: d.to_string(),
+            exists: std::path::Path::new(d).is_dir(),
+        })
+        .collect();
+    let shell_integration = shellenv::rc_files(f)
+        .into_iter()
+        .map(|(shell, rc)| {
+            let block = shellenv::rc_block(shell, &sess.paths, f);
+            let b = fs::Backups::new(sess.paths.state_dir.join("backups"));
+            let ok = fs::block(&b, &rc, "envira", "#", Some(&block), true).unwrap_or(false);
+            RcFile { shell, rc, ok }
+        })
+        .collect();
+    let state = sess.state()?;
+    let snap = sess.snapshot(state.as_ref()).await;
+    let d = Doctor {
+        envira: env!("CARGO_PKG_VERSION"),
+        install,
+        facts: f,
+        disk_free,
+        state_dir: &sess.paths.state_dir,
+        config_dir: &sess.paths.config_dir,
+        catalog_layers: &sess.loaded.layers,
+        catalog_warnings: &sess.loaded.warnings,
+        path,
+        shell_integration,
+        rc_duplicates: shellenv::rc_duplicates(&sess.catalog, f, &snap.present()),
+    };
+    if json {
+        crate::json::print(&d)?;
+    } else {
+        print_doctor(&d);
+    }
+    Ok(0)
+}
+
+fn print_doctor(d: &Doctor) {
+    let f = d.facts;
+    println!("envira {}", d.envira);
+    if let Some(i) = &d.install {
+        let newer = i
+            .latest
+            .as_ref()
+            .filter(|v| crate::version::is_newer(v, d.envira))
             .map(|v| format!(" · {v} is out: envira self-update"))
             .unwrap_or_default();
-        println!("install    {} · {}{newer}", channel.label(), exe.display());
+        println!("install    {} · {}{newer}", i.channel, i.exe.display());
     }
     println!(
         "distro     {} (families: {})",
@@ -166,71 +266,216 @@ pub async fn doctor(sess: &Session) -> Result<i32> {
     if let Some(u) = &f.drop_to {
         println!("           running as root for {u}: user-scope steps run as {u}");
     }
-    let disks: Vec<String> = [f.home.clone(), std::env::temp_dir(), "/usr/local".into()]
+    let disks: Vec<String> = d
+        .disk_free
         .iter()
-        .filter_map(|d| {
-            crate::plan::disk_free(d)
-                .map(|(_, free)| format!("{} {}", d.display(), crate::plan::fmt_bytes(free)))
+        .map(|x| {
+            format!(
+                "{} {}",
+                x.dir.display(),
+                crate::plan::fmt_bytes(x.free_bytes)
+            )
         })
         .collect();
     println!("free disk  {}", disks.join(" · "));
-    println!("state      {}", sess.paths.state_dir.display());
-    println!("config     {}", sess.paths.config_dir.display());
-    println!("catalog    {}", sess.loaded.layers.join(" + "));
-    for w in &sess.loaded.warnings {
+    println!("state      {}", d.state_dir.display());
+    println!("config     {}", d.config_dir.display());
+    println!("catalog    {}", d.catalog_layers.join(" + "));
+    for w in d.catalog_warnings {
         println!("  warning: {w}");
     }
     println!("PATH used for detection and installs:");
-    for d in crate::status::effective_path(&sess.catalog, f).split(':') {
-        let mark = if std::path::Path::new(d).is_dir() {
-            "✓"
-        } else {
-            "·"
-        };
-        println!("  {mark} {d}");
+    for p in &d.path {
+        println!("  {} {}", if p.exists { "✓" } else { "·" }, p.dir);
     }
     println!("shell integration:");
-    for (shell, rc) in shellenv::rc_files(f) {
-        let block = shellenv::rc_block(shell, &sess.paths, f);
-        let b = fs::Backups::new(sess.paths.state_dir.join("backups"));
-        let ok = fs::block(&b, &rc, "envira", "#", Some(&block), true).unwrap_or(false);
-        println!("  {} {}", if ok { "✓" } else { "✗" }, rc.display());
+    for r in &d.shell_integration {
+        println!("  {} {}", if r.ok { "✓" } else { "✗" }, r.rc.display());
     }
-    let state = sess.state()?;
-    let snap = sess.snapshot(state.as_ref()).await;
-    let dups = shellenv::rc_duplicates(&sess.catalog, f, &snap.present());
-    if !dups.is_empty() {
+    if !d.rc_duplicates.is_empty() {
         println!(
             "rc lines that duplicate the managed environment (safe to remove once `envira env` ran):"
         );
-        for d in dups {
-            println!("  {d}");
+        for l in &d.rc_duplicates {
+            println!("  {l}");
         }
     }
-    Ok(0)
 }
 
-/// Prints a command's exit code and the first lines of its output, indented.
-fn print_probe(cmd: &str, p: &crate::runner::Probe) {
-    println!("  $ {cmd}");
-    println!("    exit {}", p.code);
-    let lines: Vec<&str> = p.output.lines().collect();
-    for l in lines.iter().take(6) {
-        println!("    │ {}", exec::redact(l, exec::secrets()));
+/// A command `explain` ran, with its exit code and its output (secrets redacted).
+#[derive(Serialize)]
+struct ProbeOut {
+    cmd: String,
+    exit: i32,
+    output: String,
+}
+
+impl ProbeOut {
+    fn new(cmd: &str, p: &crate::runner::Probe) -> ProbeOut {
+        let secrets = exec::secrets();
+        ProbeOut {
+            cmd: cmd.to_string(),
+            exit: p.code,
+            output: p
+                .output
+                .lines()
+                .map(|l| exec::redact(l, secrets))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
     }
-    if lines.len() > 6 {
-        println!("    │ … {} more lines", lines.len() - 6);
+
+    /// The exit code and the first lines of the output, indented.
+    fn print(&self) {
+        println!("  $ {}", self.cmd);
+        println!("    exit {}", self.exit);
+        let lines: Vec<&str> = self.output.lines().collect();
+        for l in lines.iter().take(6) {
+            println!("    │ {l}");
+        }
+        if lines.len() > 6 {
+            println!("    │ … {} more lines", lines.len() - 6);
+        }
     }
 }
 
-pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
+/// One step of a config: its check (none when the step has none), run again as root when it
+/// failed on a system file only root can read.
+#[derive(Serialize)]
+struct ConfigCheck {
+    label: String,
+    check: Option<ProbeOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    as_root: Option<ProbeOut>,
+}
+
+#[derive(Serialize)]
+struct LastRun {
+    result: state::LastResult,
+    run: Option<String>,
+    error: Option<String>,
+}
+
+/// What `explain` reports.
+#[derive(Serialize)]
+struct Explain<'a> {
+    item: &'a ItemStatus,
+    desc: Option<String>,
+    /// Tools: the detect command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detect: Option<ProbeOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_regex: Option<String>,
+    /// Configs: the checks of its steps, which must all pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<Vec<ConfigCheck>>,
+    /// Configs: why its steps could not be expanded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks_error: Option<String>,
+    last_run: Option<LastRun>,
+    /// What installing (or applying) it would run.
+    plan: serde_json::Value,
+}
+
+pub async fn explain(sess: &Session, id: &str, json: bool) -> Result<i32> {
     let cat = &sess.catalog;
     let f = &sess.facts;
     let state = sess.state()?;
     let snap = sess.snapshot(state.as_ref()).await;
     let Some(item) = snap.get(id) else {
-        bail!("unknown item {id:?} (see `envira status`)");
+        return Err(crate::json::coded(
+            "unknown_item",
+            format!("unknown item {id:?} (see `envira status`)"),
+        ));
     };
+    let desc = cat
+        .tools
+        .get(id)
+        .and_then(|t| t.desc.clone())
+        .or_else(|| cat.configs.get(id).and_then(|c| c.desc.clone()));
+    let timeout = Duration::from_secs(15);
+    let (mut detect, mut version_regex, mut checks, mut checks_error) = (None, None, None, None);
+    match item.kind {
+        crate::plan::Kind::Tool => {
+            let cmd = crate::plan::detect_cmd(cat, f, id);
+            detect = Some(ProbeOut::new(
+                &cmd,
+                &sess.runner.capture(&cmd, timeout).await,
+            ));
+            version_regex = cat.tools[id]
+                .detect
+                .as_ref()
+                .and_then(|d| d.version.clone());
+        }
+        crate::plan::Kind::Config => {
+            let scope = if cat.configs[id].scope == Some(crate::catalog::ScopeSpec::System) {
+                state::Scope::System
+            } else {
+                state::Scope::User
+            };
+            match crate::plan::config_steps(cat, f, id, scope) {
+                Ok(steps) => {
+                    let mut out = Vec::new();
+                    for s in steps {
+                        let Some(c) = &s.check else {
+                            out.push(ConfigCheck {
+                                label: s.label,
+                                check: None,
+                                as_root: None,
+                            });
+                            continue;
+                        };
+                        let p = sess.runner.capture(c, timeout).await;
+                        // As status does: a system file only root can read.
+                        let as_root = if !p.ok()
+                            && scope == state::Scope::System
+                            && f.root_without_asking()
+                        {
+                            Some(ProbeOut::new(
+                                c,
+                                &sess.runner.capture_as(c, timeout, true).await,
+                            ))
+                        } else {
+                            None
+                        };
+                        out.push(ConfigCheck {
+                            label: s.label,
+                            check: Some(ProbeOut::new(c, &p)),
+                            as_root,
+                        });
+                    }
+                    checks = Some(out);
+                }
+                Err(e) => checks_error = Some(e.to_string()),
+            }
+        }
+    }
+    let last_run = state.as_ref().and_then(|s| {
+        s.tools
+            .get(id)
+            .map(|r| (r.last_result, r.last_error.clone(), r.last_run.clone()))
+            .or_else(|| {
+                s.configs
+                    .get(id)
+                    .map(|r| (r.last_result, r.last_error.clone(), r.last_run.clone()))
+            })
+            .map(|(result, error, run)| LastRun { result, run, error })
+    });
+    let plan = sess.plan(&snap.present(), &[id.to_string()], true);
+    let e = Explain {
+        item,
+        desc,
+        detect,
+        version_regex,
+        checks,
+        checks_error,
+        last_run,
+        plan: crate::json::plan(&plan, f),
+    };
+    if json {
+        crate::json::print(&e)?;
+        return Ok(0);
+    }
     println!(
         "{id} · {} · {} · {}",
         match item.kind {
@@ -240,93 +485,66 @@ pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
         item.category,
         item.label.text()
     );
-    let desc = cat
-        .tools
-        .get(id)
-        .and_then(|t| t.desc.clone())
-        .or_else(|| cat.configs.get(id).and_then(|c| c.desc.clone()));
-    if let Some(d) = desc {
+    if let Some(d) = &e.desc {
         println!("  {d}");
     }
     if let Some(r) = &item.reason {
         println!("  not applicable here: {r}");
     }
-    let timeout = Duration::from_secs(15);
-    match item.kind {
-        crate::plan::Kind::Tool => {
-            println!("detect:");
-            let cmd = crate::plan::detect_cmd(cat, f, id);
-            print_probe(&cmd, &sess.runner.capture(&cmd, timeout).await);
-            if let Some(re) = cat.tools[id]
-                .detect
-                .as_ref()
-                .and_then(|d| d.version.as_deref())
-            {
-                println!("  version regex {re}");
-            }
-            println!(
-                "  version {} · path {}",
-                item.version.as_deref().unwrap_or("—"),
-                item.path.as_deref().unwrap_or("—")
-            );
-            if let Some(o) = item.ownership {
-                let via = item
-                    .via
-                    .as_deref()
-                    .map(|v| format!(" via {v}"))
-                    .unwrap_or_default();
-                let scope = item.scope.map(|s| format!(" ({s})")).unwrap_or_default();
-                println!("  {}{via}{scope}", o.as_str());
-            }
+    if let Some(p) = &e.detect {
+        println!("detect:");
+        p.print();
+        if let Some(re) = &e.version_regex {
+            println!("  version regex {re}");
         }
-        crate::plan::Kind::Config => {
-            let scope = if cat.configs[id].scope == Some(crate::catalog::ScopeSpec::System) {
-                state::Scope::System
-            } else {
-                state::Scope::User
-            };
-            println!("checks (all must pass):");
-            match crate::plan::config_steps(cat, f, id, scope) {
-                Ok(steps) => {
-                    for s in steps {
-                        let Some(c) = &s.check else {
-                            println!("  · {} (no check)", s.label);
-                            continue;
-                        };
-                        let p = sess.runner.capture(c, timeout).await;
-                        print_probe(c, &p);
-                        // As status does: a system file only root can read.
-                        if !p.ok() && scope == state::Scope::System && f.root_without_asking() {
-                            println!("    again as root:");
-                            print_probe(c, &sess.runner.capture_as(c, timeout, true).await);
-                        }
-                    }
-                }
-                Err(e) => println!("  cannot expand: {e}"),
-            }
+        println!(
+            "  version {} · path {}",
+            item.version.as_deref().unwrap_or("—"),
+            item.path.as_deref().unwrap_or("—")
+        );
+        if let Some(o) = item.ownership {
+            let via = item
+                .via
+                .as_deref()
+                .map(|v| format!(" via {v}"))
+                .unwrap_or_default();
+            let scope = item.scope.map(|s| format!(" ({s})")).unwrap_or_default();
+            println!("  {}{via}{scope}", o.as_str());
         }
     }
-    let rec = state.as_ref().and_then(|s| {
-        s.tools
-            .get(id)
-            .map(|r| (r.last_result, r.last_error.clone(), r.last_run.clone()))
-            .or_else(|| {
-                s.configs
-                    .get(id)
-                    .map(|r| (r.last_result, r.last_error.clone(), r.last_run.clone()))
-            })
-    });
-    if let Some((result, error, run)) = rec {
+    if item.kind == crate::plan::Kind::Config {
+        println!("checks (all must pass):");
+    }
+    for c in e.checks.iter().flatten() {
+        match &c.check {
+            None => println!("  · {} (no check)", c.label),
+            Some(p) => p.print(),
+        }
+        if let Some(p) = &c.as_root {
+            println!("    again as root:");
+            p.print();
+        }
+    }
+    if let Some(err) = &e.checks_error {
+        println!("  cannot expand: {err}");
+    }
+    if let Some(r) = &e.last_run {
         println!(
-            "last run: {result:?}{}{}",
-            run.map(|r| format!(" in {r}")).unwrap_or_default(),
-            error.map(|e| format!(" · {e}")).unwrap_or_default()
+            "last run: {:?}{}{}",
+            r.result,
+            r.run
+                .as_ref()
+                .map(|r| format!(" in {r}"))
+                .unwrap_or_default(),
+            r.error
+                .as_ref()
+                .map(|e| format!(" · {e}"))
+                .unwrap_or_default()
         );
-        if result == state::LastResult::Failed {
+        if r.result == state::LastResult::Failed {
             println!("  `envira log {id}` shows its log");
         }
     }
-    let plan = sess.plan(&snap.present(), &[id.to_string()], true);
     let verb = match (item.kind, item.present) {
         (crate::plan::Kind::Config, true) => "re-applying",
         (crate::plan::Kind::Config, false) => "applying",
@@ -339,13 +557,27 @@ pub async fn explain(sess: &Session, id: &str) -> Result<i32> {
 }
 
 /// One line per kept run, newest first.
-pub fn log_list(sess: &Session) -> Result<i32> {
+pub fn log_list(sess: &Session, json: bool) -> Result<i32> {
     let runs = state::list_runs(&sess.paths);
+    let locked = state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
+    if json {
+        let list: Vec<serde_json::Value> = runs
+            .iter()
+            .enumerate()
+            .map(|(n, id)| match RunRecord::load(&sess.paths, id) {
+                Ok(rec) => run_json(&rec, n == 0 && locked),
+                Err(e) => {
+                    serde_json::json!({"id": id, "status": "unreadable", "error": format!("{e:#}")})
+                }
+            })
+            .collect();
+        crate::json::print(&list)?;
+        return Ok(0);
+    }
     if runs.is_empty() {
         println!("No runs yet.");
         return Ok(0);
     }
-    let locked = state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
     for (n, id) in runs.iter().enumerate() {
         let Ok(rec) = RunRecord::load(&sess.paths, id) else {
             println!("{id}  (no readable run.toml)");
@@ -369,13 +601,26 @@ pub fn log_list(sess: &Session) -> Result<i32> {
     Ok(0)
 }
 
-pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32> {
+/// A run record as JSON, with `status`: `finished`, `running` (`running`: its run holds the
+/// lock) or `interrupted`.
+fn run_json(rec: &RunRecord, running: bool) -> serde_json::Value {
+    let mut v = serde_json::to_value(rec).unwrap_or_default();
+    v["status"] = match (&rec.finished, running) {
+        (Some(_), _) => "finished",
+        (None, true) => "running",
+        (None, false) => "interrupted",
+    }
+    .into();
+    v
+}
+
+pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) -> Result<i32> {
     let run_id = match run {
         Some(r) => r.to_string(),
         None => sess
             .state()?
             .and_then(|s| s.last_run)
-            .context("no runs yet")?,
+            .ok_or_else(|| crate::json::coded("no_runs", "no runs yet"))?,
     };
     let dir = sess.paths.run_dir(&run_id);
     if let Some(item) = item {
@@ -391,6 +636,14 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>) -> Result<i32>
         return Ok(0);
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
+    if json {
+        let running =
+            rec.finished.is_none() && state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
+        let mut v = run_json(&rec, running);
+        v["logs"] = dir.display().to_string().into();
+        crate::json::print(&v)?;
+        return Ok(0);
+    }
     println!(
         "run {} · {} · started {}{}",
         rec.id,
@@ -438,15 +691,30 @@ pub fn catalog_cmd(global: &Global, cmd: &CatalogCmd) -> Result<i32> {
     let paths = Paths::new(&facts);
     let loaded = catalog::load_catalog(&app::catalog_options(global, &paths, &facts))?;
     match cmd {
-        CatalogCmd::Check => {
+        CatalogCmd::Check { json } => {
             let r = validate::validate(&loaded);
+            let c = &loaded.catalog;
+            if *json {
+                crate::json::print(&serde_json::json!({
+                    "layers": loaded.layers,
+                    "counts": {
+                        "tools": c.tools.len(),
+                        "configs": c.configs.len(),
+                        "bundles": c.bundles.len(),
+                        "methods": c.methods.len(),
+                        "actions": c.actions.len(),
+                    },
+                    "errors": r.errors,
+                    "warnings": r.warnings,
+                }))?;
+                return Ok(if r.is_ok() { 0 } else { 1 });
+            }
             for e in &r.errors {
                 println!("error: {e}");
             }
             for w in &r.warnings {
                 println!("warning: {w}");
             }
-            let c = &loaded.catalog;
             println!(
                 "{} · {} tools, {} configs, {} bundles, {} methods, {} actions · {} errors, {} warnings",
                 loaded.layers.join(" + "),
@@ -460,7 +728,11 @@ pub fn catalog_cmd(global: &Global, cmd: &CatalogCmd) -> Result<i32> {
             );
             Ok(if r.is_ok() { 0 } else { 1 })
         }
-        CatalogCmd::Show => {
+        CatalogCmd::Show { json: true } => {
+            crate::json::print(&loaded.catalog)?;
+            Ok(0)
+        }
+        CatalogCmd::Show { json: false } => {
             print!("{}", toml::to_string_pretty(&loaded.catalog)?);
             Ok(0)
         }
@@ -653,8 +925,23 @@ pub async fn update(
         }
     }
     if check {
-        print_outdated(&snap);
+        let o = outdated(&snap);
+        if opts.json {
+            crate::json::print(&o)?;
+        } else {
+            print_outdated(&o);
+        }
         return Ok(0);
+    }
+    if opts.json && targets.is_empty() {
+        // Nothing to run: the plan says what was left out and why.
+        let plan = Plan {
+            units: vec![],
+            skipped: skipped.clone(),
+        };
+        crate::json::emit(&crate::json::plan_event(&plan, &sess.facts));
+        let all_current = skipped.iter().all(|(_, w)| w.starts_with("up to date"));
+        return Ok(if all_current { 0 } else { 1 });
     }
     if targets.is_empty() && skipped.is_empty() {
         println!("Everything envira can update is up to date.");
@@ -686,57 +973,99 @@ pub async fn update(
     run_plan(sess, &build, state.unwrap_or_default(), "update", opts).await
 }
 
-fn print_outdated(snap: &Snapshot) {
-    let tools: Vec<&ItemStatus> = snap
-        .items
-        .iter()
-        .filter(|i| i.present && i.kind == crate::plan::Kind::Tool)
-        .collect();
-    let outdated: Vec<&&ItemStatus> = tools
-        .iter()
-        .filter(|i| i.label == Label::Outdated)
-        .collect();
-    if outdated.is_empty() {
+/// What `update --check` reports.
+#[derive(Serialize)]
+struct Outdated<'a> {
+    outdated: Vec<OutdatedTool<'a>>,
+    /// Tools envira can update whose latest version is unknown, with why.
+    unknown: Vec<UnknownLatest<'a>>,
+    /// Tools envira does not update (installed some other way).
+    external: Vec<&'a str>,
+}
+
+#[derive(Serialize)]
+struct OutdatedTool<'a> {
+    id: &'a str,
+    version: Option<&'a str>,
+    latest: Option<&'a str>,
+    via: Option<&'a str>,
+    ownership: Option<Ownership>,
+}
+
+#[derive(Serialize)]
+struct UnknownLatest<'a> {
+    id: &'a str,
+    error: Option<&'a str>,
+}
+
+fn outdated(snap: &Snapshot) -> Outdated<'_> {
+    let tools = || {
+        snap.items
+            .iter()
+            .filter(|i| i.present && i.kind == crate::plan::Kind::Tool)
+    };
+    Outdated {
+        outdated: tools()
+            .filter(|i| i.label == Label::Outdated)
+            .map(|i| OutdatedTool {
+                id: &i.id,
+                version: i.method_version.as_deref().or(i.version.as_deref()),
+                latest: i.latest.as_deref(),
+                via: i.via.as_deref(),
+                ownership: i.ownership,
+            })
+            .collect(),
+        unknown: tools()
+            .filter(|i| i.route.is_some() && i.latest.is_none())
+            .map(|i| UnknownLatest {
+                id: &i.id,
+                error: i.latest_error.as_deref(),
+            })
+            .collect(),
+        external: tools()
+            .filter(|i| i.ownership == Some(Ownership::External))
+            .map(|i| i.id.as_str())
+            .collect(),
+    }
+}
+
+fn print_outdated(o: &Outdated) {
+    if o.outdated.is_empty() {
         println!("Nothing is outdated.");
     } else {
-        println!("Outdated ({}):", outdated.len());
-        for i in &outdated {
+        println!("Outdated ({}):", o.outdated.len());
+        for i in &o.outdated {
             println!(
                 "  ↑ {:<24} {:<12} → {:<12} via {:<15} {}",
                 i.id,
-                i.method_version
-                    .as_deref()
-                    .or(i.version.as_deref())
-                    .unwrap_or("?"),
-                i.latest.as_deref().unwrap_or("?"),
-                i.via.as_deref().unwrap_or("—"),
+                i.version.unwrap_or("?"),
+                i.latest.unwrap_or("?"),
+                i.via.unwrap_or("—"),
                 i.ownership.map(|o| o.as_str()).unwrap_or("")
             );
         }
     }
-    let unknown: Vec<String> = tools
+    let unknown: Vec<String> = o
+        .unknown
         .iter()
-        .filter(|i| i.route.is_some() && i.latest.is_none())
-        .map(|i| match &i.latest_error {
-            Some(e) => format!("{} ({e})", i.id),
-            None => i.id.clone(),
+        .map(|u| match u.error {
+            Some(e) => format!("{} ({e})", u.id),
+            None => u.id.to_string(),
         })
         .collect();
     if !unknown.is_empty() {
         println!("Latest version unknown: {}", unknown.join(", "));
     }
-    let external: Vec<&str> = tools
-        .iter()
-        .filter(|i| i.ownership == Some(Ownership::External))
-        .map(|i| i.id.as_str())
-        .collect();
-    if !external.is_empty() {
-        println!("Not updated by envira (external): {}", external.join(", "));
+    if !o.external.is_empty() {
+        println!(
+            "Not updated by envira (external): {}",
+            o.external.join(", ")
+        );
     }
 }
 
 /// Records adoptable tools as managed so later updates and `status` treat them as envira's.
-pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i32> {
+pub async fn adopt(sess: &Session, items: &[String], dry_run: bool, json: bool) -> Result<i32> {
     let _lock = (!dry_run)
         .then(|| state::RunLock::acquire(&sess.paths, &sess.facts))
         .transpose()?;
@@ -752,46 +1081,65 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
             .map(|i| i.id.clone())
             .collect()
     };
-    let mut adopted = 0;
+    let mut adopted = Vec::new();
+    let mut skipped = Vec::new();
     let mut records = Vec::new();
     for id in &ids {
         let Some(i) = snap.get(id) else { continue };
         let route: Option<&Route> = i.route.as_ref();
-        match (i.ownership, route) {
+        let skip = match (i.ownership, route) {
             (Some(Ownership::Adoptable), Some(r)) => {
-                println!(
-                    "  adopt {:<24} {:<12} via {} ({})",
-                    id,
-                    i.method_version
-                        .as_deref()
-                        .or(i.version.as_deref())
-                        .unwrap_or("?"),
-                    r.via,
-                    r.scope
-                );
+                let version = i.method_version.as_deref().or(i.version.as_deref());
+                if !json {
+                    println!(
+                        "  adopt {:<24} {:<12} via {} ({})",
+                        id,
+                        version.unwrap_or("?"),
+                        r.via,
+                        r.scope
+                    );
+                }
                 if !dry_run && let Some(rec) = i.adoption() {
                     records.push((id.clone(), rec));
                 }
-                adopted += 1;
+                adopted.push(serde_json::json!({
+                    "id": id, "version": version, "via": r.via, "scope": r.scope,
+                }));
+                continue;
             }
-            (Some(Ownership::Managed), _) if explicit => println!("  skip {id}: already managed"),
+            (Some(Ownership::Managed), _) if explicit => "already managed",
             (Some(Ownership::External), _) if explicit => {
-                println!("  skip {id}: external (not installed where envira would install it)")
+                "external (not installed where envira would install it)"
             }
-            _ if explicit => println!("  skip {id}: not installed"),
-            _ => {}
+            _ if explicit => "not installed",
+            _ => continue,
+        };
+        if !json {
+            println!("  skip {id}: {skip}");
         }
+        skipped.push(serde_json::json!({"id": id, "reason": skip}));
     }
-    if adopted == 0 {
-        println!("Nothing to adopt.");
-    } else if dry_run {
-        println!("{adopted} would be adopted (dry run).");
-    } else {
+    if !dry_run && !adopted.is_empty() {
         // A change to the state on disk: the TUI may have changed the selection meanwhile.
         State::update(&sess.paths, &sess.facts, |st| {
             st.tools.extend(records);
             st.mark_all_seen(&sess.catalog);
         })?;
+    }
+    if json {
+        crate::json::print(&serde_json::json!({
+            "dry_run": dry_run,
+            "adopted": adopted,
+            "skipped": skipped,
+        }))?;
+        return Ok(0);
+    }
+    let adopted = adopted.len();
+    if adopted == 0 {
+        println!("Nothing to adopt.");
+    } else if dry_run {
+        println!("{adopted} would be adopted (dry run).");
+    } else {
         println!("{adopted} adopted; `envira update` can now update them in place.");
     }
     Ok(0)
@@ -799,7 +1147,10 @@ pub async fn adopt(sess: &Session, items: &[String], dry_run: bool) -> Result<i3
 
 pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     let state = sess.state()?.unwrap_or_default();
-    let run_id = state.last_run.clone().context("no previous run to retry")?;
+    let run_id = state
+        .last_run
+        .clone()
+        .ok_or_else(|| crate::json::coded("no_runs", "no previous run to retry"))?;
     let rec = RunRecord::load(&sess.paths, &run_id)?;
     let mut t = crate::plan::RetryTargets::new(
         rec.unfinished_units()
@@ -809,14 +1160,24 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     if t.is_empty() {
         // Only the shell environment was left behind: bring it up to date.
         if let Some(e) = &rec.shell_env_error {
-            println!("Run {run_id} left the shell environment behind ({e}).");
-            let code = env_cmd(sess).await?;
+            if opts.json {
+                crate::json::emit(&crate::json::notice(format!(
+                    "run {run_id} left the shell environment behind ({e})"
+                )));
+            } else {
+                println!("Run {run_id} left the shell environment behind ({e}).");
+            }
+            let code = env_cmd(sess, opts.json).await?;
             let mut rec = rec;
             rec.shell_env_error = None;
             rec.save(&sess.paths, &sess.facts)?;
             return Ok(code);
         }
-        println!("Nothing failed in run {run_id}.");
+        if opts.json {
+            crate::json::emit(&crate::json::plan_event(&Plan::default(), &sess.facts));
+        } else {
+            println!("Nothing failed in run {run_id}.");
+        }
         return Ok(0);
     }
     let mut snap = sess.snapshot(Some(&state)).await;
@@ -851,10 +1212,10 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
 
 /// `config revert --forget`: drops the records of what envira changed, so it no longer offers to
 /// undo it. For changes it cannot undo (their step left the catalog), once undone by hand.
-pub fn forget_configs(sess: &Session, items: &[String]) -> Result<i32> {
+pub fn forget_configs(sess: &Session, items: &[String], json: bool) -> Result<i32> {
     for i in items {
         if !sess.catalog.configs.contains_key(i) {
-            bail!("{i:?} is not a config");
+            return Err(not_a_config(i));
         }
     }
     State::update(&sess.paths, &sess.facts, |st| {
@@ -862,10 +1223,18 @@ pub fn forget_configs(sess: &Session, items: &[String]) -> Result<i32> {
             st.configs.remove(i);
         }
     })?;
+    if json {
+        crate::json::emit(&serde_json::json!({"event": "forgotten", "ids": items}));
+        return Ok(0);
+    }
     for i in items {
         println!("{i}: envira no longer records changes to undo");
     }
     Ok(0)
+}
+
+fn not_a_config(id: &str) -> anyhow::Error {
+    crate::json::coded("not_a_config", format!("{id:?} is not a config"))
 }
 
 pub async fn config(sess: &Session, items: &[String], revert: bool, opts: &RunOpts) -> Result<i32> {
@@ -874,7 +1243,7 @@ pub async fn config(sess: &Session, items: &[String], revert: bool, opts: &RunOp
     if !revert {
         for i in items {
             if !sess.catalog.configs.contains_key(i) {
-                bail!("{i:?} is not a config");
+                return Err(not_a_config(i));
             }
         }
     }
@@ -900,7 +1269,7 @@ pub async fn config(sess: &Session, items: &[String], revert: bool, opts: &RunOp
     .await
 }
 
-pub async fn plan_cmd(sess: &Session, items: &[String], script: bool) -> Result<i32> {
+pub async fn plan_cmd(sess: &Session, items: &[String], script: bool, json: bool) -> Result<i32> {
     let state = sess.state()?;
     let snap = sess.snapshot(state.as_ref()).await;
     let targets = if items.is_empty() {
@@ -911,15 +1280,23 @@ pub async fn plan_cmd(sess: &Session, items: &[String], script: bool) -> Result<
     let plan = sess.plan(&snap.present(), &targets, false);
     if script {
         print!("{}", as_script(&plan));
+    } else if json {
+        crate::json::print(&crate::json::plan(&plan, &sess.facts))?;
     } else {
         print_plan(&plan, sess);
     }
     Ok(0)
 }
 
-pub async fn env_cmd(sess: &Session) -> Result<i32> {
+/// `envira env`; `json`: a `shell_env` event instead of text.
+pub async fn env_cmd(sess: &Session, json: bool) -> Result<i32> {
     let ctx = sess.exec_ctx("env".into(), true);
-    match exec::regenerate_shell_env(&ctx).await {
+    let r = exec::regenerate_shell_env(&ctx).await;
+    if json {
+        crate::json::emit(&crate::json::shell_env(&r));
+        return r.map(|_| 0).map_err(anyhow::Error::msg);
+    }
+    match r {
         Ok(files) if files.is_empty() => println!(
             "Shell environment is up to date ({}).",
             sess.paths.config_dir.display()
@@ -998,14 +1375,32 @@ async fn run_plan(
     command: &str,
     opts: &RunOpts,
 ) -> Result<i32> {
+    let json = opts.json;
+    // The plan as text, or as a `plan` event.
+    let show_plan = |plan: &Plan| {
+        if json {
+            crate::json::emit(&crate::json::plan_event(plan, &sess.facts));
+        } else {
+            print_plan(plan, sess);
+        }
+    };
+    let tell = |m: &str| {
+        if json {
+            crate::json::emit(&crate::json::notice(m));
+        } else {
+            println!("{m}");
+        }
+    };
     let mut plan = build();
     let mut confirmed = false;
     let mut password = None;
     if !opts.dry_run && plan.needs_sudo(&sess.facts) && !app::sudo_without_password() {
         let offer = sess.global.scope.is_none();
         if crate::sudo_prompt::can_ask() {
-            print_plan(&plan, sess);
-            println!();
+            show_plan(&plan);
+            if !json {
+                println!();
+            }
             let n = plan.sudo_units(&sess.facts);
             let answer =
                 tokio::task::spawn_blocking(move || crate::sudo_prompt::ask_on_terminal(n, offer))
@@ -1018,26 +1413,29 @@ async fn run_plan(
                 Some(crate::sudo_prompt::Answer::UserMode) => {
                     sess.use_user_mode();
                     plan = build();
-                    println!("In user mode:");
+                    tell("In user mode:");
                 }
                 None => {
-                    println!("Aborted.");
+                    aborted(json);
                     return Ok(1);
                 }
             }
         } else if offer {
-            println!(
-                "sudo needs a password, which this run cannot ask for: planning in user mode (--scope system uses sudo)."
+            tell(
+                "sudo needs a password, which this run cannot ask for: planning in user mode (--scope system uses sudo).",
             );
             sess.use_user_mode();
             plan = build();
         } else {
-            print_plan(&plan, sess);
-            bail!("sudo needs a password, which this run cannot ask for: run it on a terminal");
+            show_plan(&plan);
+            return Err(crate::json::coded(
+                "sudo_required",
+                "sudo needs a password, which this run cannot ask for: run it on a terminal",
+            ));
         }
     }
     if !confirmed {
-        print_plan(&plan, sess);
+        show_plan(&plan);
     }
     if plan.is_empty() || opts.dry_run {
         return Ok(
@@ -1049,15 +1447,19 @@ async fn run_plan(
         );
     }
     if !opts.yes && !confirmed {
-        if !std::io::stdin().is_terminal() {
-            bail!("refusing to run without confirmation; pass -y");
+        // With --json, stdout is the event stream: no question on it.
+        if json || !std::io::stdin().is_terminal() {
+            return Err(crate::json::coded(
+                "confirmation_required",
+                "refusing to run without confirmation; pass -y",
+            ));
         }
         print!("Proceed? [y/N] ");
         std::io::stdout().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim(), "y" | "Y" | "yes") {
-            println!("Aborted.");
+            aborted(json);
             return Ok(1);
         }
     }
@@ -1097,6 +1499,7 @@ async fn run_plan(
         // Output of units running side by side is told apart by the unit's id.
         tagged: ctx.jobs > 1,
         quiet: opts.quiet,
+        units: if json { plan.units.clone() } else { vec![] },
         ids,
         actions,
         run_dir: sess.paths.run_dir(&ctx.run_id),
@@ -1152,6 +1555,10 @@ async fn run_plan(
     // keep envira from ending on a signal now: nothing is left to cancel or record.
     let show = tokio::task::spawn_blocking(move || {
         let _ = printer.join();
+        // The `finished` event said it all.
+        if json {
+            return;
+        }
         say(format_args!(
             "{ok}/{} succeeded · run {} · {}",
             record.units.len(),
@@ -1181,6 +1588,17 @@ async fn run_plan(
     })
 }
 
+/// The person said no to the run.
+fn aborted(json: bool) {
+    if json {
+        crate::json::emit(&crate::json::error(&crate::json::coded(
+            "aborted", "Aborted.",
+        )));
+    } else {
+        println!("Aborted.");
+    }
+}
+
 /// Writes a line to stdout. Once a run started, a closed stdout (`envira install … | head`) must
 /// not end it halfway: write errors are ignored, and the run finishes and records its outcome.
 fn say(line: std::fmt::Arguments) {
@@ -1191,6 +1609,8 @@ fn say(line: std::fmt::Arguments) {
 struct Printer {
     tagged: bool,
     quiet: bool,
+    /// The plan's units, for NDJSON events instead of text (empty: text).
+    units: Vec<crate::plan::Unit>,
     ids: Vec<String>,
     actions: Vec<String>,
     run_dir: std::path::PathBuf,
@@ -1200,6 +1620,12 @@ impl Printer {
     fn print(self, mut rx: exec::EventRx) {
         let n = self.ids.len();
         while let Some(ev) = rx.blocking_recv() {
+            if !self.units.is_empty() {
+                if let Some(v) = crate::json::event(&ev, &self.units, self.quiet) {
+                    crate::json::emit(&v);
+                }
+                continue;
+            }
             match ev {
                 Event::UnitStarted(i) => {
                     say(format_args!("==> [{}/{n}] {}", i + 1, self.actions[i]))

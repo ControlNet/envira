@@ -10,6 +10,7 @@ mod facts;
 mod fetch;
 mod files;
 mod fs;
+mod json;
 mod latest;
 mod net;
 mod plan;
@@ -33,6 +34,7 @@ fn main() {
         std::process::exit(code);
     }
     let cli = Cli::parse();
+    let json = cli.command.as_ref().is_some_and(Command::json);
     if reads_only(&cli.command) {
         // SAFETY: called before any thread starts; restores the default action.
         unsafe {
@@ -41,6 +43,10 @@ fn main() {
     }
     let code = match run(cli) {
         Ok(c) => c,
+        Err(e) if json => {
+            json::emit(&json::error(&e));
+            2
+        }
         Err(e) => {
             eprintln!("envira: {e:#}");
             2
@@ -60,7 +66,7 @@ fn reads_only(c: &Option<Command>) -> bool {
                 | Command::Plan { .. }
                 | Command::Log { .. }
                 | Command::Explain { .. }
-                | Command::Doctor
+                | Command::Doctor { .. }
                 | Command::Catalog { .. }
         )
     )
@@ -110,13 +116,13 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
     let notice = matches!(
         cli.command,
         Some(
-            Command::Status { json: false, .. }
+            Command::Status { .. }
                 | Command::Install { .. }
                 | Command::Update { .. }
                 | Command::Retry { .. }
                 | Command::Adopt { .. }
         )
-    );
+    ) && !cli.command.as_ref().is_some_and(Command::json);
     // The work is waiting on processes and sockets: a few workers do, where one per core made
     // ~60 threads (and a 4 GB VIRT from their malloc arenas) on big machines.
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().min(4));
@@ -142,9 +148,11 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 offline,
                 run,
             }) => commands::update(&sess, &items, check, refresh, offline, &run).await,
-            Some(Command::Adopt { items, dry_run }) => {
-                commands::adopt(&sess, &items, dry_run).await
-            }
+            Some(Command::Adopt {
+                items,
+                dry_run,
+                json,
+            }) => commands::adopt(&sess, &items, dry_run, json).await,
             Some(Command::Install { items, force, run }) => {
                 commands::install(&sess, &items, force, &run).await
             }
@@ -157,22 +165,26 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                     ConfigCmd::Revert {
                         items,
                         forget: true,
-                        ..
+                        run,
                     },
-            }) => commands::forget_configs(&sess, &items),
+            }) => commands::forget_configs(&sess, &items, run.json),
             Some(Command::Config {
                 cmd: ConfigCmd::Revert { items, run, .. },
             }) => commands::config(&sess, &items, true, &run).await,
-            Some(Command::Plan { items, script }) => {
-                commands::plan_cmd(&sess, &items, script).await
-            }
-            Some(Command::Env) => commands::env_cmd(&sess).await,
-            Some(Command::Log { list: true, .. }) => commands::log_list(&sess),
-            Some(Command::Log { item, run, .. }) => {
-                commands::log(&sess, item.as_deref(), run.as_deref())
-            }
-            Some(Command::Doctor) => commands::doctor(&sess).await,
-            Some(Command::Explain { item }) => commands::explain(&sess, &item).await,
+            Some(Command::Plan {
+                items,
+                script,
+                json,
+            }) => commands::plan_cmd(&sess, &items, script, json).await,
+            Some(Command::Env) => commands::env_cmd(&sess, false).await,
+            Some(Command::Log {
+                list: true, json, ..
+            }) => commands::log_list(&sess, json),
+            Some(Command::Log {
+                item, run, json, ..
+            }) => commands::log(&sess, item.as_deref(), run.as_deref(), json),
+            Some(Command::Doctor { json }) => commands::doctor(&sess, json).await,
+            Some(Command::Explain { item, json }) => commands::explain(&sess, &item, json).await,
             Some(
                 Command::Fs { .. }
                 | Command::FetchRelease { .. }

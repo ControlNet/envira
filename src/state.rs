@@ -338,10 +338,13 @@ impl RunLock {
             .with_context(|| format!("opening {}", path.display()))?;
         // SAFETY: plain syscall on a file descriptor owned by `file`.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            bail!(
-                "another envira run is in progress (lock {}); wait for it to finish",
-                path.display()
-            );
+            return Err(crate::json::coded(
+                "run_locked",
+                format!(
+                    "another envira run is in progress (lock {}); wait for it to finish",
+                    path.display()
+                ),
+            ));
         }
         // The running binary itself (/proc/self/exe also opens it after it was replaced).
         // Best effort: a binary that cannot be opened is not locked.

@@ -93,6 +93,9 @@ pub enum Command {
         /// Show what would be adopted.
         #[arg(long)]
         dry_run: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// Retry what failed or was blocked in the last run.
     Retry {
@@ -110,6 +113,9 @@ pub enum Command {
         /// Print the plan as a shell script.
         #[arg(long)]
         script: bool,
+        /// Print the plan as JSON.
+        #[arg(long, conflicts_with = "script")]
+        json: bool,
     },
     /// Regenerate the managed shell environment (~/.config/envira) and rc blocks.
     Env,
@@ -121,12 +127,24 @@ pub enum Command {
         /// List the kept runs with their outcome counts.
         #[arg(long, conflicts_with_all = ["item", "run"])]
         list: bool,
+        /// Print the run record (or the list of runs) as JSON.
+        #[arg(long, conflicts_with = "item")]
+        json: bool,
     },
     /// Why an item has its status: detect/check commands with their exit codes and output,
     /// the install route, recorded state and what installing it would run.
-    Explain { item: String },
+    Explain {
+        item: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Machine facts, catalog layers, PATH and shell integration.
-    Doctor,
+    Doctor {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Update envira itself, the way it was installed (release binary, pipx, uv, pip, cargo).
     SelfUpdate {
         /// Only say whether a newer release exists (exit 1 when there is one).
@@ -178,6 +196,37 @@ pub enum Command {
     },
 }
 
+impl Command {
+    /// Whether the command prints JSON (`--json`): errors are then JSON too.
+    pub fn json(&self) -> bool {
+        match self {
+            Command::Status { json, .. }
+            | Command::Adopt { json, .. }
+            | Command::Plan { json, .. }
+            | Command::Log { json, .. }
+            | Command::Explain { json, .. }
+            | Command::Doctor { json } => *json,
+            Command::Install { run, .. }
+            | Command::Update { run, .. }
+            | Command::Retry { run }
+            | Command::Config {
+                cmd: ConfigCmd::Apply { run, .. } | ConfigCmd::Revert { run, .. },
+            } => run.json,
+            Command::Catalog {
+                cmd: CatalogCmd::Check { json } | CatalogCmd::Show { json },
+            } => *json,
+            Command::Catalog {
+                cmd: CatalogCmd::Schema,
+            }
+            | Command::Env
+            | Command::SelfUpdate { .. }
+            | Command::Fs { .. }
+            | Command::AptRefresh { .. }
+            | Command::FetchRelease { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct RunOpts {
     /// Do not ask for confirmation.
@@ -189,6 +238,10 @@ pub struct RunOpts {
     /// Do not print step output.
     #[arg(short = 'q', long)]
     pub quiet: bool,
+    /// Print the plan and the run's progress as JSON, one object per line. It never asks, so
+    /// a run needs -y.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -214,11 +267,19 @@ pub enum ConfigCmd {
 #[derive(Debug, Subcommand)]
 pub enum CatalogCmd {
     /// Validate the merged catalog (exit 1 on errors).
-    Check,
+    Check {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the JSON Schema of catalog files.
     Schema,
     /// Print the merged catalog as TOML.
-    Show,
+    Show {
+        /// Print it as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
