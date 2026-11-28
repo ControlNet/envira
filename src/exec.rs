@@ -375,12 +375,15 @@ pub async fn execute(
             }
             waiting.remove(i);
             busy.extend(unit_lanes[idx].iter().copied());
+            // A cancel from here on is for this unit: whoever watches saw it start, also when
+            // the cancel arrives before the unit has opened its log.
+            let base_seq = ctl.borrow().cancel_seq;
             tx.send(Event::UnitStarted(idx));
             let mut uctl = ctl.clone();
             running.push(async move {
                 let started = Instant::now();
                 let (outcome, trail) =
-                    run_unit(idx, unit, ctx_ref, tx_ref, &mut uctl, run_dir_ref).await;
+                    run_unit(idx, unit, ctx_ref, tx_ref, &mut uctl, base_seq, run_dir_ref).await;
                 (idx, outcome, trail, started.elapsed())
             });
         }
@@ -619,6 +622,7 @@ async fn run_unit(
     ctx: &ExecCtx,
     tx: &EventTx,
     ctl: &mut watch::Receiver<Control>,
+    base_seq: u32,
     run_dir: &std::path::Path,
 ) -> (Outcome, Trail) {
     let log_path = run_dir.join(format!("{}.log", unit.id));
@@ -657,7 +661,7 @@ async fn run_unit(
     let started = Instant::now();
     let (outcome, done, ran) = match Progress::new(unit, run_dir, &ctx.facts) {
         Ok(mut p) => (
-            run_steps(unit, ctx, &emit, ctl, &mut p).await,
+            run_steps(unit, ctx, &emit, ctl, base_seq, &mut p).await,
             p.done,
             p.ran,
         ),
@@ -699,6 +703,7 @@ async fn run_steps<F>(
     ctx: &ExecCtx,
     emit: &F,
     ctl: &mut watch::Receiver<Control>,
+    base_seq: u32,
     done: &mut Progress,
 ) -> Outcome
 where
@@ -720,7 +725,6 @@ where
         Err(e) => return Outcome::Failed(format!("cannot create temp dir: {e}")),
     };
     state::chown_to_target(tmp.path(), &ctx.facts);
-    let base_seq = ctl.borrow().cancel_seq;
     // A system unit's checks that fail as the user are tried as root: the run has root
     // (`sudo envira`, or sudo authorized up front for the unit's own steps).
     let root = unit.scope == Scope::System && ctx.facts.privilege.can_elevate();
