@@ -568,7 +568,7 @@ pub async fn explain(sess: &Session, id: &str, json: bool) -> Result<i32> {
 /// One line per kept run, newest first.
 pub fn log_list(sess: &Session, json: bool) -> Result<i32> {
     let runs = state::list_runs(&sess.paths);
-    let active = state::active_run(&sess.paths, &sess.facts);
+    let active = state::active_run(&sess.paths);
     let active = active.as_deref();
     if json {
         let list: Vec<serde_json::Value> = runs
@@ -646,7 +646,7 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) ->
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
     let running = rec.finished.is_none()
-        && state::active_run(&sess.paths, &sess.facts).as_deref() == Some(run_id.as_str());
+        && state::active_run(&sess.paths).as_deref() == Some(run_id.as_str());
     if json {
         let mut v = run_json(&rec, running);
         v["logs"] = dir.display().to_string().into();
@@ -1551,13 +1551,14 @@ async fn run_plan(
     let mut term = signal(SignalKind::terminate())?;
     let mut hup = signal(SignalKind::hangup())?;
     let mut int = signal(SignalKind::interrupt())?;
+    lock.mark_run(&ctx.run_id);
     let mut handle = tokio::spawn(exec::execute(plan, ctx, state, tx.clone(), ctl_rx));
     // Output is written by its own thread: a reader that stalls (`| less` left alone) holds up
     // only that thread, never the run or Ctrl-C, and lines wait for it in a bounded queue.
     let printer = std::thread::spawn(move || printer.print(rx));
 
     let mut interrupts = 0;
-    // A SIGTERM or SIGHUP arrived: envira is to end, also when stdout is not read.
+    // SIGTERM, SIGHUP or a second Ctrl-C arrived: envira is to end, also when stdout is not read.
     let mut terminated = false;
     let record = loop {
         tokio::select! {
@@ -1577,6 +1578,7 @@ async fn run_plan(
                     c.stop = true;
                 } else {
                     c.cancel_seq += 1;
+                    terminated = true;
                 }
                 let _ = ctl_tx.send(c);
                 if interrupts == 1 {

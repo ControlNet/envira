@@ -307,18 +307,31 @@ impl StateFileLock {
     }
 }
 
-/// Records that run `run_id` holds the run lock (the lock file holds its id). Best effort.
-pub fn mark_active_run(paths: &Paths, run_id: &str) {
-    let _ = std::fs::write(paths.state_dir.join("lock"), run_id);
-}
-
-/// The run going on now: the one whose id is in the lock file, while the lock is held. Reads
-/// nothing else (no state, which recovers a broken file by moving it aside).
-pub fn active_run(paths: &Paths, facts: &Facts) -> Option<String> {
-    if RunLock::acquire(paths, facts).is_ok() {
+/// The run going on now: the id [`RunLock::mark_run`] wrote, while another process holds the
+/// lock. Reads nothing else (not state, which recovers a broken file by moving it aside), and
+/// opens the lock file as taking it does: not through a link, never waiting on a FIFO.
+pub fn active_run(paths: &Paths) -> Option<String> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(paths.state_dir.join("lock"))
+        .ok()?;
+    if !f.metadata().ok()?.is_file() {
         return None;
     }
-    let id = std::fs::read_to_string(paths.state_dir.join("lock")).ok()?;
+    // SAFETY: plain syscall on a file descriptor owned by `f`.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        // Nobody holds it: whatever id is left in it is from a run that ended.
+        return None;
+    }
+    if std::io::Error::last_os_error().raw_os_error() != Some(libc::EWOULDBLOCK) {
+        return None;
+    }
+    let mut id = String::new();
+    f.take(256).read_to_string(&mut id).ok()?;
     let id = id.trim();
     (!id.is_empty()).then(|| id.to_string())
 }
@@ -329,7 +342,7 @@ pub fn active_run(paths: &Paths, facts: &Facts) -> Option<String> {
 /// never take it.
 #[derive(Debug)]
 pub struct RunLock {
-    _file: std::fs::File,
+    file: std::fs::File,
     _exe: Option<std::fs::File>,
 }
 
@@ -338,6 +351,15 @@ impl RunLock {
     /// it while any run uses it, whatever user or state dir that run has.
     pub fn acquire(paths: &Paths, facts: &Facts) -> Result<RunLock> {
         Self::take(paths, facts, false)
+    }
+
+    /// Writes the id of the run that holds the lock into the lock file, for [`active_run`]:
+    /// through the file taken, not its path. Best effort.
+    pub fn mark_run(&self, run_id: &str) {
+        use std::io::Write;
+        // Opened to append: after emptying it, the id is all it holds.
+        let _ = self.file.set_len(0);
+        let _ = (&self.file).write_all(run_id.as_bytes());
     }
 
     /// For `self-update`: the binary exclusively.
@@ -363,7 +385,7 @@ impl RunLock {
             ));
         }
         // The lock now belongs to this holder: no run id in it until a run writes its own
-        // (`mark_active_run`), so `adopt` holding it does not make the last run look active.
+        // (`mark_run`), so `adopt` holding it does not make the last run look active.
         let _ = file.set_len(0);
         // The running binary itself (/proc/self/exe also opens it after it was replaced).
         // Best effort: a binary that cannot be opened is not locked.
@@ -384,10 +406,7 @@ impl RunLock {
                 bail!("envira is being updated; run it again in a moment");
             }
         }
-        Ok(RunLock {
-            _file: file,
-            _exe: exe,
-        })
+        Ok(RunLock { file, _exe: exe })
     }
 }
 
@@ -767,6 +786,33 @@ mod tests {
         }
         assert!(RunLock::acquire(&paths, &facts).is_err());
         assert!(State::update(&paths, &facts, |_| {}).is_err());
+        // `log` asking which run is going on does not wait on it either.
+        assert_eq!(active_run(&paths), None);
+    }
+
+    #[test]
+    fn the_active_run_is_the_one_marked_while_the_lock_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let facts = Facts::sample(dir.path());
+        let paths = Paths {
+            state_dir: dir.path().join("s"),
+            config_dir: dir.path().join("c"),
+            cache_dir: dir.path().join("k"),
+        };
+        assert_eq!(active_run(&paths), None);
+        let lock = RunLock::acquire(&paths, &facts).unwrap();
+        // Held, but by something that is not a run (adopt): no run is going on.
+        assert_eq!(active_run(&paths), None);
+        lock.mark_run("20261128-120000");
+        assert_eq!(active_run(&paths).as_deref(), Some("20261128-120000"));
+        drop(lock);
+        // The id stays in the file, but nobody holds the lock: that run is over.
+        assert_eq!(active_run(&paths), None);
+        // The next holder empties it.
+        let lock = RunLock::acquire(&paths, &facts).unwrap();
+        assert_eq!(active_run(&paths), None);
+        lock.mark_run("20261128-130000");
+        assert_eq!(active_run(&paths).as_deref(), Some("20261128-130000"));
     }
 
     #[test]
