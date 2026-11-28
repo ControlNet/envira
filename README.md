@@ -112,6 +112,9 @@ Bundles (`envira install <bundle>`):
   `blocked`, `cancelled`, `skipped`), `shell_env`, `notice`, and `finished` with the run record.
   These commands never ask for confirmation in this mode: pass `-y`, or they stop with
   `confirmation_required`. Ctrl-C and SIGTERM still end with `unit_finished` and `finished`.
+  Two runs have no units: `retry` after a run that only left the shell environment behind
+  prints a `notice` and a `shell_env`, and `config revert --forget` prints `forgotten` with
+  the `ids`.
 - A command that fails prints `{"event": "error", "code": …, "message": …}` and exits with 2
   (1 for `aborted`, when the sudo password prompt is cancelled). The codes are `unknown_item`, `not_a_config`, `no_runs`, `run_locked`, `sudo_required`,
   `confirmation_required`, `aborted`, and `error` for anything else.
