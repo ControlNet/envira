@@ -224,16 +224,7 @@ pub async fn doctor(sess: &Session, json: bool) -> Result<i32> {
             }
         })
         .collect();
-    // A state that cannot be read fails doctor after the report, as it did before.
-    let state = sess.state();
-    let rc_duplicates = match &state {
-        Ok(s) => {
-            let snap = sess.snapshot(s.as_ref()).await;
-            shellenv::rc_duplicates(&sess.catalog, f, &snap.present())
-        }
-        Err(_) => vec![],
-    };
-    let d = Doctor {
+    let mut d = Doctor {
         envira: env!("CARGO_PKG_VERSION"),
         install,
         facts: f,
@@ -244,14 +235,25 @@ pub async fn doctor(sess: &Session, json: bool) -> Result<i32> {
         catalog_warnings: &sess.loaded.warnings,
         path,
         shell_integration,
-        rc_duplicates,
+        rc_duplicates: vec![],
     };
-    if json {
-        state?;
-        crate::json::print(&d)?;
-    } else {
+    // The text shows the machine before probing the tools, which can take a while.
+    if !json {
         print_doctor(&d);
-        state?;
+    }
+    // A state that cannot be read fails doctor after the report, as it did before.
+    let state = sess.state()?;
+    let snap = sess.snapshot(state.as_ref()).await;
+    d.rc_duplicates = shellenv::rc_duplicates(&sess.catalog, f, &snap.present());
+    if json {
+        crate::json::print(&d)?;
+    } else if !d.rc_duplicates.is_empty() {
+        println!(
+            "rc lines that duplicate the managed environment (safe to remove once `envira env` ran):"
+        );
+        for l in &d.rc_duplicates {
+            println!("  {l}");
+        }
     }
     Ok(0)
 }
@@ -301,14 +303,6 @@ fn print_doctor(d: &Doctor) {
     println!("shell integration:");
     for r in &d.shell_integration {
         println!("  {} {}", if r.ok { "✓" } else { "✗" }, r.rc);
-    }
-    if !d.rc_duplicates.is_empty() {
-        println!(
-            "rc lines that duplicate the managed environment (safe to remove once `envira env` ran):"
-        );
-        for l in &d.rc_duplicates {
-            println!("  {l}");
-        }
     }
 }
 
@@ -574,7 +568,7 @@ pub async fn explain(sess: &Session, id: &str, json: bool) -> Result<i32> {
 /// One line per kept run, newest first.
 pub fn log_list(sess: &Session, json: bool) -> Result<i32> {
     let runs = state::list_runs(&sess.paths);
-    let active = active_run(sess);
+    let active = state::active_run(&sess.paths, &sess.facts);
     let active = active.as_deref();
     if json {
         let list: Vec<serde_json::Value> = runs
@@ -629,16 +623,6 @@ fn run_json(rec: &RunRecord, running: bool) -> serde_json::Value {
     v
 }
 
-/// The run that may still be going on: the last one recorded (a run records itself as the last
-/// before its first step), while the run lock is held. Not the newest by id: ids are local
-/// times, and after the clock went back a run sorts below older ones.
-fn active_run(sess: &Session) -> Option<String> {
-    let last = sess.state().ok().flatten()?.last_run?;
-    state::RunLock::acquire(&sess.paths, &sess.facts)
-        .is_err()
-        .then_some(last)
-}
-
 pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) -> Result<i32> {
     let run_id = match run {
         Some(r) => r.to_string(),
@@ -661,7 +645,8 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) ->
         return Ok(0);
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
-    let running = rec.finished.is_none() && active_run(sess).as_deref() == Some(run_id.as_str());
+    let running = rec.finished.is_none()
+        && state::active_run(&sess.paths, &sess.facts).as_deref() == Some(run_id.as_str());
     if json {
         let mut v = run_json(&rec, running);
         v["logs"] = dir.display().to_string().into();
@@ -1517,7 +1502,7 @@ async fn run_plan(
             return Ok(1);
         }
     }
-    let _lock = state::RunLock::acquire(&sess.paths, &sess.facts)?;
+    let lock = state::RunLock::acquire(&sess.paths, &sess.facts)?;
     // The state on disk, read under the run lock: `state` was read before it, and a run that
     // finished meanwhile (another terminal, the TUI) would lose its records when this one saves.
     // The bundles this command added are kept.
@@ -1572,10 +1557,13 @@ async fn run_plan(
     let printer = std::thread::spawn(move || printer.print(rx));
 
     let mut interrupts = 0;
+    // A SIGTERM or SIGHUP arrived: envira is to end, also when stdout is not read.
+    let mut terminated = false;
     let record = loop {
         tokio::select! {
             r = &mut handle => break r?.0,
             _ = async { tokio::select! { _ = term.recv() => {}, _ = hup.recv() => {} } } => {
+                terminated = true;
                 ctl_tx.send_modify(|c| {
                     c.stop = true;
                     c.cancel_seq += 1;
@@ -1598,6 +1586,8 @@ async fn run_plan(
         }
     };
     drop(tx);
+    // The run is over and recorded: another may start while its end is still being shown.
+    drop(lock);
     if let Some(k) = keepalive {
         k.abort();
     }
@@ -1632,6 +1622,9 @@ async fn run_plan(
     });
     tokio::select! {
         _ = show => {}
+        // Told to end, and the output is stuck behind a reader that does not read: the run is
+        // recorded, so stop waiting for it.
+        _ = tokio::time::sleep(Duration::from_secs(5)), if terminated => {}
         _ = hup.recv() => std::process::exit(128 + libc::SIGHUP),
         _ = int.recv() => std::process::exit(128 + libc::SIGINT),
         _ = term.recv() => std::process::exit(128 + libc::SIGTERM),

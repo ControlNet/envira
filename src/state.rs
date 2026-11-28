@@ -307,6 +307,22 @@ impl StateFileLock {
     }
 }
 
+/// Records that run `run_id` holds the run lock (the lock file holds its id). Best effort.
+pub fn mark_active_run(paths: &Paths, run_id: &str) {
+    let _ = std::fs::write(paths.state_dir.join("lock"), run_id);
+}
+
+/// The run going on now: the one whose id is in the lock file, while the lock is held. Reads
+/// nothing else (no state, which recovers a broken file by moving it aside).
+pub fn active_run(paths: &Paths, facts: &Facts) -> Option<String> {
+    if RunLock::acquire(paths, facts).is_ok() {
+        return None;
+    }
+    let id = std::fs::read_to_string(paths.state_dir.join("lock")).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 /// Exclusive lock on the state directory for the length of a run, so two envira processes (a
 /// TUI and a CLI `install`, say) never install at once or overwrite each other's state. Released
 /// when dropped or when the process dies. `envira fs` and `fetch-release`, which steps call,
@@ -346,6 +362,9 @@ impl RunLock {
                 ),
             ));
         }
+        // The lock now belongs to this holder: no run id in it until a run writes its own
+        // (`mark_active_run`), so `adopt` holding it does not make the last run look active.
+        let _ = file.set_len(0);
         // The running binary itself (/proc/self/exe also opens it after it was replaced).
         // Best effort: a binary that cannot be opened is not locked.
         let exe = std::fs::File::open("/proc/self/exe")

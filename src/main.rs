@@ -130,7 +130,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         .worker_threads(workers)
         .enable_all()
         .build()?;
-    rt.block_on(async {
+    let code = rt.block_on(async {
         let sess = app::Session::open(&cli.global)?;
         let (paths, facts, budget) = (sess.paths.clone(), sess.facts.clone(), sess.budget.clone());
         let code = match cli.command {
@@ -201,5 +201,9 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             let _ = tokio::task::spawn_blocking(move || selfupdate::notice(&paths, &facts)).await;
         }
         Ok(code)
-    })
+    });
+    // Not waiting for blocking tasks still going: a run told to end leaves its output to a
+    // reader that may never read it (see `run_plan`).
+    rt.shutdown_background();
+    code
 }

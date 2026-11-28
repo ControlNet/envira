@@ -295,6 +295,8 @@ pub async fn execute(
     let start_seq = ctl.borrow().cancel_seq;
     let mut record = RunRecord::planned(&plan, &ctx.run_id, &ctx.command);
     record.machine = ctx.facts.summary();
+    // `log` tells this run is going on by its id in the lock file (the caller holds the lock).
+    state::mark_active_run(&ctx.paths, &ctx.run_id);
     // Nothing changes the machine before the run is on disk, with state pointing at it: a run
     // that dies midway must be one `retry` can resume.
     let recorded = state::create_dir_all_owned(&run_dir, &ctx.facts)
