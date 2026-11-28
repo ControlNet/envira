@@ -51,10 +51,13 @@ pub fn emit(v: &Value) {
     let _ = writeln!(std::io::stdout(), "{v}");
 }
 
-/// Writes a document to stdout, pretty-printed.
+/// Writes a document to stdout, pretty-printed. Unlike a run's events, a document that could not
+/// be written fails the command: it is all the command does.
 pub fn print<T: Serialize + ?Sized>(v: &T) -> anyhow::Result<()> {
-    let _ = writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(v)?);
-    Ok(())
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{}", serde_json::to_string_pretty(v)?)
+        .and_then(|_| out.flush())
+        .map_err(|e| anyhow::anyhow!("writing the output: {e}"))
 }
 
 pub fn plan(plan: &Plan, facts: &Facts) -> Value {

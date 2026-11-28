@@ -574,13 +574,13 @@ pub async fn explain(sess: &Session, id: &str, json: bool) -> Result<i32> {
 /// One line per kept run, newest first.
 pub fn log_list(sess: &Session, json: bool) -> Result<i32> {
     let runs = state::list_runs(&sess.paths);
-    let locked = state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
+    let active = active_run(sess);
+    let active = active.as_deref();
     if json {
         let list: Vec<serde_json::Value> = runs
             .iter()
-            .enumerate()
-            .map(|(n, id)| match RunRecord::load(&sess.paths, id) {
-                Ok(rec) => run_json(&rec, n == 0 && locked),
+            .map(|id| match RunRecord::load(&sess.paths, id) {
+                Ok(rec) => run_json(&rec, active == Some(id.as_str())),
                 Err(e) => {
                     serde_json::json!({"id": id, "status": "unreadable", "error": format!("{e:#}")})
                 }
@@ -593,14 +593,14 @@ pub fn log_list(sess: &Session, json: bool) -> Result<i32> {
         println!("No runs yet.");
         return Ok(0);
     }
-    for (n, id) in runs.iter().enumerate() {
+    for id in &runs {
         let Ok(rec) = RunRecord::load(&sess.paths, id) else {
             println!("{id}  (no readable run.toml)");
             continue;
         };
         let how = match &rec.finished {
             Some(_) => "finished",
-            None if n == 0 && locked => "running",
+            None if active == Some(id.as_str()) => "running",
             None => "interrupted",
         };
         let ok = rec.units.iter().filter(|u| u.outcome == "ok").count();
@@ -629,6 +629,16 @@ fn run_json(rec: &RunRecord, running: bool) -> serde_json::Value {
     v
 }
 
+/// The run that may still be going on: the last one recorded (a run records itself as the last
+/// before its first step), while the run lock is held. Not the newest by id: ids are local
+/// times, and after the clock went back a run sorts below older ones.
+fn active_run(sess: &Session) -> Option<String> {
+    let last = sess.state().ok().flatten()?.last_run?;
+    state::RunLock::acquire(&sess.paths, &sess.facts)
+        .is_err()
+        .then_some(last)
+}
+
 pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) -> Result<i32> {
     let run_id = match run {
         Some(r) => r.to_string(),
@@ -651,10 +661,7 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) ->
         return Ok(0);
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
-    // Only the newest run can be the one holding the lock; an older unfinished run was stopped.
-    let running = rec.finished.is_none()
-        && state::list_runs(&sess.paths).first() == Some(&run_id)
-        && state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
+    let running = rec.finished.is_none() && active_run(sess).as_deref() == Some(run_id.as_str());
     if json {
         let mut v = run_json(&rec, running);
         v["logs"] = dir.display().to_string().into();

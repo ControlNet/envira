@@ -41,6 +41,7 @@ pub struct Facts {
     pub hostname: String,
     /// Whose home user-scope installs, state and shell files belong to.
     pub user: String,
+    #[serde(serialize_with = "path_text")]
     pub home: PathBuf,
     pub uid: u32,
     pub gid: u32,
@@ -51,7 +52,20 @@ pub struct Facts {
     /// envira's state dir, once known (`Session::open`): `envira fs` run through sudo gets it
     /// explicitly, as sudo drops the environment, so backups are in one place whichever way
     /// envira was started (`sudo envira` passes it as well).
+    #[serde(serialize_with = "opt_path_text")]
     pub state_dir: Option<PathBuf>,
+}
+
+/// Paths in JSON as text: serde refuses a path that is not UTF-8.
+fn path_text<S: serde::Serializer>(p: &Path, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&p.to_string_lossy())
+}
+
+fn opt_path_text<S: serde::Serializer>(p: &Option<PathBuf>, s: S) -> Result<S::Ok, S::Error> {
+    match p {
+        Some(p) => path_text(p, s),
+        None => s.serialize_none(),
+    }
 }
 
 impl Facts {
