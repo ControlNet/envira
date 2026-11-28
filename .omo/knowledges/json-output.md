@@ -30,8 +30,13 @@ There are three kinds of output:
 - JSON never serializes `PathBuf`: `serde_json` errors on non-UTF-8 paths, and `json!` panics on that error.
   - Convert paths with `display().to_string()`.
   - `exec::secrets()` reads `vars_os`, because `std::env::vars()` panics on any variable that isn't UTF-8.
-- `log`: a run is `running` only when it is state's `last_run` and the run lock is held.
-  - Don't use the newest run id: ids are local times, and after a DST rollback a live run sorts below older ones.
+- `log`: a run is `running` only when the run lock is held and the lock file contains that run's id.
+  - Taking the lock empties the file (so `adopt`, the TUI and self-update holding it make no run look active), and the executor writes its run id there (`state::mark_active_run`).
+  - Don't use the newest run id: ids are local times and go back with the clock.
+  - Don't use `State::load` either: it moves a broken state.toml aside, and read-only `log` must not do that.
+- After a SIGTERM/SIGHUP, `run_plan` waits at most 5 s for a stalled stdout reader. `main` ends the runtime with `shutdown_background()`, because a dropped runtime waits for the stuck blocking task forever.
+  - The run lock is released as soon as the run is recorded, before the end is shown.
+- Text `doctor` prints the machine first and the rc duplicates after the tool snapshot, so slow probes don't hold back the rest.
 - `Facts.home` and `Facts.state_dir` serialize through `path_text`. A non-UTF-8 home must not break `doctor --json`.
 - `json::print` (query documents) returns write errors, so `> /dev/full` exits 2. `json::emit` (run events) ignores them, so a run always finishes.
 - The executor reads a unit's cancel baseline when it sends `UnitStarted`, not after the unit has opened its log and temp dir.
@@ -55,6 +60,11 @@ There are three kinds of output:
   - non-UTF-8 home/state paths in `doctor --json`;
   - `log` status after a clock rollback;
   - query JSON ignoring write errors.
+- Round 3 fixed:
+  - a stalled reader after SIGTERM kept envira (and the run lock) alive;
+  - `log` moved a broken state.toml aside;
+  - an unrelated lock holder made an old run look `running`;
+  - text `doctor` waited for the probes before printing anything.
 - Left as is:
   - one Ctrl-C lets steps finish (by design);
   - `status --json` errors on stdout (the issue asked for that);
@@ -70,3 +80,5 @@ There are three kinds of output:
   - `$c` does not word-split; use `${=c}`.
   - `echo "$out"` interprets backslashes, so pipe the output directly instead.
 - A background job in a non-interactive bash still receives `kill -INT`: tokio installs its own handler.
+- Steps run with `bash -eo pipefail`, so a dummy `yes | head` fails with 141. Generate output with a loop.
+- To stall a reader: `mkfifo f; (exec 3<f; sleep 30; cat <&3) &`, then run envira with `>f`.
