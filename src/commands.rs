@@ -132,8 +132,8 @@ struct Doctor<'a> {
     install: Option<SelfInstall>,
     facts: &'a crate::facts::Facts,
     disk_free: Vec<DiskFree>,
-    state_dir: &'a std::path::Path,
-    config_dir: &'a std::path::Path,
+    state_dir: String,
+    config_dir: String,
     catalog_layers: &'a [String],
     catalog_warnings: &'a [String],
     /// PATH used for detection and installs.
@@ -146,13 +146,13 @@ struct Doctor<'a> {
 #[derive(Serialize)]
 struct SelfInstall {
     channel: &'static str,
-    exe: std::path::PathBuf,
+    exe: String,
     latest: Option<String>,
 }
 
 #[derive(Serialize)]
 struct DiskFree {
-    dir: std::path::PathBuf,
+    dir: String,
     free_bytes: u64,
 }
 
@@ -165,7 +165,7 @@ struct PathDir {
 #[derive(Serialize)]
 struct RcFile {
     shell: &'static str,
-    rc: std::path::PathBuf,
+    rc: String,
     /// Has envira's block.
     ok: bool,
 }
@@ -188,7 +188,7 @@ pub async fn doctor(sess: &Session, json: bool) -> Result<i32> {
             crate::selfupdate::latest(&paths, &facts, fetch, crate::selfupdate::NOTICE_TIMEOUT);
         Some(SelfInstall {
             channel: channel.label(),
-            exe,
+            exe: exe.display().to_string(),
             latest,
         })
     })
@@ -198,7 +198,10 @@ pub async fn doctor(sess: &Session, json: bool) -> Result<i32> {
     let disk_free = [f.home.clone(), std::env::temp_dir(), "/usr/local".into()]
         .into_iter()
         .filter_map(|dir| {
-            crate::plan::disk_free(&dir).map(|(_, free_bytes)| DiskFree { dir, free_bytes })
+            crate::plan::disk_free(&dir).map(|(_, free_bytes)| DiskFree {
+                dir: dir.display().to_string(),
+                free_bytes,
+            })
         })
         .collect();
     let path = crate::status::effective_path(&sess.catalog, f)
@@ -214,28 +217,41 @@ pub async fn doctor(sess: &Session, json: bool) -> Result<i32> {
             let block = shellenv::rc_block(shell, &sess.paths, f);
             let b = fs::Backups::new(sess.paths.state_dir.join("backups"));
             let ok = fs::block(&b, &rc, "envira", "#", Some(&block), true).unwrap_or(false);
-            RcFile { shell, rc, ok }
+            RcFile {
+                shell,
+                rc: rc.display().to_string(),
+                ok,
+            }
         })
         .collect();
-    let state = sess.state()?;
-    let snap = sess.snapshot(state.as_ref()).await;
+    // A state that cannot be read fails doctor after the report, as it did before.
+    let state = sess.state();
+    let rc_duplicates = match &state {
+        Ok(s) => {
+            let snap = sess.snapshot(s.as_ref()).await;
+            shellenv::rc_duplicates(&sess.catalog, f, &snap.present())
+        }
+        Err(_) => vec![],
+    };
     let d = Doctor {
         envira: env!("CARGO_PKG_VERSION"),
         install,
         facts: f,
         disk_free,
-        state_dir: &sess.paths.state_dir,
-        config_dir: &sess.paths.config_dir,
+        state_dir: sess.paths.state_dir.display().to_string(),
+        config_dir: sess.paths.config_dir.display().to_string(),
         catalog_layers: &sess.loaded.layers,
         catalog_warnings: &sess.loaded.warnings,
         path,
         shell_integration,
-        rc_duplicates: shellenv::rc_duplicates(&sess.catalog, f, &snap.present()),
+        rc_duplicates,
     };
     if json {
+        state?;
         crate::json::print(&d)?;
     } else {
         print_doctor(&d);
+        state?;
     }
     Ok(0)
 }
@@ -250,7 +266,7 @@ fn print_doctor(d: &Doctor) {
             .filter(|v| crate::version::is_newer(v, d.envira))
             .map(|v| format!(" · {v} is out: envira self-update"))
             .unwrap_or_default();
-        println!("install    {} · {}{newer}", i.channel, i.exe.display());
+        println!("install    {} · {}{newer}", i.channel, i.exe);
     }
     println!(
         "distro     {} (families: {})",
@@ -269,17 +285,11 @@ fn print_doctor(d: &Doctor) {
     let disks: Vec<String> = d
         .disk_free
         .iter()
-        .map(|x| {
-            format!(
-                "{} {}",
-                x.dir.display(),
-                crate::plan::fmt_bytes(x.free_bytes)
-            )
-        })
+        .map(|x| format!("{} {}", x.dir, crate::plan::fmt_bytes(x.free_bytes)))
         .collect();
     println!("free disk  {}", disks.join(" · "));
-    println!("state      {}", d.state_dir.display());
-    println!("config     {}", d.config_dir.display());
+    println!("state      {}", d.state_dir);
+    println!("config     {}", d.config_dir);
     println!("catalog    {}", d.catalog_layers.join(" + "));
     for w in d.catalog_warnings {
         println!("  warning: {w}");
@@ -290,7 +300,7 @@ fn print_doctor(d: &Doctor) {
     }
     println!("shell integration:");
     for r in &d.shell_integration {
-        println!("  {} {}", if r.ok { "✓" } else { "✗" }, r.rc.display());
+        println!("  {} {}", if r.ok { "✓" } else { "✗" }, r.rc);
     }
     if !d.rc_duplicates.is_empty() {
         println!(
@@ -316,9 +326,10 @@ impl ProbeOut {
         ProbeOut {
             cmd: cmd.to_string(),
             exit: p.code,
+            // `split`, not `lines`: a trailing empty line stays, as the text output shows it.
             output: p
                 .output
-                .lines()
+                .split('\n')
                 .map(|l| exec::redact(l, secrets))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -470,7 +481,11 @@ pub async fn explain(sess: &Session, id: &str, json: bool) -> Result<i32> {
         checks,
         checks_error,
         last_run,
-        plan: crate::json::plan(&plan, f),
+        plan: if json {
+            crate::json::plan(&plan, f)
+        } else {
+            serde_json::Value::Null
+        },
     };
     if json {
         crate::json::print(&e)?;
@@ -636,9 +651,11 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) ->
         return Ok(0);
     }
     let rec = RunRecord::load(&sess.paths, &run_id)?;
+    // Only the newest run can be the one holding the lock; an older unfinished run was stopped.
+    let running = rec.finished.is_none()
+        && state::list_runs(&sess.paths).first() == Some(&run_id)
+        && state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
     if json {
-        let running =
-            rec.finished.is_none() && state::RunLock::acquire(&sess.paths, &sess.facts).is_err();
         let mut v = run_json(&rec, running);
         v["logs"] = dir.display().to_string().into();
         crate::json::print(&v)?;
@@ -651,9 +668,7 @@ pub fn log(sess: &Session, item: Option<&str>, run: Option<&str>, json: bool) ->
         rec.started,
         match &rec.finished {
             Some(f) => format!(" · finished {f}"),
-            None if state::RunLock::acquire(&sess.paths, &sess.facts).is_err() => {
-                " · still running".into()
-            }
+            None if running => " · still running".into(),
             None => " · did not finish (envira was stopped or killed)".into(),
         }
     );
@@ -1160,6 +1175,17 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
     if t.is_empty() {
         // Only the shell environment was left behind: bring it up to date.
         if let Some(e) = &rec.shell_env_error {
+            if opts.dry_run {
+                let m = format!(
+                    "run {run_id} left the shell environment behind ({e}); retry would write it"
+                );
+                if opts.json {
+                    crate::json::emit(&crate::json::notice(m));
+                } else {
+                    println!("{m}.");
+                }
+                return Ok(0);
+            }
             if opts.json {
                 crate::json::emit(&crate::json::notice(format!(
                     "run {run_id} left the shell environment behind ({e})"
@@ -1212,12 +1238,25 @@ pub async fn retry(sess: &Session, opts: &RunOpts) -> Result<i32> {
 
 /// `config revert --forget`: drops the records of what envira changed, so it no longer offers to
 /// undo it. For changes it cannot undo (their step left the catalog), once undone by hand.
-pub fn forget_configs(sess: &Session, items: &[String], json: bool) -> Result<i32> {
+pub fn forget_configs(sess: &Session, items: &[String], opts: &RunOpts) -> Result<i32> {
     for i in items {
         if !sess.catalog.configs.contains_key(i) {
             return Err(not_a_config(i));
         }
     }
+    if opts.dry_run {
+        if opts.json {
+            crate::json::emit(
+                &serde_json::json!({"event": "forgotten", "ids": items, "dry_run": true}),
+            );
+        } else {
+            for i in items {
+                println!("{i}: envira would no longer record changes to undo (dry run)");
+            }
+        }
+        return Ok(0);
+    }
+    let json = opts.json;
     State::update(&sess.paths, &sess.facts, |st| {
         for i in items {
             st.configs.remove(i);
@@ -1392,6 +1431,14 @@ async fn run_plan(
         }
     };
     let mut plan = build();
+    // With --json nothing asks, not even for sudo's password: without -y it stops here.
+    if json && !opts.yes && !opts.dry_run && !plan.is_empty() {
+        show_plan(&plan);
+        return Err(crate::json::coded(
+            "confirmation_required",
+            "refusing to run without confirmation; pass -y",
+        ));
+    }
     let mut confirmed = false;
     let mut password = None;
     if !opts.dry_run && plan.needs_sudo(&sess.facts) && !app::sudo_without_password() {
@@ -1505,18 +1552,19 @@ async fn run_plan(
         run_dir: sess.paths.run_dir(&ctx.run_id),
     };
     let paths = sess.paths.clone();
+    // SIGTERM/SIGHUP: cancel the running step and stop, so the run record is completed and no
+    // installer keeps running on its own (steps run in their own sessions). Taken before the
+    // executor starts, so no signal falls between its first step and these handlers.
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate())?;
+    let mut hup = signal(SignalKind::hangup())?;
+    let mut int = signal(SignalKind::interrupt())?;
     let mut handle = tokio::spawn(exec::execute(plan, ctx, state, tx.clone(), ctl_rx));
     // Output is written by its own thread: a reader that stalls (`| less` left alone) holds up
     // only that thread, never the run or Ctrl-C, and lines wait for it in a bounded queue.
     let printer = std::thread::spawn(move || printer.print(rx));
 
     let mut interrupts = 0;
-    // SIGTERM/SIGHUP: cancel the running step and stop, so the run record is completed and no
-    // installer keeps running on its own (steps run in their own sessions).
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = signal(SignalKind::terminate())?;
-    let mut hup = signal(SignalKind::hangup())?;
-    let mut int = signal(SignalKind::interrupt())?;
     let record = loop {
         tokio::select! {
             r = &mut handle => break r?.0,
@@ -1678,6 +1726,22 @@ impl Printer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn probe_output_keeps_a_trailing_empty_line() {
+        let raw = "tool 1.2.3\n\n";
+        let p = crate::runner::Probe {
+            code: 0,
+            output: raw.into(),
+        };
+        let out = super::ProbeOut::new("tool --version", &p);
+        // The text output prints `lines()`: the same lines as before the output was stored.
+        assert_eq!(
+            out.output.lines().collect::<Vec<_>>(),
+            raw.lines().collect::<Vec<_>>()
+        );
+        assert_eq!(out.output, raw);
+    }
+
     #[test]
     fn committed_schema_is_current() {
         let committed = include_str!("../catalog/schema.json");

@@ -69,7 +69,7 @@ pub fn plan(plan: &Plan, facts: &Facts) -> Value {
         "low_space": plan
             .low_space(facts)
             .iter()
-            .map(|(dir, free)| json!({"dir": dir, "free_bytes": free}))
+            .map(|(dir, free)| json!({"dir": dir.display().to_string(), "free_bytes": free}))
             .collect::<Vec<_>>(),
     })
 }

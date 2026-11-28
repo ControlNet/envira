@@ -167,7 +167,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                         forget: true,
                         run,
                     },
-            }) => commands::forget_configs(&sess, &items, run.json),
+            }) => commands::forget_configs(&sess, &items, &run),
             Some(Command::Config {
                 cmd: ConfigCmd::Revert { items, run, .. },
             }) => commands::config(&sess, &items, true, &run).await,
