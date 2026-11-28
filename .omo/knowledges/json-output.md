@@ -31,10 +31,11 @@ There are three kinds of output:
   - Convert paths with `display().to_string()`.
   - `exec::secrets()` reads `vars_os`, because `std::env::vars()` panics on any variable that isn't UTF-8.
 - `log`: a run is `running` only when the run lock is held and the lock file contains that run's id.
-  - Taking the lock empties the file (so `adopt`, the TUI and self-update holding it make no run look active), and the executor writes its run id there (`state::mark_active_run`).
+  - Taking the lock empties the file (so `adopt`, the TUI and self-update holding it make no run look active). The run's starter (`run_plan`, TUI `start_run`) writes the id through the lock's own file descriptor (`RunLock::mark_run`), never by path: a root run must not follow a link swapped in.
+  - `state::active_run` opens the file read-only with O_NOFOLLOW|O_NONBLOCK and requires a regular file. It trusts the id only when `flock(LOCK_SH|LOCK_NB)` fails with EWOULDBLOCK, so other errors, a FIFO or a read-only file never mean "running".
   - Don't use the newest run id: ids are local times and go back with the clock.
   - Don't use `State::load` either: it moves a broken state.toml aside, and read-only `log` must not do that.
-- After a SIGTERM/SIGHUP, `run_plan` waits at most 5 s for a stalled stdout reader. `main` ends the runtime with `shutdown_background()`, because a dropped runtime waits for the stuck blocking task forever.
+- After a SIGTERM/SIGHUP or a second Ctrl-C, `run_plan` waits at most 5 s for a stalled stdout reader. `main` ends the runtime with `shutdown_background()`, because a dropped runtime waits for the stuck blocking task forever.
   - The run lock is released as soon as the run is recorded, before the end is shown.
 - Text `doctor` prints the machine first and the rc duplicates after the tool snapshot, so slow probes don't hold back the rest.
 - `Facts.home` and `Facts.state_dir` serialize through `path_text`. A non-UTF-8 home must not break `doctor --json`.
@@ -65,6 +66,11 @@ There are three kinds of output:
   - `log` moved a broken state.toml aside;
   - an unrelated lock holder made an old run look `running`;
   - text `doctor` waited for the probes before printing anything.
+- Round 4 fixed:
+  - the run marker was written by path, not through the lock's fd;
+  - `log` could block on a FIFO lock file;
+  - an unlocked, read-only lock file made a stopped run look `running`;
+  - after a second Ctrl-C a stalled reader kept envira alive.
 - Left as is:
   - one Ctrl-C lets steps finish (by design);
   - `status --json` errors on stdout (the issue asked for that);
