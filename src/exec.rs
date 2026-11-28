@@ -1014,7 +1014,15 @@ async fn pause(d: Duration, ctl: &mut watch::Receiver<Control>, base_seq: u32) -
 /// into logs.
 pub fn secrets() -> &'static [String] {
     static SECRETS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    SECRETS.get_or_init(|| secret_values(std::env::vars()))
+    // `vars_os`: `vars` panics on a variable that is not UTF-8 (a TMPDIR with a Latin-1 name).
+    SECRETS.get_or_init(|| {
+        secret_values(std::env::vars_os().map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
+            )
+        }))
+    })
 }
 
 fn secret_values(vars: impl Iterator<Item = (String, String)>) -> Vec<String> {
